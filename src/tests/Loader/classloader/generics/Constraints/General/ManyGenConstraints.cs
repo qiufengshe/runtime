@@ -5,9 +5,11 @@
 // we want to make sure we can load such type.
 
 using System;
+using Xunit;
 
-public class Test {
-   public static int Main() 
+public class Test_ManyGenConstraints {
+   [Fact]
+   public static int TestEntryPoint() 
    {    
 	bool pass = true; 
   

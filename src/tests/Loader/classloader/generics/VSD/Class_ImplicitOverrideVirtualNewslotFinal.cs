@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*
-Test the following matrix for classes with virtual newslot final methods (implicit override):
+Test_Class_ImplicitOverrideVirtualNewslotFinal the following matrix for classes with virtual newslot final methods (implicit override):
 
 Non-Generic virtual methods:
 						Non-generic Interface	Generic Interface
@@ -18,6 +18,7 @@ Generic virtual methods:
 */
 
 using System;
+using Xunit;
 
 
 public class A<T>
@@ -126,7 +127,7 @@ public class C4<T> : IGen<T>
 
 
 
-public class Test
+public class Test_Class_ImplicitOverrideVirtualNewslotFinal
 {
 
 	public static bool pass = true;
@@ -239,7 +240,8 @@ public class Test
 
 
 	
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
 
 		TestNonGenInterface_NonGenType();

@@ -17,6 +17,30 @@
 #define USE_REDIRECT_FOR_GCSTRESS
 #endif // TARGET_UNIX
 
+#define ENUM_CALLEE_SAVED_REGISTERS() \
+    CALLEE_SAVED_REGISTER(Fp) \
+    CALLEE_SAVED_REGISTER(Lr) \
+    CALLEE_SAVED_REGISTER(X19) \
+    CALLEE_SAVED_REGISTER(X20) \
+    CALLEE_SAVED_REGISTER(X21) \
+    CALLEE_SAVED_REGISTER(X22) \
+    CALLEE_SAVED_REGISTER(X23) \
+    CALLEE_SAVED_REGISTER(X24) \
+    CALLEE_SAVED_REGISTER(X25) \
+    CALLEE_SAVED_REGISTER(X26) \
+    CALLEE_SAVED_REGISTER(X27) \
+    CALLEE_SAVED_REGISTER(X28)
+
+#define ENUM_FP_CALLEE_SAVED_REGISTERS() \
+    CALLEE_SAVED_REGISTER(V[8].Low) \
+    CALLEE_SAVED_REGISTER(V[9].Low) \
+    CALLEE_SAVED_REGISTER(V[10].Low) \
+    CALLEE_SAVED_REGISTER(V[11].Low) \
+    CALLEE_SAVED_REGISTER(V[12].Low) \
+    CALLEE_SAVED_REGISTER(V[13].Low) \
+    CALLEE_SAVED_REGISTER(V[14].Low) \
+    CALLEE_SAVED_REGISTER(V[15].Low)
+
 EXTERN_C void getFPReturn(int fpSize, INT64 *pRetVal);
 EXTERN_C void setFPReturn(int fpSize, INT64 retVal);
 
@@ -38,10 +62,7 @@ extern PCODE GetPreStubEntryPoint();
 
 #define HAS_NDIRECT_IMPORT_PRECODE              1
 
-#define USE_INDIRECT_CODEHEADER
-
 #define HAS_FIXUP_PRECODE                       1
-#define HAS_FIXUP_PRECODE_CHUNKS                1
 
 // ThisPtrRetBufPrecode one is necessary for closed delegates over static methods with return buffer
 #define HAS_THISPTR_RETBUF_PRECODE              1
@@ -57,6 +78,8 @@ extern PCODE GetPreStubEntryPoint();
 #define CALLDESCR_ARGREGS                       1   // CallDescrWorker has ArgumentRegister parameter
 #define CALLDESCR_FPARGREGS                     1   // CallDescrWorker has FloatArgumentRegisters parameter
 #define CALLDESCR_RETBUFFARGREG                 1   // CallDescrWorker has RetBuffArg parameter that's separate from arg regs
+
+#define FLOAT_REGISTER_SIZE 16 // each register in FloatArgumentRegisters is 16 bytes.
 
 // Given a return address retrieved during stackwalk,
 // this is the offset by which it should be decremented to arrive at the callsite.
@@ -81,23 +104,35 @@ void     R8ToFPSpill(void* pSpillSlot, SIZE_T  srcDoubleAsSIZE_T)
 // Parameter size
 //**********************************************************************
 
-typedef INT64 StackElemType;
-#define STACK_ELEM_SIZE sizeof(StackElemType)
+inline unsigned StackElemSize(unsigned parmSize, bool isValueType, bool isFloatHfa)
+{
+#if defined(OSX_ARM64_ABI)
+    if (!isValueType)
+    {
+        // The primitive types' sizes are expected to be powers of 2.
+        _ASSERTE((parmSize & (parmSize - 1)) == 0);
+        // No padding/alignment for primitive types.
+        return parmSize;
+    }
+    if (isFloatHfa)
+    {
+        _ASSERTE((parmSize % 4) == 0);
+        // float hfa is not considered a struct type and passed with 4-byte alignment.
+        return parmSize;
+    }
+#endif
 
-// The expression below assumes STACK_ELEM_SIZE is a power of 2, so check that.
-static_assert(((STACK_ELEM_SIZE & (STACK_ELEM_SIZE-1)) == 0), "STACK_ELEM_SIZE must be a power of 2");
-
-#define StackElemSize(parmSize) (((parmSize) + STACK_ELEM_SIZE - 1) & ~((ULONG)(STACK_ELEM_SIZE - 1)))
+    const unsigned stackSlotSize = 8;
+    return ALIGN_UP(parmSize, stackSlotSize);
+}
 
 //
 // JIT HELPERS.
 //
 // Create alias for optimized implementations of helpers provided on this platform
 //
-#define JIT_GetSharedGCStaticBase           JIT_GetSharedGCStaticBase_SingleAppDomain
-#define JIT_GetSharedNonGCStaticBase        JIT_GetSharedNonGCStaticBase_SingleAppDomain
-#define JIT_GetSharedGCStaticBaseNoCtor     JIT_GetSharedGCStaticBaseNoCtor_SingleAppDomain
-#define JIT_GetSharedNonGCStaticBaseNoCtor  JIT_GetSharedNonGCStaticBaseNoCtor_SingleAppDomain
+#define JIT_GetDynamicGCStaticBase           JIT_GetDynamicGCStaticBase_SingleAppDomain
+#define JIT_GetDynamicNonGCStaticBase        JIT_GetDynamicNonGCStaticBase_SingleAppDomain
 
 //**********************************************************************
 // Frames
@@ -149,6 +184,33 @@ struct FloatArgumentRegisters {
 };
 
 #define NUM_FLOAT_ARGUMENT_REGISTERS 8
+
+//**********************************************************************
+// Profiling
+//**********************************************************************
+
+#ifdef PROFILING_SUPPORTED
+
+#define PROFILE_PLATFORM_SPECIFIC_DATA_BUFFER_SIZE (NUM_FLOAT_ARGUMENT_REGISTERS * sizeof(double))
+
+typedef struct _PROFILE_PLATFORM_SPECIFIC_DATA
+{
+    void*                  Fp;
+    void*                  Pc;
+    void*                  x8;
+    ArgumentRegisters      argumentRegisters;
+    FunctionID             functionId;
+    FloatArgumentRegisters floatArgumentRegisters;
+    void*                  probeSp;
+    void*                  profiledSp;
+    void*                  hiddenArg;
+    UINT32                 flags;
+    UINT32                 unused;
+    BYTE                   buffer[PROFILE_PLATFORM_SPECIFIC_DATA_BUFFER_SIZE];
+} PROFILE_PLATFORM_SPECIFIC_DATA, *PPROFILE_PLATFORM_SPECIFIC_DATA;
+
+#endif  // PROFILING_SUPPORTED
+
 
 //**********************************************************************
 // Exception handling
@@ -240,6 +302,7 @@ inline TADDR GetMem(PCODE address, SIZE_T size, bool signExtend)
     }
     EX_CATCH
     {
+        mem = 0;
         _ASSERTE(!"Memory read within jitted Code Failed, this should not happen!!!!");
     }
     EX_END_CATCH(SwallowAllExceptions);
@@ -258,24 +321,19 @@ inline NEON128 GetSimdMem(PCODE ip)
 }
 
 #ifdef FEATURE_COMINTEROP
-void emitCOMStubCall (ComCallMethodDesc *pCOMMethod, PCODE target);
+void emitCOMStubCall (ComCallMethodDesc *pCOMMethodRX, ComCallMethodDesc *pCOMMethodRW, PCODE target);
 #endif // FEATURE_COMINTEROP
 
-inline BOOL ClrFlushInstructionCache(LPCVOID pCodeAddr, size_t sizeOfCode)
+inline BOOL ClrFlushInstructionCache(LPCVOID pCodeAddr, size_t sizeOfCode, bool hasCodeExecutedBefore = false)
 {
-#ifdef CROSSGEN_COMPILE
-    // The code won't be executed when we are cross-compiling so flush instruction cache is unnecessary
-    return TRUE;
-#else
     return FlushInstructionCache(GetCurrentProcess(), pCodeAddr, sizeOfCode);
-#endif
 }
 
 //------------------------------------------------------------------------
-inline void emitJump(LPBYTE pBuffer, LPVOID target)
+inline void emitJump(LPBYTE pBufferRX, LPBYTE pBufferRW, LPVOID target)
 {
     LIMITED_METHOD_CONTRACT;
-    UINT32* pCode = (UINT32*)pBuffer;
+    UINT32* pCode = (UINT32*)pBufferRW;
 
     // We require 8-byte alignment so the LDR instruction is aligned properly
     _ASSERTE(((UINT_PTR)pCode & 7) == 0);
@@ -288,7 +346,7 @@ inline void emitJump(LPBYTE pBuffer, LPVOID target)
     pCode[1] = 0xD61F0200UL;   // br  x16
 
     // Ensure that the updated instructions get updated in the I-Cache
-    ClrFlushInstructionCache(pCode, 8);
+    ClrFlushInstructionCache(pBufferRX, 8);
 
     *((LPVOID *)(pCode + 2)) = target;   // 64-bit target address
 
@@ -307,28 +365,10 @@ inline PCODE decodeJump(PCODE pCode)
 }
 
 //------------------------------------------------------------------------
-inline BOOL isJump(PCODE pCode)
-{
-    LIMITED_METHOD_DAC_CONTRACT;
-
-    TADDR pInstr = PCODEToPINSTR(pCode);
-
-    return *dac_cast<PTR_DWORD>(pInstr) == 0x58000050;
-}
-
-//------------------------------------------------------------------------
-inline BOOL isBackToBackJump(PCODE pBuffer)
+inline void emitBackToBackJump(LPBYTE pBufferRX, LPBYTE pBufferRW, LPVOID target)
 {
     WRAPPER_NO_CONTRACT;
-    SUPPORTS_DAC;
-    return isJump(pBuffer);
-}
-
-//------------------------------------------------------------------------
-inline void emitBackToBackJump(LPBYTE pBuffer, LPVOID target)
-{
-    WRAPPER_NO_CONTRACT;
-    emitJump(pBuffer, target);
+    emitJump(pBufferRX, pBufferRW, target);
 }
 
 //------------------------------------------------------------------------
@@ -402,22 +442,14 @@ const CondCode CondAl = CondCode(14);
 const CondCode CondNv = CondCode(15);
 
 
-#define PRECODE_ALIGNMENT           CODE_SIZE_ALIGN
-#define SIZEOF_PRECODE_BASE         CODE_SIZE_ALIGN
-#define OFFSETOF_PRECODE_TYPE       0
-
-#ifdef CROSSGEN_COMPILE
-#define GetEEFuncEntryPoint(pfn) 0x1001
-#else
 #define GetEEFuncEntryPoint(pfn) GFN_TADDR(pfn)
-#endif
 
 class StubLinkerCPU : public StubLinker
 {
 
 private:
     void EmitLoadStoreRegPairImm(DWORD flags, int regNum1, int regNum2, IntReg Xn, int offset, BOOL isVec);
-    void EmitLoadStoreRegImm(DWORD flags, int regNum, IntReg Xn, int offset, BOOL isVec);
+    void EmitLoadStoreRegImm(DWORD flags, int regNum, IntReg Xn, int offset, BOOL isVec, int log2Size = 3);
 public:
 
     // BitFlags for EmitLoadStoreReg(Pair)Imm methods
@@ -468,7 +500,7 @@ public:
     void EmitLoadStoreRegPairImm(DWORD flags, IntReg Xt1, IntReg Xt2, IntReg Xn, int offset=0);
     void EmitLoadStoreRegPairImm(DWORD flags, VecReg Vt1, VecReg Vt2, IntReg Xn, int offset=0);
 
-    void EmitLoadStoreRegImm(DWORD flags, IntReg Xt, IntReg Xn, int offset=0);
+    void EmitLoadStoreRegImm(DWORD flags, IntReg Xt, IntReg Xn, int offset=0, int log2Size = 3);
     void EmitLoadStoreRegImm(DWORD flags, VecReg Vt, IntReg Xn, int offset=0);
 
     void EmitLoadRegReg(IntReg Xt, IntReg Xn, IntReg Xm, DWORD option);
@@ -499,7 +531,7 @@ struct DECLSPEC_ALIGN(16) UMEntryThunkCode
     TADDR       m_pTargetCode;
     TADDR       m_pvSecretParam;
 
-    void Encode(BYTE* pTargetCode, void* pvSecretParam);
+    void Encode(UMEntryThunkCode *pEntryThunkCodeRX, BYTE* pTargetCode, void* pvSecretParam);
     void Poison();
 
     LPCBYTE GetEntryPoint() const
@@ -546,213 +578,6 @@ struct HijackArgs
     };
 };
 
-EXTERN_C VOID STDCALL PrecodeFixupThunk();
-
-// Invalid precode type
-struct InvalidPrecode {
-    static const int Type = 0;
-};
-
-struct StubPrecode {
-
-    static const int Type = 0x89;
-
-    // adr x9, #16
-    // ldp x10,x12,[x9]      ; =m_pTarget,m_pMethodDesc
-    // br x10
-    // 4 byte padding for 8 byte allignement
-    // dcd pTarget
-    // dcd pMethodDesc
-    DWORD   m_rgCode[4];
-    TADDR   m_pTarget;
-    TADDR   m_pMethodDesc;
-
-    void Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocator);
-
-    TADDR GetMethodDesc()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return m_pMethodDesc;
-    }
-
-    PCODE GetTarget()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return m_pTarget;
-    }
-
-    void ResetTargetInterlocked()
-    {
-        CONTRACTL
-        {
-            THROWS;
-            GC_NOTRIGGER;
-        }
-        CONTRACTL_END;
-
-        InterlockedExchange64((LONGLONG*)&m_pTarget, (TADDR)GetPreStubEntryPoint());
-    }
-
-    BOOL SetTargetInterlocked(TADDR target, TADDR expected)
-    {
-        CONTRACTL
-        {
-            THROWS;
-            GC_NOTRIGGER;
-        }
-        CONTRACTL_END;
-
-        return (TADDR)InterlockedCompareExchange64(
-            (LONGLONG*)&m_pTarget, (TADDR)target, (TADDR)expected) == expected;
-    }
-
-#ifdef FEATURE_PREJIT
-    void Fixup(DataImage *image);
-#endif
-};
-typedef DPTR(StubPrecode) PTR_StubPrecode;
-
-
-struct NDirectImportPrecode {
-
-    static const int Type = 0x8B;
-
-    // adr x11, #16             ; Notice that x11 register is used to differentiate the stub from StubPrecode which uses x9
-    // ldp x10,x12,[x11]      ; =m_pTarget,m_pMethodDesc
-    // br x10
-    // 4 byte padding for 8 byte allignement
-    // dcd pTarget
-    // dcd pMethodDesc
-    DWORD    m_rgCode[4];
-    TADDR   m_pTarget;
-    TADDR   m_pMethodDesc;
-
-    void Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocator);
-
-    TADDR GetMethodDesc()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return m_pMethodDesc;
-    }
-
-    PCODE GetTarget()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return m_pTarget;
-    }
-
-    LPVOID GetEntrypoint()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return this;
-    }
-
-#ifdef FEATURE_PREJIT
-    void Fixup(DataImage *image);
-#endif
-};
-typedef DPTR(NDirectImportPrecode) PTR_NDirectImportPrecode;
-
-
-struct FixupPrecode {
-
-    static const int Type = 0x0C;
-
-    // adr x12, #0
-    // ldr x11, [pc, #12]     ; =m_pTarget
-    // br  x11
-    // dcb m_MethodDescChunkIndex
-    // dcb m_PrecodeChunkIndex
-    // 2 byte padding
-    // dcd m_pTarget
-
-
-    UINT32  m_rgCode[3];
-    BYTE    padding[2];
-    BYTE    m_MethodDescChunkIndex;
-    BYTE    m_PrecodeChunkIndex;
-    TADDR   m_pTarget;
-
-    void Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocator, int iMethodDescChunkIndex = 0, int iPrecodeChunkIndex = 0);
-    void InitCommon()
-    {
-        WRAPPER_NO_CONTRACT;
-        int n = 0;
-
-        m_rgCode[n++] = 0x1000000C;   // adr x12, #0
-        m_rgCode[n++] = 0x5800006B;   // ldr x11, [pc, #12]     ; =m_pTarget
-
-        _ASSERTE((UINT32*)&m_pTarget == &m_rgCode[n + 2]);
-
-        m_rgCode[n++] = 0xD61F0160;   // br  x11
-
-        _ASSERTE(n == _countof(m_rgCode));
-    }
-
-    TADDR GetBase()
-    {
-        LIMITED_METHOD_CONTRACT;
-        SUPPORTS_DAC;
-
-        return dac_cast<TADDR>(this) + (m_PrecodeChunkIndex + 1) * sizeof(FixupPrecode);
-    }
-
-    TADDR GetMethodDesc();
-
-    PCODE GetTarget()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return m_pTarget;
-    }
-
-    void ResetTargetInterlocked()
-    {
-        CONTRACTL
-        {
-            THROWS;
-            GC_NOTRIGGER;
-        }
-        CONTRACTL_END;
-
-        InterlockedExchange64((LONGLONG*)&m_pTarget, (TADDR)GetEEFuncEntryPoint(PrecodeFixupThunk));
-    }
-
-    BOOL SetTargetInterlocked(TADDR target, TADDR expected)
-    {
-        CONTRACTL
-        {
-            THROWS;
-            GC_NOTRIGGER;
-        }
-        CONTRACTL_END;
-
-        return (TADDR)InterlockedCompareExchange64(
-            (LONGLONG*)&m_pTarget, (TADDR)target, (TADDR)expected) == expected;
-    }
-
-    static BOOL IsFixupPrecodeByASM(PCODE addr)
-    {
-        PTR_DWORD pInstr = dac_cast<PTR_DWORD>(PCODEToPINSTR(addr));
-        return
-            (pInstr[0] == 0x1000000C) &&
-            (pInstr[1] == 0x5800006B) &&
-            (pInstr[2] == 0xD61F0160);
-    }
-
-#ifdef FEATURE_PREJIT
-    // Partial initialization. Used to save regrouped chunks.
-    void InitForSave(int iPrecodeChunkIndex);
-
-    void Fixup(DataImage *image, MethodDesc * pMD);
-#endif
-
-#ifdef DACCESS_COMPILE
-    void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
-#endif
-};
-typedef DPTR(FixupPrecode) PTR_FixupPrecode;
-
-
 // Precode to shuffle this and retbuf for closed delegates over static methods with return buffer
 struct ThisPtrRetBufPrecode {
 
@@ -777,6 +602,7 @@ struct ThisPtrRetBufPrecode {
         return m_pTarget;
     }
 
+#ifndef DACCESS_COMPILE
     BOOL SetTargetInterlocked(TADDR target, TADDR expected)
     {
         CONTRACTL
@@ -786,171 +612,12 @@ struct ThisPtrRetBufPrecode {
         }
         CONTRACTL_END;
 
+        ExecutableWriterHolder<ThisPtrRetBufPrecode> precodeWriterHolder(this, sizeof(ThisPtrRetBufPrecode));
         return (TADDR)InterlockedCompareExchange64(
-            (LONGLONG*)&m_pTarget, (TADDR)target, (TADDR)expected) == expected;
+            (LONGLONG*)&precodeWriterHolder.GetRW()->m_pTarget, (TADDR)target, (TADDR)expected) == expected;
     }
+#endif // !DACCESS_COMPILE
 };
 typedef DPTR(ThisPtrRetBufPrecode) PTR_ThisPtrRetBufPrecode;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Call counting
-
-#ifdef FEATURE_TIERED_COMPILATION
-
-#define DISABLE_COPY(T) \
-    T(const T &) = delete; \
-    T &operator =(const T &) = delete
-
-typedef UINT16 CallCount;
-typedef DPTR(CallCount) PTR_CallCount;
-
-////////////////////////////////////////////////////////////////
-// CallCountingStub
-
-class CallCountingStub;
-typedef DPTR(const CallCountingStub) PTR_CallCountingStub;
-
-class CallCountingStub
-{
-public:
-    static const SIZE_T Alignment = sizeof(void *);
-
-#ifndef DACCESS_COMPILE
-protected:
-    static const PCODE TargetForThresholdReached;
-
-    CallCountingStub() = default;
-
-public:
-    static const CallCountingStub *From(TADDR stubIdentifyingToken);
-
-    PCODE GetEntryPoint() const
-    {
-        WRAPPER_NO_CONTRACT;
-        return PINSTRToPCODE((TADDR)this);
-    }
-#endif // !DACCESS_COMPILE
-
-public:
-    PTR_CallCount GetRemainingCallCountCell() const;
-    PCODE GetTargetForMethod() const;
-
-    DISABLE_COPY(CallCountingStub);
-};
-
-////////////////////////////////////////////////////////////////
-// CallCountingStubShort
-
-class CallCountingStubShort;
-typedef DPTR(const CallCountingStubShort) PTR_CallCountingStubShort;
-
-#pragma pack(push, 1)
-class CallCountingStubShort : public CallCountingStub
-{
-private:
-    const UINT32 m_part0[10];
-    CallCount *const m_remainingCallCountCell;
-    const PCODE m_targetForMethod;
-    const PCODE m_targetForThresholdReached;
-
-#ifndef DACCESS_COMPILE
-public:
-    CallCountingStubShort(CallCount *remainingCallCountCell, PCODE targetForMethod)
-        : m_part0{  0x58000149,             //     ldr  x9, [pc, #(m_remainingCallCountCell)]
-                    0x7940012a,             //     ldrh w10, [x9]
-                    0x7100054a,             //     subs w10, w10, #1
-                    0x7900012a,             //     strh w10, [x9]
-                    0x54000060,             //     beq  L0
-                    0x580000e9,             //     ldr  x9, [pc, #(m_targetForMethod)]
-                    0xd61f0120,             //     br   x9
-                    0x10ffff2a,             // L0: adr  x10, #(this)
-                                            // (x10 == stub-identifying token == this)
-                    0x580000c9,             //     ldr  x9, [pc, #(m_targetForThresholdReached)]
-                    0xd61f0120},            //     br   x9
-        m_remainingCallCountCell(remainingCallCountCell),
-        m_targetForMethod(targetForMethod),
-        m_targetForThresholdReached(TargetForThresholdReached)
-    {
-        WRAPPER_NO_CONTRACT;
-        static_assert_no_msg(sizeof(CallCountingStubShort) % Alignment == 0);
-        _ASSERTE(remainingCallCountCell != nullptr);
-        _ASSERTE(PCODEToPINSTR(targetForMethod) != NULL);
-    }
-
-    static bool Is(TADDR stubIdentifyingToken)
-    {
-        WRAPPER_NO_CONTRACT;
-        return true;
-    }
-
-    static const CallCountingStubShort *From(TADDR stubIdentifyingToken)
-    {
-        WRAPPER_NO_CONTRACT;
-        _ASSERTE(Is(stubIdentifyingToken));
-
-        const CallCountingStubShort *stub = (const CallCountingStubShort *)stubIdentifyingToken;
-        _ASSERTE(IS_ALIGNED(stub, Alignment));
-        return stub;
-    }
-#endif // !DACCESS_COMPILE
-
-public:
-    static bool Is(PTR_CallCountingStub callCountingStub)
-    {
-        WRAPPER_NO_CONTRACT;
-        return true;
-    }
-
-    static PTR_CallCountingStubShort From(PTR_CallCountingStub callCountingStub)
-    {
-        WRAPPER_NO_CONTRACT;
-        _ASSERTE(Is(callCountingStub));
-
-        return dac_cast<PTR_CallCountingStubShort>(callCountingStub);
-    }
-
-    PCODE GetTargetForMethod() const
-    {
-        WRAPPER_NO_CONTRACT;
-        return m_targetForMethod;
-    }
-
-    friend CallCountingStub;
-    DISABLE_COPY(CallCountingStubShort);
-};
-#pragma pack(pop)
-
-////////////////////////////////////////////////////////////////
-// CallCountingStub definitions
-
-#ifndef DACCESS_COMPILE
-inline const CallCountingStub *CallCountingStub::From(TADDR stubIdentifyingToken)
-{
-    WRAPPER_NO_CONTRACT;
-    _ASSERTE(stubIdentifyingToken != NULL);
-
-    return CallCountingStubShort::From(stubIdentifyingToken);
-}
-#endif
-
-inline PTR_CallCount CallCountingStub::GetRemainingCallCountCell() const
-{
-    WRAPPER_NO_CONTRACT;
-    return PTR_CallCount(dac_cast<PTR_CallCountingStubShort>(this)->m_remainingCallCountCell);
-}
-
-inline PCODE CallCountingStub::GetTargetForMethod() const
-{
-    WRAPPER_NO_CONTRACT;
-    return CallCountingStubShort::From(PTR_CallCountingStub(this))->GetTargetForMethod();
-}
-
-////////////////////////////////////////////////////////////////
-
-#undef DISABLE_COPY
-
-#endif // FEATURE_TIERED_COMPILATION
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #endif // __cgencpu_h__

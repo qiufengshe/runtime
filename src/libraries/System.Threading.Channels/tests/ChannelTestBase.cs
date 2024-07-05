@@ -29,7 +29,7 @@ namespace System.Threading.Channels.Tests
             from b3 in new[] { false, true }
             select new object[] { b1, b2, b3 };
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsDebuggerTypeProxyAttributeSupported))]
         public void ValidateDebuggerAttributes()
         {
             Channel<int> c = CreateChannel();
@@ -131,7 +131,7 @@ namespace System.Threading.Channels.Tests
             var cts = new CancellationTokenSource();
             cts.Cancel();
             Assert.True(c.Writer.TryComplete(new OperationCanceledException(cts.Token)));
-            await AssertCanceled(c.Reader.Completion, cts.Token);
+            await AssertExtensions.CanceledAsync(cts.Token, c.Reader.Completion);
         }
 
         [Fact]
@@ -145,6 +145,7 @@ namespace System.Threading.Channels.Tests
         }
 
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/60472", TestPlatforms.iOS | TestPlatforms.tvOS)]
         public void SingleProducerConsumer_ConcurrentReadWrite_Success()
         {
             Channel<int> c = CreateChannel();
@@ -168,6 +169,7 @@ namespace System.Threading.Channels.Tests
         }
 
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/60472", TestPlatforms.iOS | TestPlatforms.tvOS)]
         public void SingleProducerConsumer_PingPong_Success()
         {
             Channel<int> c1 = CreateChannel();
@@ -326,7 +328,7 @@ namespace System.Threading.Channels.Tests
         }
 
         [Fact]
-        public async Task WaitToWriteAsync_ManyConcurrent_SatisifedByReaders()
+        public async Task WaitToWriteAsync_ManyConcurrent_SatisfiedByReaders()
         {
             if (RequiresSingleReader || RequiresSingleWriter)
             {
@@ -354,6 +356,7 @@ namespace System.Threading.Channels.Tests
         {
             Channel<int> c = CreateChannel();
             ValueTask write = c.Writer.WriteAsync(42);
+            Assert.True(write.IsCompletedSuccessfully);
             Assert.True(c.Reader.TryRead(out int result));
             Assert.Equal(42, result);
         }
@@ -363,7 +366,51 @@ namespace System.Threading.Channels.Tests
         {
             Channel<int> c = CreateChannel();
             c.Writer.Complete();
-            Assert.False(c.Reader.TryRead(out int result));
+            Assert.False(c.Reader.TryRead(out _));
+        }
+
+        [Fact]
+        public void TryPeek_SucceedsWhenDataAvailable()
+        {
+            Channel<int> c = CreateChannel();
+
+            Assert.True(c.Reader.CanPeek); // all built-in readers support peeking
+
+            for (int i = 0; i < 3; i++)
+            {
+                // Write a value
+                Assert.True(c.Writer.WriteAsync(42).IsCompletedSuccessfully);
+
+                // Can peek at the written value
+                Assert.True(c.Reader.TryPeek(out int peekedResult));
+                Assert.Equal(42, peekedResult);
+
+                // Can still read out that value
+                Assert.True(c.Reader.TryRead(out int readResult));
+                Assert.Equal(42, readResult);
+
+                // Peeking no longer finds it
+                Assert.False(c.Reader.TryPeek(out int noResult));
+                Assert.Equal(0, noResult);
+            }
+
+            // Write another value
+            Assert.True(c.Writer.WriteAsync(84).IsCompletedSuccessfully);
+
+            // Mark as completed
+            c.Writer.Complete();
+
+            // Can peek at the written value
+            Assert.True(c.Reader.TryPeek(out int lastPeekedResult));
+            Assert.Equal(84, lastPeekedResult);
+
+            // Can still read out that value
+            Assert.True(c.Reader.TryRead(out int lastReadResult));
+            Assert.Equal(84, lastReadResult);
+
+            // Peeking no longer finds it
+            Assert.False(c.Reader.TryPeek(out int lastNoResult));
+            Assert.Equal(0, lastNoResult);
         }
 
         [Fact]
@@ -403,7 +450,7 @@ namespace System.Threading.Channels.Tests
             catch (Exception e) { exc = e; }
 
             c.Writer.Complete(exc);
-            await AssertCanceled(c.Reader.Completion, cts.Token);
+            await AssertExtensions.CanceledAsync(cts.Token, c.Reader.Completion);
         }
 
         [Fact]
@@ -552,6 +599,7 @@ namespace System.Threading.Channels.Tests
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/60472", TestPlatforms.iOS | TestPlatforms.tvOS)]
         public async Task ReadAsync_ThenWriteAsync_Succeeds()
         {
             Channel<int> c = CreateChannel();
@@ -594,6 +642,7 @@ namespace System.Threading.Channels.Tests
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/60472", TestPlatforms.iOS | TestPlatforms.tvOS)]
         public async Task ReadAsync_Canceled_CanceledAsynchronously()
         {
             Channel<int> c = CreateChannel();
@@ -604,7 +653,7 @@ namespace System.Threading.Channels.Tests
 
             cts.Cancel();
 
-            await AssertCanceled(r.AsTask(), cts.Token);
+            await AssertExtensions.CanceledAsync(cts.Token, async () => await r);
 
             if (c.Writer.TryWrite(42))
             {
@@ -701,6 +750,7 @@ namespace System.Threading.Channels.Tests
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/60472", TestPlatforms.iOS | TestPlatforms.tvOS)]
         public async Task ReadAsync_Canceled_WriteAsyncCompletesNextReader()
         {
             Channel<int> c = CreateChannel();
@@ -710,7 +760,7 @@ namespace System.Threading.Channels.Tests
                 var cts = new CancellationTokenSource();
                 ValueTask<int> r = c.Reader.ReadAsync(cts.Token);
                 cts.Cancel();
-                await AssertCanceled(r.AsTask(), cts.Token);
+                await AssertExtensions.CanceledAsync(cts.Token, async () => await r);
             }
 
             for (int i = 0; i < 7; i++)
@@ -722,6 +772,7 @@ namespace System.Threading.Channels.Tests
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/60472", TestPlatforms.iOS | TestPlatforms.tvOS)]
         public async Task ReadAsync_ConsecutiveReadsSucceed()
         {
             Channel<int> c = CreateChannel();
@@ -731,6 +782,272 @@ namespace System.Threading.Channels.Tests
                 await c.Writer.WriteAsync(i);
                 Assert.Equal(i, await r);
             }
+        }
+
+        [Fact]
+        public void ReadAllAsync_NotIdempotent()
+        {
+            Channel<int> c = CreateChannel();
+            IAsyncEnumerable<int> e = c.Reader.ReadAllAsync();
+            Assert.NotNull(e);
+            Assert.NotSame(e, c.Reader.ReadAllAsync());
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ReadAllAsync_UseMoveNextAsyncAfterCompleted_ReturnsFalse(bool completeWhilePending)
+        {
+            Channel<int> c = CreateChannel();
+            IAsyncEnumerator<int> e = c.Reader.ReadAllAsync().GetAsyncEnumerator();
+
+            ValueTask<bool> vt;
+            if (completeWhilePending)
+            {
+                c.Writer.Complete();
+                vt = e.MoveNextAsync();
+                Assert.True(vt.IsCompletedSuccessfully);
+                Assert.False(vt.Result);
+            }
+            else
+            {
+                vt = e.MoveNextAsync();
+                Assert.False(vt.IsCompleted);
+                c.Writer.Complete();
+                Assert.False(await vt);
+            }
+
+            vt = e.MoveNextAsync();
+            Assert.True(vt.IsCompletedSuccessfully);
+            Assert.False(vt.Result);
+        }
+
+        [Fact]
+        public void ReadAllAsync_AvailableDataCompletesSynchronously()
+        {
+            Channel<int> c = CreateChannel();
+
+            IAsyncEnumerator<int> e = c.Reader.ReadAllAsync().GetAsyncEnumerator();
+            try
+            {
+                for (int i = 100; i < 110; i++)
+                {
+                    Assert.True(c.Writer.TryWrite(i));
+                    ValueTask<bool> vt = e.MoveNextAsync();
+                    Assert.True(vt.IsCompletedSuccessfully);
+                    Assert.True(vt.Result);
+                    Assert.Equal(i, e.Current);
+                }
+            }
+            finally
+            {
+                ValueTask vt = e.DisposeAsync();
+                Assert.True(vt.IsCompletedSuccessfully);
+                vt.GetAwaiter().GetResult();
+            }
+        }
+
+        [Fact]
+        public async Task ReadAllAsync_UnavailableDataCompletesAsynchronously()
+        {
+            Channel<int> c = CreateChannel();
+
+            IAsyncEnumerator<int> e = c.Reader.ReadAllAsync().GetAsyncEnumerator();
+            try
+            {
+                for (int i = 100; i < 110; i++)
+                {
+                    ValueTask<bool> vt = e.MoveNextAsync();
+                    Assert.False(vt.IsCompleted);
+                    Task producer = Task.Run(() => c.Writer.TryWrite(i));
+                    Assert.True(await vt);
+                    await producer;
+                    Assert.Equal(i, e.Current);
+                }
+            }
+            finally
+            {
+                ValueTask vt = e.DisposeAsync();
+                Assert.True(vt.IsCompletedSuccessfully);
+                vt.GetAwaiter().GetResult();
+            }
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(128)]
+        public async Task ReadAllAsync_ProducerConsumer_ConsumesAllData(int items)
+        {
+            Channel<int> c = CreateChannel();
+
+            int producedTotal = 0, consumedTotal = 0;
+            await Task.WhenAll(
+                Task.Run(async () =>
+                {
+                    for (int i = 0; i < items; i++)
+                    {
+                        await c.Writer.WriteAsync(i);
+                        producedTotal += i;
+                    }
+                    c.Writer.Complete();
+                }),
+                Task.Run(async () =>
+                {
+                    IAsyncEnumerator<int> e = c.Reader.ReadAllAsync().GetAsyncEnumerator();
+                    try
+                    {
+                        while (await e.MoveNextAsync())
+                        {
+                            consumedTotal += e.Current;
+                        }
+                    }
+                    finally
+                    {
+                        await e.DisposeAsync();
+                    }
+                }));
+
+            Assert.Equal(producedTotal, consumedTotal);
+        }
+
+        [Fact]
+        public async Task ReadAllAsync_MultipleEnumerationsToEnd()
+        {
+            Channel<int> c = CreateChannel();
+
+            Assert.True(c.Writer.TryWrite(42));
+            c.Writer.Complete();
+
+            IAsyncEnumerable<int> enumerable = c.Reader.ReadAllAsync();
+            IAsyncEnumerator<int> e = enumerable.GetAsyncEnumerator();
+
+            Assert.True(await e.MoveNextAsync());
+            Assert.Equal(42, e.Current);
+
+            Assert.False(await e.MoveNextAsync());
+            Assert.False(await e.MoveNextAsync());
+
+            await e.DisposeAsync();
+
+            e = enumerable.GetAsyncEnumerator();
+            Assert.Same(enumerable, e);
+
+            Assert.False(await e.MoveNextAsync());
+            Assert.False(await e.MoveNextAsync());
+        }
+
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(false, true)]
+        [InlineData(true, false)]
+        [InlineData(true, true)]
+        public void ReadAllAsync_MultipleSingleElementEnumerations_AllItemsEnumerated(bool sameEnumerable, bool dispose)
+        {
+            Channel<int> c = CreateChannel();
+            IAsyncEnumerable<int> enumerable = c.Reader.ReadAllAsync();
+
+            for (int i = 0; i < 10; i++)
+            {
+                Assert.True(c.Writer.TryWrite(i));
+                IAsyncEnumerator<int> e = (sameEnumerable ? enumerable : c.Reader.ReadAllAsync()).GetAsyncEnumerator();
+                ValueTask<bool> vt = e.MoveNextAsync();
+                Assert.True(vt.IsCompletedSuccessfully);
+                Assert.True(vt.Result);
+                Assert.Equal(i, e.Current);
+                if (dispose)
+                {
+                    ValueTask dvt = e.DisposeAsync();
+                    Assert.True(dvt.IsCompletedSuccessfully);
+                    dvt.GetAwaiter().GetResult();
+                }
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ReadAllAsync_DualConcurrentEnumeration_AllItemsEnumerated(bool sameEnumerable)
+        {
+            if (RequiresSingleReader)
+            {
+                return;
+            }
+
+            Channel<int> c = CreateChannel();
+
+            IAsyncEnumerable<int> enumerable = c.Reader.ReadAllAsync();
+
+            IAsyncEnumerator<int> e1 = enumerable.GetAsyncEnumerator();
+            IAsyncEnumerator<int> e2 = (sameEnumerable ? enumerable : c.Reader.ReadAllAsync()).GetAsyncEnumerator();
+            Assert.NotSame(e1, e2);
+
+            ValueTask<bool> vt1, vt2;
+            int producerTotal = 0, consumerTotal = 0;
+            for (int i = 0; i < 10; i++)
+            {
+                vt1 = e1.MoveNextAsync();
+                vt2 = e2.MoveNextAsync();
+
+                await c.Writer.WriteAsync(i);
+                producerTotal += i;
+                await c.Writer.WriteAsync(i * 2);
+                producerTotal += i * 2;
+
+                Assert.True(await vt1);
+                Assert.True(await vt2);
+                consumerTotal += e1.Current;
+                consumerTotal += e2.Current;
+            }
+
+            vt1 = e1.MoveNextAsync();
+            vt2 = e2.MoveNextAsync();
+            c.Writer.Complete();
+            Assert.False(await vt1);
+            Assert.False(await vt2);
+
+            Assert.Equal(producerTotal, consumerTotal);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ReadAllAsync_CanceledBeforeMoveNextAsync_Throws(bool dataAvailable)
+        {
+            Channel<int> c = CreateChannel();
+            if (dataAvailable)
+            {
+                Assert.True(c.Writer.TryWrite(42));
+            }
+
+            var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            IAsyncEnumerator<int> e = c.Reader.ReadAllAsync(cts.Token).GetAsyncEnumerator();
+            ValueTask<bool> vt = e.MoveNextAsync();
+            Assert.True(vt.IsCompleted);
+            Assert.False(vt.IsCompletedSuccessfully);
+            OperationCanceledException oce = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await vt);
+            Assert.Equal(cts.Token, oce.CancellationToken);
+        }
+
+        [Fact]
+        public async Task ReadAllAsync_CanceledAfterMoveNextAsync_Throws()
+        {
+            Channel<int> c = CreateChannel();
+            var cts = new CancellationTokenSource();
+
+            IAsyncEnumerator<int> e = c.Reader.ReadAllAsync(cts.Token).GetAsyncEnumerator();
+            ValueTask<bool> vt = e.MoveNextAsync();
+            Assert.False(vt.IsCompleted);
+
+            cts.Cancel();
+            OperationCanceledException oce = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await vt);
+            Assert.Equal(cts.Token, oce.CancellationToken);
+
+            vt = e.MoveNextAsync();
+            Assert.True(vt.IsCompletedSuccessfully);
+            Assert.False(vt.Result);
         }
 
         [Fact]
@@ -832,6 +1149,7 @@ namespace System.Threading.Channels.Tests
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/60472", TestPlatforms.iOS | TestPlatforms.tvOS)]
         public async Task WaitToReadAsync_AwaitThenGetResult_Throws()
         {
             Channel<int> c = CreateChannel();
@@ -845,6 +1163,7 @@ namespace System.Threading.Channels.Tests
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/60472", TestPlatforms.iOS | TestPlatforms.tvOS)]
         public async Task ReadAsync_AwaitThenGetResult_Throws()
         {
             Channel<int> c = CreateChannel();
@@ -1171,9 +1490,10 @@ namespace System.Threading.Channels.Tests
                 Assert.True(vt.IsCompletedSuccessfully);
 
                 Assert.Equal(continueOnCapturedContext != false, schedulerWasFlowed);
-                if (completeBeforeOnCompleted) // OnCompleted will simply queue using a mechanism that happens to flow
+                if (completeBeforeOnCompleted)
                 {
-                    Assert.True(executionContextWasFlowed);
+                    // OnCompleted may or may not flow ExecutionContext here; it's not needed,
+                    // and we avoid it when it's easy, but it's also not wrong to do so.
                 }
                 else
                 {

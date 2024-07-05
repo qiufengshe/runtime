@@ -121,16 +121,8 @@ ClrDataTask::GetCurrentAppDomain(
 
     EX_TRY
     {
-        if (m_thread->GetDomain())
-        {
-            *appDomain = new (nothrow)
-                ClrDataAppDomain(m_dac, m_thread->GetDomain());
-            status = *appDomain ? S_OK : E_OUTOFMEMORY;
-        }
-        else
-        {
-            status = E_INVALIDARG;
-        }
+        *appDomain = new (nothrow) ClrDataAppDomain(m_dac, AppDomain::GetCurrentDomain());
+        status = *appDomain ? S_OK : E_OUTOFMEMORY;
     }
     EX_CATCH
     {
@@ -149,7 +141,7 @@ HRESULT STDMETHODCALLTYPE
 ClrDataTask::GetName(
     /* [in] */ ULONG32 bufLen,
     /* [out] */ ULONG32 *nameLen,
-    /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ])
+    /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ])
 {
     HRESULT status;
 
@@ -549,7 +541,7 @@ ClrDataTask::GetLastExceptionState(
         {
             *exception = new (nothrow)
                 ClrDataExceptionState(m_dac,
-                                      m_thread->GetDomain(),
+                                      AppDomain::GetCurrentDomain(),
                                       m_thread,
                                       CLRDATA_EXCEPTION_PARTIAL,
                                       NULL,
@@ -713,7 +705,7 @@ HRESULT STDMETHODCALLTYPE
 ClrDataAppDomain::GetName(
     /* [in] */ ULONG32 bufLen,
     /* [out] */ ULONG32 *nameLen,
-    /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ])
+    /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ])
 {
     HRESULT status = S_OK;
 
@@ -736,7 +728,7 @@ ClrDataAppDomain::GetName(
                     S_OK : S_FALSE;
                 if (nameLen)
                 {
-                    size_t cchName = wcslen((PCWSTR)rawName) + 1;
+                    size_t cchName = u16_strlen((PCWSTR)rawName) + 1;
                     if (FitsIn<ULONG32>(cchName))
                     {
                         *nameLen = (ULONG32) cchName;
@@ -948,6 +940,11 @@ ClrDataAssembly::Release(THIS)
     return newRefs;
 }
 
+struct TrivialModuleIterator
+{
+    Module* m_module;
+};
+
 HRESULT STDMETHODCALLTYPE
 ClrDataAssembly::StartEnumModules(
     /* [out] */ CLRDATA_ENUM* handle)
@@ -958,11 +955,10 @@ ClrDataAssembly::StartEnumModules(
 
     EX_TRY
     {
-        Assembly::ModuleIterator* iter = new (nothrow)
-            Assembly::ModuleIterator;
+        TrivialModuleIterator* iter = new (nothrow) TrivialModuleIterator;
         if (iter)
         {
-            *iter = m_assembly->IterateModules();
+            iter->m_module = m_assembly->GetModule();
             *handle = TO_CDENUM(iter);
             status = S_OK;
         }
@@ -995,12 +991,13 @@ ClrDataAssembly::EnumModule(
 
     EX_TRY
     {
-        Assembly::ModuleIterator* iter =
-            FROM_CDENUM(Assembly::ModuleIterator, *handle);
-        if (iter->Next())
+        TrivialModuleIterator* iter = FROM_CDENUM(TrivialModuleIterator, *handle);
+        if (iter->m_module)
         {
             *mod = new (nothrow)
-                ClrDataModule(m_dac, iter->GetModule());
+                ClrDataModule(m_dac, iter->m_module);
+
+            iter->m_module = NULL;
             status = *mod ? S_OK : E_OUTOFMEMORY;
         }
         else
@@ -1031,8 +1028,7 @@ ClrDataAssembly::EndEnumModules(
 
     EX_TRY
     {
-        Assembly::ModuleIterator* iter =
-            FROM_CDENUM(Assembly::ModuleIterator, handle);
+        TrivialModuleIterator* iter = FROM_CDENUM(TrivialModuleIterator, handle);
         delete iter;
         status = S_OK;
     }
@@ -1132,7 +1128,7 @@ HRESULT STDMETHODCALLTYPE
 ClrDataAssembly::GetName(
     /* [in] */ ULONG32 bufLen,
     /* [out] */ ULONG32 *nameLen,
-    /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ])
+    /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ])
 {
     HRESULT status;
 
@@ -1160,7 +1156,7 @@ HRESULT STDMETHODCALLTYPE
 ClrDataAssembly::GetFileName(
     /* [in] */ ULONG32 bufLen,
     /* [out] */ ULONG32 *nameLen,
-    /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ])
+    /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ])
 {
     HRESULT status;
 
@@ -1170,7 +1166,7 @@ ClrDataAssembly::GetFileName(
     {
         COUNT_T _nameLen;
 
-        if (m_assembly->GetManifestFile()->GetPath().
+        if (m_assembly->GetPEAssembly()->GetPath().
             DacGetUnicode(bufLen, name, &_nameLen))
         {
             if (nameLen)
@@ -1201,7 +1197,7 @@ HRESULT STDMETHODCALLTYPE
 ClrDataAssembly::GetDisplayName(
     /* [in] */ ULONG32 bufLen,
     /* [out] */ ULONG32 *nameLen,
-    /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ])
+    /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ])
 {
     HRESULT status;
 
@@ -2376,7 +2372,7 @@ HRESULT STDMETHODCALLTYPE
 ClrDataModule::GetName(
     /* [in] */ ULONG32 bufLen,
     /* [out] */ ULONG32 *nameLen,
-    /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ])
+    /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ])
 {
     HRESULT status;
 
@@ -2404,7 +2400,7 @@ HRESULT STDMETHODCALLTYPE
 ClrDataModule::GetFileName(
     /* [in] */ ULONG32 bufLen,
     /* [out] */ ULONG32 *nameLen,
-    /* [size_is][out] */ __out_ecount_part(bufLen, *nameLen) WCHAR name[  ])
+    /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ])
 {
     HRESULT status;
 
@@ -2414,12 +2410,12 @@ ClrDataModule::GetFileName(
     {
         COUNT_T _nameLen;
 
-        // Try to get the file name through GetPath.
-        // If the returned name is empty, then try to get the guessed module file name.
-        // The guessed file name is propogated from metadata's module name.
+        // Try to get the assembly name through GetPath.
+        // If the returned name is empty, then try to get the guessed module assembly name.
+        // The guessed assembly name is propagated from metadata's module name.
         //
-        if ((m_module->GetFile()->GetPath().DacGetUnicode(bufLen, name, &_nameLen) && name[0])||
-            (m_module->GetFile()->GetModuleFileNameHint().DacGetUnicode(bufLen, name, &_nameLen) && name[0]))
+        if ((m_module->GetPEAssembly()->GetPath().DacGetUnicode(bufLen, name, &_nameLen) && name[0])||
+            (m_module->GetPEAssembly()->GetModuleFileNameHint().DacGetUnicode(bufLen, name, &_nameLen) && name[0]))
         {
             if (nameLen)
             {
@@ -2455,19 +2451,11 @@ ClrDataModule::GetVersionId(
 
     EX_TRY
     {
-        if (!m_module->GetFile()->HasMetadata())
+        GUID mdVid;
+        status = m_module->GetMDImport()->GetScopeProps(NULL, &mdVid);
+        if (SUCCEEDED(status))
         {
-            status = E_NOINTERFACE;
-        }
-        else
-        {
-            GUID mdVid;
-
-            status = m_module->GetMDImport()->GetScopeProps(NULL, &mdVid);
-            if (SUCCEEDED(status))
-            {
-                *vid = mdVid;
-            }
+            *vid = mdVid;
         }
     }
     EX_CATCH
@@ -2495,15 +2483,16 @@ ClrDataModule::GetFlags(
     {
         *flags = 0;
 
-        if (m_module->IsReflection())
+        if (m_module->IsReflectionEmit())
         {
             (*flags) |= CLRDATA_MODULE_IS_DYNAMIC;
         }
-        if (m_module->IsIStream())
-        {
-            (*flags) |= CLRDATA_MODULE_IS_MEMORY_STREAM;
-        }
 
+        PTR_Assembly pAssembly = m_module->GetAssembly();
+        if (pAssembly == AppDomain::GetCurrentDomain()->GetRootAssembly())
+        {
+            (*flags) |= CLRDATA_MODULE_IS_MAIN_MODULE;
+        }
         status = S_OK;
     }
     EX_CATCH
@@ -2559,8 +2548,8 @@ ClrDataModule::StartEnumExtents(
     {
         if (!m_setExtents)
         {
-            PEFile* file = m_module->GetFile();
-            if (!file)
+            PEAssembly* assembly = m_module->GetPEAssembly();
+            if (!assembly)
             {
                 *handle = 0;
                 status = E_INVALIDARG;
@@ -2569,18 +2558,11 @@ ClrDataModule::StartEnumExtents(
 
             CLRDATA_MODULE_EXTENT* extent = m_extents;
 
-            if (file->GetLoadedImageContents() != NULL)
+            if (assembly->GetLoadedImageContents() != NULL)
             {
                 extent->base =
-                    TO_CDADDR( PTR_TO_TADDR(file->GetLoadedImageContents(&extent->length)) );
+                    TO_CDADDR( PTR_TO_TADDR(assembly->GetLoadedImageContents(&extent->length)) );
                 extent->type = CLRDATA_MODULE_PE_FILE;
-                extent++;
-            }
-            if (file->HasNativeImage())
-            {
-                extent->base = TO_CDADDR(PTR_TO_TADDR(file->GetLoadedNative()->GetBase()));
-                extent->length = file->GetLoadedNative()->GetVirtualSize();
-                extent->type = CLRDATA_MODULE_PREJIT_FILE;
                 extent++;
             }
 
@@ -2721,23 +2703,23 @@ ClrDataModule::RequestGetModuleData(
     ZeroMemory(outGMD, sizeof(DacpGetModuleData));
 
     Module* pModule = GetModule();
-    PEFile *pPEFile = pModule->GetFile();
+    PEAssembly *pPEAssembly = pModule->GetPEAssembly();
 
-    outGMD->PEFile = TO_CDADDR(PTR_HOST_TO_TADDR(pPEFile));
-    outGMD->IsDynamic = pModule->IsReflection();
+    outGMD->PEAssembly = TO_CDADDR(PTR_HOST_TO_TADDR(pModule));
+    outGMD->IsDynamic = pModule->IsReflectionEmit();
 
-    if (pPEFile != NULL)
+    if (pPEAssembly != NULL)
     {
-        outGMD->IsInMemory = pPEFile->GetPath().IsEmpty();
+        outGMD->IsInMemory = pPEAssembly->GetPath().IsEmpty();
 
         COUNT_T peSize;
-        outGMD->LoadedPEAddress = TO_CDADDR(PTR_TO_TADDR(pPEFile->GetLoadedImageContents(&peSize)));
+        outGMD->LoadedPEAddress = TO_CDADDR(PTR_TO_TADDR(pPEAssembly->GetLoadedImageContents(&peSize)));
         outGMD->LoadedPESize = (ULONG64)peSize;
 
-        // Can not get the file layout for a dynamic module
+        // Can not get the assembly layout for a dynamic module
         if (!outGMD->IsDynamic)
         {
-            outGMD->IsFileLayout = pPEFile->GetLoaded()->IsFlat();
+            outGMD->IsFileLayout = pPEAssembly->GetLoadedLayout()->IsFlat();
         }
     }
 
@@ -2826,12 +2808,6 @@ ClrDataModule::SetJITCompilerFlags(
         {
             hr = E_INVALIDARG;
         }
-#ifdef FEATURE_PREJIT
-        else if (m_module->HasNativeImage())
-        {
-            hr = CORDBG_E_CANT_CHANGE_JIT_SETTING_FOR_ZAP_MODULE;
-        }
-#endif
         else
         {
             _ASSERTE(m_module != NULL);
@@ -2880,17 +2856,10 @@ ClrDataModule::GetMdInterface(PVOID* retIface)
     {
         if (m_mdImport == NULL)
         {
-            if (!m_module->GetFile()->HasMetadata())
-            {
-                status = E_NOINTERFACE;
-                goto Exit;
-            }
-
             //
             // Make sure internal MD is in RW format.
             //
             IMDInternalImport* rwMd;
-
             status = ConvertMDInternalImport(m_module->GetMDImport(), &rwMd);
             if (FAILED(status))
             {
@@ -3137,7 +3106,7 @@ ClrDataMethodDefinition::GetName(
     /* [in] */ ULONG32 flags,
     /* [in] */ ULONG32 bufLen,
     /* [out] */ ULONG32 *nameLen,
-    /* [size_is][out] */ __out_ecount_part_opt(bufLen, *nameLen) WCHAR name[  ])
+    /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ])
 {
     HRESULT status;
 
@@ -3161,7 +3130,7 @@ ClrDataMethodDefinition::GetName(
 
             status = GetFullMethodNameFromMetadata(m_module->GetMDImport(),
                                                    m_token,
-                                                   NumItems(methName),
+                                                   ARRAY_SIZE(methName),
                                                    methName);
             if (status == S_OK)
             {
@@ -3477,7 +3446,7 @@ ClrDataMethodDefinition::SetCodeNotification(
                 }
                 else
                 {
-                    if (jn.SetNotification(modulePtr, m_token, flags) &&
+                    if (jn.SetNotification(modulePtr, m_token, (USHORT)flags) &&
                         jn.UpdateOutOfProcTable())
                     {
                         // new notification added
@@ -3880,7 +3849,7 @@ ClrDataMethodInstance::GetName(
     /* [in] */ ULONG32 flags,
     /* [in] */ ULONG32 bufLen,
     /* [out] */ ULONG32 *nameLen,
-    /* [size_is][out] */ __out_ecount_part(bufLen, *nameLen) WCHAR name[  ])
+    /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *nameLen) WCHAR name[  ])
 {
     HRESULT status;
 
@@ -3907,7 +3876,7 @@ ClrDataMethodInstance::GetName(
             wcscpy_s(name, bufLen, nameUnk);
             if (nameLen != NULL)
             {
-                *nameLen = _countof(nameUnk);
+                *nameLen = ARRAY_SIZE(nameUnk);
             }
             status = S_OK;
         }
@@ -4757,7 +4726,7 @@ HRESULT STDMETHODCALLTYPE
 ClrDataExceptionState::GetString(
     /* [in] */ ULONG32 bufLen,
     /* [out] */ ULONG32 *strLen,
-    /* [size_is][out] */ __out_ecount_part(bufLen, *strLen) WCHAR str[  ])
+    /* [size_is][out] */ _Out_writes_to_opt_(bufLen, *strLen) WCHAR str[  ])
 {
     HRESULT status = E_FAIL;
 
@@ -4789,7 +4758,7 @@ ClrDataExceptionState::GetString(
             status = StringCchCopy(str, bufLen, msgStr) == S_OK ? S_OK : S_FALSE;
             if (strLen != NULL)
             {
-                size_t cchName = wcslen(msgStr) + 1;
+                size_t cchName = u16_strlen(msgStr) + 1;
                 if (FitsIn<ULONG32>(cchName))
                 {
                     *strLen = (ULONG32) cchName;
@@ -4985,7 +4954,7 @@ ClrDataExceptionState::NewFromThread(ClrDataAccess* dac,
 
     exIf = new (nothrow)
         ClrDataExceptionState(dac,
-                              thread->GetDomain(),
+                              AppDomain::GetCurrentDomain(),
                               thread,
                               CLRDATA_EXCEPTION_DEFAULT,
                               exState,
@@ -5145,7 +5114,7 @@ EnumMethodDefinitions::CdStart(Module* mod,
 {
     HRESULT status;
 
-    *handle = NULL;
+    *handle = 0;
 
     if (!mod)
     {
@@ -5206,49 +5175,31 @@ EnumMethodDefinitions::CdEnd(CLRDATA_ENUM handle)
 
 EnumMethodInstances::EnumMethodInstances(MethodDesc* methodDesc,
                                          IXCLRDataAppDomain* givenAppDomain)
-    : m_domainIter(FALSE)
 {
     m_methodDesc = methodDesc;
     if (givenAppDomain)
     {
-        m_givenAppDomain =
+        m_appDomain =
             ((ClrDataAppDomain*)givenAppDomain)->GetAppDomain();
     }
     else
     {
-        m_givenAppDomain = NULL;
+        m_appDomain = AppDomain::GetCurrentDomain();
     }
-    m_givenAppDomainUsed = false;
-    m_appDomain = NULL;
+    m_appDomainUsed = false;
 }
 
 HRESULT
 EnumMethodInstances::Next(ClrDataAccess* dac,
                           IXCLRDataMethodInstance **instance)
 {
- NextDomain:
-    if (!m_appDomain)
+    if (!m_appDomainUsed)
     {
-        if (m_givenAppDomainUsed ||
-            !m_domainIter.Next())
-        {
-            return S_FALSE;
-        }
-
-        if (m_givenAppDomain)
-        {
-            m_appDomain = m_givenAppDomain;
-            m_givenAppDomainUsed = true;
-        }
-        else
-        {
-            m_appDomain = m_domainIter.GetDomain();
-        }
-
+        m_appDomainUsed = true;
         m_methodIter.Start(m_appDomain,
                            m_methodDesc->GetModule(),       // module
                            m_methodDesc->GetMemberDef(),    // token
-                           m_methodDesc);                   // intial method desc
+                           m_methodDesc);                   // initial method desc
     }
 
  NextMethod:
@@ -5257,12 +5208,11 @@ EnumMethodInstances::Next(ClrDataAccess* dac,
         CollectibleAssemblyHolder<DomainAssembly *> pDomainAssembly;
         if (!m_methodIter.Next(pDomainAssembly.This()))
         {
-            m_appDomain = NULL;
-            goto NextDomain;
+            return S_FALSE;
         }
     }
 
-    if (!m_methodIter.Current()->HasNativeCode())
+    if (!m_methodIter.Current()->HasNativeCodeAnyVersion())
     {
         goto NextMethod;
     }
@@ -5280,7 +5230,7 @@ EnumMethodInstances::CdStart(MethodDesc* methodDesc,
                              CLRDATA_ENUM* handle)
 {
     if (!methodDesc->HasClassOrMethodInstantiation() &&
-        !methodDesc->HasNativeCode())
+        !(methodDesc->HasNativeCodeAnyVersion()))
     {
         *handle = 0;
         return S_FALSE;

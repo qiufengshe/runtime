@@ -1,15 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-/*============================================================
-**
-**
-**
-** Purpose: Capture execution  context for a thread
-**
-**
-===========================================================*/
-
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
@@ -22,10 +14,13 @@ namespace System.Threading
 
     internal delegate void ContextCallback<TState>(ref TState state);
 
+    /// <summary>
+    /// Manages the execution context for the current thread.
+    /// </summary>
     public sealed class ExecutionContext : IDisposable, ISerializable
     {
         internal static readonly ExecutionContext Default = new ExecutionContext();
-        private static volatile ExecutionContext? s_defaultFlowSuppressed;
+        private static ExecutionContext? s_defaultFlowSuppressed;
 
         private readonly IAsyncLocalValueMap? m_localValues;
         private readonly IAsyncLocal[]? m_localChangeNotifications;
@@ -47,6 +42,8 @@ namespace System.Threading
             m_isFlowSuppressed = isFlowSuppressed;
         }
 
+        [Obsolete(Obsoletions.LegacyFormatterImplMessage, DiagnosticId = Obsoletions.LegacyFormatterImplDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public void GetObjectData(SerializationInfo info, StreamingContext context)
         {
             throw new PlatformNotSupportedException();
@@ -102,15 +99,14 @@ namespace System.Threading
         {
             Thread currentThread = Thread.CurrentThread;
             ExecutionContext? executionContext = currentThread._executionContext ?? Default;
-            if (executionContext.m_isFlowSuppressed)
+
+            AsyncFlowControl asyncFlowControl = default;
+            if (!executionContext.m_isFlowSuppressed)
             {
-                throw new InvalidOperationException(SR.InvalidOperation_CannotSupressFlowMultipleTimes);
+                currentThread._executionContext = executionContext.ShallowClone(isFlowSuppressed: true);
+                asyncFlowControl.Initialize(currentThread);
             }
 
-            executionContext = executionContext.ShallowClone(isFlowSuppressed: true);
-            AsyncFlowControl asyncFlowControl = default;
-            currentThread._executionContext = executionContext;
-            asyncFlowControl.Initialize(currentThread);
             return asyncFlowControl;
         }
 
@@ -120,7 +116,7 @@ namespace System.Threading
             ExecutionContext? executionContext = currentThread._executionContext;
             if (executionContext == null || !executionContext.m_isFlowSuppressed)
             {
-                throw new InvalidOperationException(SR.InvalidOperation_CannotRestoreUnsupressedFlow);
+                throw new InvalidOperationException(SR.InvalidOperation_CannotRestoreUnsuppressedFlow);
             }
 
             currentThread._executionContext = executionContext.ShallowClone(isFlowSuppressed: false);
@@ -151,25 +147,20 @@ namespace System.Threading
         {
             // Note: ExecutionContext.RunInternal is an extremely hot function and used by every await, ThreadPool execution, etc.
             // Note: Manual enregistering may be addressed by "Exception Handling Write Through Optimization"
-            //       https://github.com/dotnet/runtime/blob/master/docs/design/features/eh-writethru.md
+            //       https://github.com/dotnet/runtime/blob/main/docs/design/features/eh-writethru.md
 
-            // Enregister variables with 0 post-fix so they can be used in registers without EH forcing them to stack
-            // Capture references to Thread Contexts
-            Thread currentThread0 = Thread.CurrentThread;
-            Thread currentThread = currentThread0;
-            ExecutionContext? previousExecutionCtx0 = currentThread0._executionContext;
+            // Enregister previousExecutionCtx0 so they can be used in registers without EH forcing them to stack
+
+            Thread currentThread = Thread.CurrentThread;
+            ExecutionContext? previousExecutionCtx0 = currentThread._executionContext;
             if (previousExecutionCtx0 != null && previousExecutionCtx0.m_isDefault)
             {
                 // Default is a null ExecutionContext internally
                 previousExecutionCtx0 = null;
             }
 
-            // Store current ExecutionContext and SynchronizationContext as "previousXxx".
-            // This allows us to restore them and undo any Context changes made in callback.Invoke
-            // so that they won't "leak" back into caller.
-            // These variables will cross EH so be forced to stack
             ExecutionContext? previousExecutionCtx = previousExecutionCtx0;
-            SynchronizationContext? previousSyncCtx = currentThread0._synchronizationContext;
+            SynchronizationContext? previousSyncCtx = currentThread._synchronizationContext;
 
             if (executionContext != null && executionContext.m_isDefault)
             {
@@ -177,9 +168,9 @@ namespace System.Threading
                 executionContext = null;
             }
 
-            if (previousExecutionCtx0 != executionContext)
+            if (previousExecutionCtx != executionContext)
             {
-                RestoreChangedContextToThread(currentThread0, executionContext, previousExecutionCtx0);
+                RestoreChangedContextToThread(currentThread, executionContext, previousExecutionCtx);
             }
 
             ExceptionDispatchInfo? edi = null;
@@ -195,21 +186,17 @@ namespace System.Threading
                 edi = ExceptionDispatchInfo.Capture(ex);
             }
 
-            // Re-enregistrer variables post EH with 1 post-fix so they can be used in registers rather than from stack
-            SynchronizationContext? previousSyncCtx1 = previousSyncCtx;
-            Thread currentThread1 = currentThread;
             // The common case is that these have not changed, so avoid the cost of a write barrier if not needed.
-            if (currentThread1._synchronizationContext != previousSyncCtx1)
+            if (currentThread._synchronizationContext != previousSyncCtx)
             {
                 // Restore changed SynchronizationContext back to previous
-                currentThread1._synchronizationContext = previousSyncCtx1;
+                currentThread._synchronizationContext = previousSyncCtx;
             }
 
-            ExecutionContext? previousExecutionCtx1 = previousExecutionCtx;
-            ExecutionContext? currentExecutionCtx1 = currentThread1._executionContext;
-            if (currentExecutionCtx1 != previousExecutionCtx1)
+            ExecutionContext? currentExecutionCtx = currentThread._executionContext;
+            if (currentExecutionCtx != previousExecutionCtx)
             {
-                RestoreChangedContextToThread(currentThread1, previousExecutionCtx1, currentExecutionCtx1);
+                RestoreChangedContextToThread(currentThread, previousExecutionCtx, currentExecutionCtx);
             }
 
             // If exception was thrown by callback, rethrow it now original contexts are restored
@@ -221,7 +208,7 @@ namespace System.Threading
         /// </summary>
         /// <remarks>
         /// To revert to the current execution context; capture it before Restore, and Restore it again.
-        /// It will not automatically be reverted unlike <seealso cref="ExecutionContext.Run"/>.
+        /// It will not automatically be reverted unlike <see cref="Run"/>.
         /// </remarks>
         /// <param name="executionContext">The ExecutionContext to set.</param>
         /// <exception cref="InvalidOperationException"><paramref name="executionContext"/> is null.</exception>
@@ -357,7 +344,7 @@ namespace System.Threading
             }
         }
 
-        [System.Diagnostics.Conditional("DEBUG")]
+        [Conditional("DEBUG")]
         internal static void CheckThreadPoolAndContextsAreDefault()
         {
             Debug.Assert(!Thread.IsThreadStartSupported || Thread.CurrentThread.IsThreadPoolThread); // there are no dedicated threadpool threads on runtimes where we can't start threads
@@ -572,10 +559,11 @@ namespace System.Threading
 
         public void Undo()
         {
-            if (_thread == null)
+            if (_thread is null)
             {
-                throw new InvalidOperationException(SR.InvalidOperation_CannotUseAFCMultiple);
+                return;
             }
+
             if (Thread.CurrentThread != _thread)
             {
                 throw new InvalidOperationException(SR.InvalidOperation_CannotUseAFCOtherThread);
@@ -605,7 +593,7 @@ namespace System.Threading
             Undo();
         }
 
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             return obj is AsyncFlowControl asyncControl && Equals(asyncControl);
         }

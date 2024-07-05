@@ -69,7 +69,7 @@ HRESULT TranslateSigHelper(                 // S_OK or error.
                 pbSigBlob,          // signature from the imported scope
                 NULL,               // Internal OID mapping structure.
                 pqkSigEmit,         // [OUT] translated signature
-                NULL,               // start from first byte of the signature
+                0,               // start from first byte of the signature
                 NULL,               // don't care how many bytes consumed
                 pcbSig);           // [OUT] total number of bytes write to pqkSigEmit
 
@@ -466,7 +466,7 @@ ULONG MDInternalRW::Release()
     cRef = InterlockedDecrement(&m_cRefs);
     if (cRef == 0)
     {
-        LOG((LOGMD, "MDInternalRW(0x%08x)::destruction\n", this));
+        LOG((LOGMD, "MDInternalRW(0x%p)::destruction\n", this));
         delete this;
     }
     return cRef;
@@ -695,7 +695,7 @@ ULONG MDInternalRW::GetCountWithTokenKind(     // return hresult
         ulCount = m_pStgdb->m_MiniMd.getCountEvents();
         break;
     case mdtProperty:
-        ulCount = m_pStgdb->m_MiniMd.getCountPropertys();
+        ulCount = m_pStgdb->m_MiniMd.getCountProperties();
         break;
     case mdtModuleRef:
         ulCount = m_pStgdb->m_MiniMd.getCountModuleRefs();
@@ -720,7 +720,7 @@ ULONG MDInternalRW::GetCountWithTokenKind(     // return hresult
         break;
     default:
 #ifdef _DEBUG
-        if(REGUTIL::GetConfigDWORD_DontUse_(CLRConfig::INTERNAL_AssertOnBadImageFormat, 1))
+        if(CLRConfig::GetConfigValue(CLRConfig::INTERNAL_AssertOnBadImageFormat, 1))
             _ASSERTE(!"Invalid Blob Offset");
 #endif
         ulCount = 0;
@@ -957,8 +957,8 @@ HRESULT MDInternalRW::EnumInit(     // return S_FALSE if record not found
     HENUMInternal *phEnum)              // [OUT] the enumerator to fill
 {
     HRESULT     hr = S_OK;
-    ULONG       ulStart, ulEnd, ulMax;
-    ULONG       index;
+    uint32_t    ulStart, ulEnd, ulMax;
+    uint32_t    index;
     LOCKREAD();
 
     // Vars for query.
@@ -1144,7 +1144,7 @@ HRESULT MDInternalRW::EnumInit(     // return S_FALSE if record not found
             IfFailGo(m_pStgdb->m_MiniMd.GetPropertyMapRecord(ridPropertyMap, &pPropertyMapRec));
             ulStart = m_pStgdb->m_MiniMd.getPropertyListOfPropertyMap(pPropertyMapRec);
             IfFailGo(m_pStgdb->m_MiniMd.getEndPropertyListOfPropertyMap(ridPropertyMap, &ulEnd));
-            ulMax = m_pStgdb->m_MiniMd.getCountPropertys() + 1;
+            ulMax = m_pStgdb->m_MiniMd.getCountProperties() + 1;
             if(ulStart == 0) ulStart = 1;
             if(ulEnd > ulMax) ulEnd = ulMax;
             if(ulStart > ulEnd) ulStart = ulEnd;
@@ -1611,8 +1611,8 @@ __checkReturn
 HRESULT MDInternalRW::GetCustomAttributeByName( // S_OK or error.
     mdToken     tkObj,                  // [IN] Object with Custom Attribute.
     LPCUTF8     szName,                 // [IN] Name of desired Custom Attribute.
-    __deref_out_bcount(*pcbData) const void  **ppData, // [OUT] Put pointer to data here.
-    __out ULONG *pcbData)               // [OUT] Put size of data here.
+    _Outptr_result_bytebuffer_(*pcbData) const void  **ppData, // [OUT] Put pointer to data here.
+    _Out_ ULONG *pcbData)               // [OUT] Put size of data here.
 {
     HRESULT hr = S_OK;
     LOCKREADIFFAILRET();
@@ -1797,7 +1797,7 @@ ErrExit:
 
 //*****************************************************************************
 // return a pointer which points to meta data's internal string
-// return the the type name in utf8
+// return the type name in utf8
 //*****************************************************************************
 __checkReturn
 HRESULT
@@ -2128,7 +2128,7 @@ HRESULT MDInternalRW::GetItemGuid(      // return hresult
         wzBlob[0] = '{';
         wzBlob[37] = '}';
         wzBlob[38] = 0;
-        hr = IIDFromString(wzBlob, pGuid);
+        hr = LPCWSTRToGuid(wzBlob, pGuid) ? S_OK : E_FAIL;
     }
     else
         *pGuid = GUID_NULL;
@@ -2367,7 +2367,7 @@ MDInternalRW::GetSigFromToken(
 
     // not a known token type.
 #ifdef _DEBUG
-        if(REGUTIL::GetConfigDWORD_DontUse_(CLRConfig::INTERNAL_AssertOnBadImageFormat, 1))
+        if(CLRConfig::GetConfigValue(CLRConfig::INTERNAL_AssertOnBadImageFormat, 1))
             _ASSERTE(!"Unexpected token type");
 #endif
     *pcbSig = 0;
@@ -2445,7 +2445,7 @@ HRESULT MDInternalRW::GetFieldRVA(
 {
     _ASSERTE(TypeFromToken(fd) == mdtFieldDef);
     _ASSERTE(pulCodeRVA);
-    ULONG       iRecord;
+    uint32_t       iRecord;
     HRESULT     hr = NOERROR;
 
     LOCKREAD();
@@ -3802,7 +3802,7 @@ HRESULT MDInternalRW::GetPinvokeMap(
     mdModuleRef *pmrImportDLL)          // [OUT] ModuleRef token for the target DLL.
 {
     ImplMapRec  *pRecord;
-    ULONG       iRecord;
+    uint32_t    iRecord;
     HRESULT     hr = S_OK;
 
     LOCKREAD();
@@ -3898,7 +3898,7 @@ BOOL MDInternalRW::IsValidToken(        // True or False.
     case mdtEvent:
         return (rid <= m_pStgdb->m_MiniMd.getCountEvents());
     case mdtProperty:
-        return (rid <= m_pStgdb->m_MiniMd.getCountPropertys());
+        return (rid <= m_pStgdb->m_MiniMd.getCountProperties());
     case mdtModuleRef:
         return (rid <= m_pStgdb->m_MiniMd.getCountModuleRefs());
     case mdtTypeSpec:

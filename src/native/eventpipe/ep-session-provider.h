@@ -1,7 +1,7 @@
 #ifndef __EVENTPIPE_SESSION_PROVIDER_H__
 #define __EVENTPIPE_SESSION_PROVIDER_H__
 
-#if defined(ENABLE_PERFTRACING) || defined(FEATURE_PERFTRACING)
+#ifdef ENABLE_PERFTRACING
 #include "ep-rt-config.h"
 #include "ep-types.h"
 
@@ -55,7 +55,7 @@ struct _EventPipeSessionProviderList {
 #else
 struct _EventPipeSessionProviderList_Internal {
 #endif
-	ep_rt_session_provider_list_t providers;
+	dn_list_t *providers;
 	EventPipeSessionProvider *catch_all_provider;
 };
 
@@ -65,7 +65,7 @@ struct _EventPipeSessionProviderList {
 };
 #endif
 
-EP_DEFINE_GETTER_REF(EventPipeSessionProviderList *, session_provider_list, ep_rt_session_provider_list_t *, providers)
+EP_DEFINE_GETTER(EventPipeSessionProviderList *, session_provider_list, dn_list_t *, providers)
 EP_DEFINE_GETTER(EventPipeSessionProviderList *, session_provider_list, EventPipeSessionProvider *, catch_all_provider)
 
 EventPipeSessionProviderList *
@@ -87,5 +87,10 @@ ep_session_provider_list_add_session_provider (
 	EventPipeSessionProviderList *session_provider_list,
 	EventPipeSessionProvider *session_provider);
 
-#endif /* defined(ENABLE_PERFTRACING) || defined(FEATURE_PERFTRACING) */
+EventPipeSessionProvider *
+ep_session_provider_list_find_by_name (
+	dn_list_t *list,
+	const ep_char8_t *name);
+
+#endif /* ENABLE_PERFTRACING */
 #endif /** __EVENTPIPE_SESSION_PROVIDER_H__ **/

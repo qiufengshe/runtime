@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using Xunit;
 
 public struct ValX0 {}
 public struct ValY0 {}
@@ -61,7 +62,7 @@ public class Gen<T,U> : GenBase<T,U>
 	}
 }
 
-public class Test
+public class Test_AbstractBase04
 {
 	public static int counter = 0;
 	public static bool result = true;
@@ -76,7 +77,8 @@ public class Test
 	
 	}
 	
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		Eval((new Gen<int,int>(new int(), new int())).InstVerify(typeof(int),typeof(int))); 	
 		Eval((new Gen<int,double>(new int(), new double())).InstVerify(typeof(int),typeof(double))); 

@@ -1,7 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Globalization;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Security;
 using System.Threading;
 
 namespace System.Reflection
@@ -33,11 +36,16 @@ namespace System.Reflection
             return RuntimeType.GetMethodBase(declaringType.GetRuntimeType(), handle.GetMethodInfo());
         }
 
-        [System.Security.DynamicSecurityMethod] // Methods containing StackCrawlMark local var has to be marked DynamicSecurityMethod
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MethodBase_GetCurrentMethod")]
+        private static partial RuntimeMethodHandleInternal GetCurrentMethod(StackCrawlMarkHandle stackMark);
+
+        [RequiresUnreferencedCode("Metadata for the method might be incomplete or removed")]
+        [DynamicSecurityMethod] // Methods containing StackCrawlMark local var has to be marked DynamicSecurityMethod
         public static MethodBase? GetCurrentMethod()
         {
             StackCrawlMark stackMark = StackCrawlMark.LookForMyCaller;
-            return RuntimeMethodInfo.InternalGetCurrentMethod(ref stackMark);
+            RuntimeMethodHandleInternal methodHandle = GetCurrentMethod(new StackCrawlMarkHandle(ref stackMark));
+            return methodHandle.IsNullHandle() ? null : RuntimeType.GetMethodBase(null, methodHandle);
         }
         #endregion
 
@@ -45,47 +53,7 @@ namespace System.Reflection
         // used by EE
         private IntPtr GetMethodDesc() { return MethodHandle.Value; }
 
-        internal virtual ParameterInfo[] GetParametersNoCopy() { return GetParameters(); }
-        #endregion
-
-        #region Internal Methods
-        // helper method to construct the string representation of the parameter list
-
-        internal virtual Type[] GetParameterTypes()
-        {
-            ParameterInfo[] paramInfo = GetParametersNoCopy();
-
-            Type[] parameterTypes = new Type[paramInfo.Length];
-            for (int i = 0; i < paramInfo.Length; i++)
-                parameterTypes[i] = paramInfo[i].ParameterType;
-
-            return parameterTypes;
-        }
-
-        internal object[] CheckArguments(object[] parameters, Binder? binder,
-            BindingFlags invokeAttr, CultureInfo? culture, Signature sig)
-        {
-            // copy the arguments in a different array so we detach from any user changes
-            object[] copyOfParameters = new object[parameters.Length];
-
-            ParameterInfo[]? p = null;
-            for (int i = 0; i < parameters.Length; i++)
-            {
-                object arg = parameters[i];
-                RuntimeType argRT = sig.Arguments[i];
-
-                if (arg == Type.Missing)
-                {
-                    p ??= GetParametersNoCopy();
-                    if (p[i].DefaultValue == System.DBNull.Value)
-                        throw new ArgumentException(SR.Arg_VarMissNull, nameof(parameters));
-                    arg = p[i].DefaultValue!;
-                }
-                copyOfParameters[i] = argRT.CheckValue(arg, binder, culture, invokeAttr)!;
-            }
-
-            return copyOfParameters;
-        }
+        internal virtual ReadOnlySpan<ParameterInfo> GetParametersAsSpan() { return GetParameters(); }
         #endregion
     }
 }

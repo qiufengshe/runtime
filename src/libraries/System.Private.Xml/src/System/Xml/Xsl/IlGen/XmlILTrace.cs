@@ -2,12 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Globalization;
 using System.IO;
+using System.Runtime.Versioning;
 using System.Security;
 using System.Xml;
-using System.Globalization;
 using System.Xml.Xsl.Qil;
-using System.Runtime.Versioning;
 
 // This class is only for debug purposes so there is no need to have it in Retail builds
 #if DEBUG
@@ -182,19 +182,19 @@ namespace System.Xml.Xsl.IlGen
             string s = Enum.GetName(typeof(XmlILOptimization), opt)!;
             if (s.StartsWith("Introduce", StringComparison.Ordinal))
             {
-                return s.Substring(9) + " introduction";
+                return string.Concat(s.AsSpan(9), " introduction");
             }
             else if (s.StartsWith("Eliminate", StringComparison.Ordinal))
             {
-                return s.Substring(9) + " elimination";
+                return string.Concat(s.AsSpan(9), " elimination");
             }
             else if (s.StartsWith("Commute", StringComparison.Ordinal))
             {
-                return s.Substring(7) + " commutation";
+                return string.Concat(s.AsSpan(7), " commutation");
             }
             else if (s.StartsWith("Fold", StringComparison.Ordinal))
             {
-                return s.Substring(4) + " folding";
+                return string.Concat(s.AsSpan(4), " folding");
             }
             else if (s.StartsWith("Misc", StringComparison.Ordinal))
             {

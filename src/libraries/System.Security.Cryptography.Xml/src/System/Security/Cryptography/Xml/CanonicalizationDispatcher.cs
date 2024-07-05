@@ -1,17 +1,15 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Xml;
 using System.Text;
+using System.Xml;
 
 namespace System.Security.Cryptography.Xml
 {
     // the central dispatcher for canonicalization writes. not all node classes
     // implement ICanonicalizableNode; so a manual dispatch is sometimes necessary.
-    internal class CanonicalizationDispatcher
+    internal static class CanonicalizationDispatcher
     {
-        private CanonicalizationDispatcher() { }
-
         public static void Write(XmlNode node, StringBuilder strBuilder, DocPosition docPos, AncestralNamespaceContextManager anc)
         {
             if (node is ICanonicalizableNode)
@@ -26,8 +24,10 @@ namespace System.Security.Cryptography.Xml
 
         public static void WriteGenericNode(XmlNode node, StringBuilder strBuilder, DocPosition docPos, AncestralNamespaceContextManager anc)
         {
-            if (node == null)
+            if (node is null)
+            {
                 throw new ArgumentNullException(nameof(node));
+            }
 
             XmlNodeList childNodes = node.ChildNodes;
             foreach (XmlNode childNode in childNodes)
@@ -50,8 +50,10 @@ namespace System.Security.Cryptography.Xml
 
         public static void WriteHashGenericNode(XmlNode node, HashAlgorithm hash, DocPosition docPos, AncestralNamespaceContextManager anc)
         {
-            if (node == null)
+            if (node is null)
+            {
                 throw new ArgumentNullException(nameof(node));
+            }
 
             XmlNodeList childNodes = node.ChildNodes;
             foreach (XmlNode childNode in childNodes)

@@ -4,6 +4,8 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace System.Text.Json
 {
@@ -112,8 +114,10 @@ namespace System.Text.Json
         /// </exception>
         public JsonElement GetProperty(string propertyName)
         {
-            if (propertyName == null)
-                throw new ArgumentNullException(nameof(propertyName));
+            if (propertyName is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(nameof(propertyName));
+            }
 
             if (TryGetProperty(propertyName, out JsonElement property))
             {
@@ -233,8 +237,10 @@ namespace System.Text.Json
         /// <seealso cref="EnumerateObject"/>
         public bool TryGetProperty(string propertyName, out JsonElement value)
         {
-            if (propertyName == null)
-                throw new ArgumentNullException(nameof(propertyName));
+            if (propertyName is null)
+            {
+                ThrowHelper.ThrowArgumentNullException(nameof(propertyName));
+            }
 
             return TryGetProperty(propertyName.AsSpan(), out value);
         }
@@ -333,7 +339,12 @@ namespace System.Text.Json
             return
                 type == JsonTokenType.True ? true :
                 type == JsonTokenType.False ? false :
-                throw ThrowHelper.GetJsonElementWrongTypeException(nameof(Boolean), type);
+                ThrowJsonElementWrongTypeException(type);
+
+            static bool ThrowJsonElementWrongTypeException(JsonTokenType actualType)
+            {
+                throw ThrowHelper.GetJsonElementWrongTypeException(nameof(Boolean), actualType.ToValueKind());
+            }
         }
 
         /// <summary>
@@ -400,12 +411,12 @@ namespace System.Text.Json
         /// <seealso cref="ToString"/>
         public byte[] GetBytesFromBase64()
         {
-            if (TryGetBytesFromBase64(out byte[]? value))
+            if (!TryGetBytesFromBase64(out byte[]? value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         /// <summary>
@@ -645,12 +656,12 @@ namespace System.Text.Json
         /// </exception>
         public int GetInt32()
         {
-            if (TryGetInt32(out int value))
+            if (!TryGetInt32(out int value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         /// <summary>
@@ -697,12 +708,12 @@ namespace System.Text.Json
         [CLSCompliant(false)]
         public uint GetUInt32()
         {
-            if (TryGetUInt32(out uint value))
+            if (!TryGetUInt32(out uint value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         /// <summary>
@@ -747,12 +758,12 @@ namespace System.Text.Json
         /// </exception>
         public long GetInt64()
         {
-            if (TryGetInt64(out long value))
+            if (!TryGetInt64(out long value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         /// <summary>
@@ -799,12 +810,12 @@ namespace System.Text.Json
         [CLSCompliant(false)]
         public ulong GetUInt64()
         {
-            if (TryGetUInt64(out ulong value))
+            if (!TryGetUInt64(out ulong value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         /// <summary>
@@ -866,12 +877,12 @@ namespace System.Text.Json
         /// </exception>
         public double GetDouble()
         {
-            if (TryGetDouble(out double value))
+            if (!TryGetDouble(out double value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         /// <summary>
@@ -933,12 +944,12 @@ namespace System.Text.Json
         /// </exception>
         public float GetSingle()
         {
-            if (TryGetSingle(out float value))
+            if (!TryGetSingle(out float value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         /// <summary>
@@ -985,12 +996,12 @@ namespace System.Text.Json
         /// <seealso cref="GetRawText"/>
         public decimal GetDecimal()
         {
-            if (TryGetDecimal(out decimal value))
+            if (!TryGetDecimal(out decimal value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         /// <summary>
@@ -1036,12 +1047,12 @@ namespace System.Text.Json
         /// <seealso cref="ToString"/>
         public DateTime GetDateTime()
         {
-            if (TryGetDateTime(out DateTime value))
+            if (!TryGetDateTime(out DateTime value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         /// <summary>
@@ -1087,12 +1098,12 @@ namespace System.Text.Json
         /// <seealso cref="ToString"/>
         public DateTimeOffset GetDateTimeOffset()
         {
-            if (TryGetDateTimeOffset(out DateTimeOffset value))
+            if (!TryGetDateTimeOffset(out DateTimeOffset value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         /// <summary>
@@ -1138,12 +1149,12 @@ namespace System.Text.Json
         /// <seealso cref="ToString"/>
         public Guid GetGuid()
         {
-            if (TryGetGuid(out Guid value))
+            if (!TryGetGuid(out Guid value))
             {
-                return value;
+                ThrowHelper.ThrowFormatException();
             }
 
-            throw ThrowHelper.GetFormatException();
+            return value;
         }
 
         internal string GetPropertyName()
@@ -1151,6 +1162,13 @@ namespace System.Text.Json
             CheckValidInstance();
 
             return _parent.GetNameOfPropertyValue(_idx);
+        }
+
+        internal ReadOnlySpan<byte> GetPropertyNameRaw()
+        {
+            CheckValidInstance();
+
+            return _parent.GetPropertyNameRaw(_idx);
         }
 
         /// <summary>
@@ -1169,11 +1187,166 @@ namespace System.Text.Json
             return _parent.GetRawValueAsString(_idx);
         }
 
+        internal ReadOnlyMemory<byte> GetRawValue()
+        {
+            CheckValidInstance();
+
+            return _parent.GetRawValue(_idx, includeQuotes: true);
+        }
+
         internal string GetPropertyRawText()
         {
             CheckValidInstance();
 
             return _parent.GetPropertyRawValueAsString(_idx);
+        }
+
+        internal bool ValueIsEscaped
+        {
+            // TODO make public https://github.com/dotnet/runtime/issues/77666
+            get
+            {
+                CheckValidInstance();
+
+                return _parent.ValueIsEscaped(_idx, isPropertyName: false);
+            }
+        }
+
+        internal ReadOnlySpan<byte> ValueSpan
+        {
+            // TODO make public https://github.com/dotnet/runtime/issues/77666
+            get
+            {
+                CheckValidInstance();
+
+                return _parent.GetRawValue(_idx, includeQuotes: false).Span;
+            }
+        }
+
+        // TODO make public https://github.com/dotnet/runtime/issues/33388
+        internal static bool DeepEquals(JsonElement left, JsonElement right)
+        {
+            Debug.Assert(left._parent != null);
+            Debug.Assert(right._parent != null);
+
+            JsonValueKind kind = left.ValueKind;
+            if (kind != right.ValueKind)
+            {
+                return false;
+            }
+
+            switch (kind)
+            {
+                case JsonValueKind.Null or JsonValueKind.False or JsonValueKind.True:
+                    return true;
+
+                case JsonValueKind.Number:
+                    // JSON numbers are equal if their raw representations are equal.
+                    return left.GetRawValue().Span.SequenceEqual(right.GetRawValue().Span);
+
+                case JsonValueKind.String:
+                    if (right.ValueIsEscaped)
+                    {
+                        if (left.ValueIsEscaped)
+                        {
+                            // Both values are escaped, force an allocation to unescape the RHS.
+                            return left.ValueEquals(right.GetString());
+                        }
+
+                        // Swap values so that unescaping is handled by the LHS.
+                        (left, right) = (right, left);
+                    }
+
+                    return left.ValueEquals(right.ValueSpan);
+
+                case JsonValueKind.Array:
+                    ArrayEnumerator rightArrayEnumerator = right.EnumerateArray();
+                    foreach (JsonElement leftElement in left.EnumerateArray())
+                    {
+                        if (!rightArrayEnumerator.MoveNext() || !DeepEquals(leftElement, rightArrayEnumerator.Current))
+                        {
+                            return false;
+                        }
+                    }
+
+                    return !rightArrayEnumerator.MoveNext();
+
+                default:
+                    Debug.Assert(kind is JsonValueKind.Object);
+                    ObjectEnumerator leftObjectEnumerator = left.EnumerateObject();
+                    ObjectEnumerator rightObjectEnumerator = right.EnumerateObject();
+
+                    // Two JSON objects are considered equal if they define the same set of properties.
+                    // Start optimistically with sequential comparison, but fall back to unordered
+                    // comparison as soon as a mismatch is encountered.
+
+                    while (leftObjectEnumerator.MoveNext())
+                    {
+                        if (!rightObjectEnumerator.MoveNext())
+                        {
+                            return false;
+                        }
+
+                        JsonProperty leftProp = leftObjectEnumerator.Current;
+                        JsonProperty rightProp = rightObjectEnumerator.Current;
+
+                        if (!NameEquals(leftProp, rightProp))
+                        {
+                            // We have our first mismatch, fall back to unordered comparison.
+                            return UnorderedObjectDeepEquals(leftObjectEnumerator, rightObjectEnumerator);
+                        }
+
+                        if (!DeepEquals(leftProp.Value, rightProp.Value))
+                        {
+                            return false;
+                        }
+                    }
+
+                    return !rightObjectEnumerator.MoveNext();
+
+                    static bool UnorderedObjectDeepEquals(ObjectEnumerator left, ObjectEnumerator right)
+                    {
+                        Dictionary<string, JsonElement> rightElements = new(StringComparer.Ordinal);
+                        do
+                        {
+                            JsonProperty prop = right.Current;
+                            rightElements.TryAdd(prop.Name, prop.Value);
+                        }
+                        while (right.MoveNext());
+
+                        int leftCount = 0;
+                        do
+                        {
+                            JsonProperty prop = left.Current;
+                            if (!rightElements.TryGetValue(prop.Name, out JsonElement rightElement) || !DeepEquals(prop.Value, rightElement))
+                            {
+                                return false;
+                            }
+
+                            leftCount++;
+                        }
+                        while (left.MoveNext());
+
+                        return leftCount == rightElements.Count;
+                    }
+
+                    static bool NameEquals(JsonProperty left, JsonProperty right)
+                    {
+                        if (right.NameIsEscaped)
+                        {
+                            if (left.NameIsEscaped)
+                            {
+                                // Both values are escaped, force an allocation to unescape the RHS.
+                                return left.NameEquals(right.Name);
+                            }
+
+                            // Swap values so that unescaping is handled by the LHS
+                            (left, right) = (right, left);
+                        }
+
+                        return left.NameEquals(right.NameSpan);
+                    }
+            }
         }
 
         /// <summary>
@@ -1226,7 +1399,7 @@ namespace System.Text.Json
             if (TokenType == JsonTokenType.Null)
             {
                 // This is different than Length == 0, in that it tests true for null, but false for ""
-                return utf8Text == default;
+                return Unsafe.IsNullRef(ref MemoryMarshal.GetReference(utf8Text));
             }
 
             return TextEqualsHelper(utf8Text, isPropertyName: false, shouldUnescape: true);
@@ -1254,7 +1427,7 @@ namespace System.Text.Json
             if (TokenType == JsonTokenType.Null)
             {
                 // This is different than Length == 0, in that it tests true for null, but false for ""
-                return text == default;
+                return Unsafe.IsNullRef(ref MemoryMarshal.GetReference(text));
             }
 
             return TextEqualsHelper(text, isPropertyName: false);
@@ -1274,6 +1447,13 @@ namespace System.Text.Json
             return _parent.TextEquals(_idx, text, isPropertyName);
         }
 
+        internal bool ValueIsEscapedHelper(bool isPropertyName)
+        {
+            CheckValidInstance();
+
+            return _parent.ValueIsEscaped(_idx, isPropertyName);
+        }
+
         /// <summary>
         ///   Write the element into the provided writer as a JSON value.
         /// </summary>
@@ -1289,14 +1469,21 @@ namespace System.Text.Json
         /// </exception>
         public void WriteTo(Utf8JsonWriter writer)
         {
-            if (writer == null)
+            if (writer is null)
             {
-                throw new ArgumentNullException(nameof(writer));
+                ThrowHelper.ThrowArgumentNullException(nameof(writer));
             }
 
             CheckValidInstance();
 
             _parent.WriteElementTo(_idx, writer);
+        }
+
+        internal void WritePropertyNameTo(Utf8JsonWriter writer)
+        {
+            CheckValidInstance();
+
+            _parent.WritePropertyName(_idx, writer);
         }
 
         /// <summary>
@@ -1319,7 +1506,7 @@ namespace System.Text.Json
 
             if (tokenType != JsonTokenType.StartArray)
             {
-                throw ThrowHelper.GetJsonElementWrongTypeException(JsonTokenType.StartArray, tokenType);
+                ThrowHelper.ThrowJsonElementWrongTypeException(JsonTokenType.StartArray, tokenType);
             }
 
             return new ArrayEnumerator(this);
@@ -1345,7 +1532,7 @@ namespace System.Text.Json
 
             if (tokenType != JsonTokenType.StartObject)
             {
-                throw ThrowHelper.GetJsonElementWrongTypeException(JsonTokenType.StartObject, tokenType);
+                ThrowHelper.ThrowJsonElementWrongTypeException(JsonTokenType.StartObject, tokenType);
             }
 
             return new ObjectEnumerator(this);
@@ -1385,7 +1572,7 @@ namespace System.Text.Json
         /// <exception cref="ObjectDisposedException">
         ///   The parent <see cref="JsonDocument"/> has been disposed.
         /// </exception>
-        public override string? ToString()
+        public override string ToString()
         {
             switch (TokenType)
             {
@@ -1402,10 +1589,10 @@ namespace System.Text.Json
                     {
                         // null parent should have hit the None case
                         Debug.Assert(_parent != null);
-                        return ((JsonDocument)_parent).GetRawValueAsString(_idx);
+                        return _parent.GetRawValueAsString(_idx);
                     }
                 case JsonTokenType.String:
-                    return GetString();
+                    return GetString()!;
                 case JsonTokenType.Comment:
                 case JsonTokenType.EndArray:
                 case JsonTokenType.EndObject:

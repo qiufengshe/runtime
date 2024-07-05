@@ -14,25 +14,25 @@
 */
 
 using System;
-using Microsoft.Xunit.Performance;
-
-[assembly: OptimizeForBenchmarks]
+using System.Runtime.CompilerServices;
+using Xunit;
 
 namespace BenchmarksGame
 {
     public class NBody_3
     {
-        public static int Main(String[] args)
+        [Fact]
+        public static int TestEntryPoint()
         {
-            int n = args.Length > 0 ? Int32.Parse(args[0]) : 10000;
-            bool success = Bench(n, true);
-            return (success ? 100 : -1);
+            return Test(null);
         }
 
-        [Benchmark(InnerIterationCount = 2)]
-        public static void RunBench()
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static int Test(int? arg)
         {
-            Benchmark.Iterate(() => Bench(5000000, false));
+            int n = arg ?? 10000;
+            bool success = Bench(n, true);
+            return (success ? 100 : -1);
         }
 
         static bool Bench(int n, bool verbose)

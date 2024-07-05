@@ -5,13 +5,14 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using TestLibrary;
+using Xunit;
 
 namespace CopyConstructorMarshaler
 {
-    class CopyConstructorMarshaler
+    public class CopyConstructorMarshaler
     {
-        static int Main(string[] args)
+        [Fact]
+        public static int TestEntryPoint()
         {
             if(Environment.OSVersion.Platform != PlatformID.Win32NT || TestLibrary.Utilities.IsWindows7)
             {
@@ -20,30 +21,37 @@ namespace CopyConstructorMarshaler
 
             try
             {
-                Assembly ijwNativeDll = IjwHelper.LoadIjwAssembly("IjwCopyConstructorMarshaler");
+                Assembly ijwNativeDll = Assembly.Load("IjwCopyConstructorMarshaler");
                 Type testType = ijwNativeDll.GetType("TestClass");
                 object testInstance = Activator.CreateInstance(testType);
                 MethodInfo testMethod = testType.GetMethod("PInvokeNumCopies");
 
+                // On x86, we have an additional copy on every P/Invoke from the "native" parameter to the actual location on the stack.
+                int platformExtra = 0;
+                if (RuntimeInformation.ProcessArchitecture == Architecture.X86)
+                {
+                    platformExtra = 1;
+                }
+    
                 // PInvoke will copy twice. Once from argument to parameter, and once from the managed to native parameter.
-                Assert.AreEqual(2, (int)testMethod.Invoke(testInstance, null));
+                Assert.Equal(2 + platformExtra, (int)testMethod.Invoke(testInstance, null));
 
                 testMethod = testType.GetMethod("ReversePInvokeNumCopies");
 
                 // Reverse PInvoke will copy 3 times. Two are from the same paths as the PInvoke,
                 // and the third is from the reverse P/Invoke call.
-                Assert.AreEqual(3, (int)testMethod.Invoke(testInstance, null));
-                
+                Assert.Equal(3 + platformExtra, (int)testMethod.Invoke(testInstance, null));
+
                 testMethod = testType.GetMethod("PInvokeNumCopiesDerivedType");
 
                 // PInvoke will copy twice. Once from argument to parameter, and once from the managed to native parameter.
-                Assert.AreEqual(2, (int)testMethod.Invoke(testInstance, null));
+                Assert.Equal(2 + platformExtra, (int)testMethod.Invoke(testInstance, null));
 
                 testMethod = testType.GetMethod("ReversePInvokeNumCopiesDerivedType");
 
                 // Reverse PInvoke will copy 3 times. Two are from the same paths as the PInvoke,
                 // and the third is from the reverse P/Invoke call.
-                Assert.AreEqual(3, (int)testMethod.Invoke(testInstance, null));
+                Assert.Equal(3 + platformExtra, (int)testMethod.Invoke(testInstance, null));
             }
             catch (Exception ex)
             {
@@ -51,6 +59,17 @@ namespace CopyConstructorMarshaler
                 return 101;
             }
             return 100;
+        }
+
+        [Fact]
+        public static void CopyConstructorsInArgumentStackSlots()
+        {
+            Assembly ijwNativeDll = Assembly.Load("IjwCopyConstructorMarshaler");
+            Type testType = ijwNativeDll.GetType("TestClass");
+            object testInstance = Activator.CreateInstance(testType);
+            MethodInfo testMethod = testType.GetMethod("ExposedThisCopyConstructorScenario");
+
+            Assert.Equal(0, (int)testMethod.Invoke(testInstance, null));
         }
 
         [DllImport("kernel32.dll")]

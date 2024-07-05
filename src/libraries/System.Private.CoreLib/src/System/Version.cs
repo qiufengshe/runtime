@@ -1,11 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Globalization;
+using System.Buffers.Text;
 using System.Diagnostics;
-using System.Text;
-using System.Runtime.CompilerServices;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace System
 {
@@ -16,8 +18,8 @@ namespace System
     // specified component.
 
     [Serializable]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
-    public sealed class Version : ICloneable, IComparable, IComparable<Version?>, IEquatable<Version?>, ISpanFormattable
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    public sealed class Version : ICloneable, IComparable, IComparable<Version?>, IEquatable<Version?>, ISpanFormattable, IUtf8SpanFormattable
     {
         // AssemblyName depends on the order staying the same
         private readonly int _Major; // Do not rename (binary serialization)
@@ -27,17 +29,10 @@ namespace System
 
         public Version(int major, int minor, int build, int revision)
         {
-            if (major < 0)
-                throw new ArgumentOutOfRangeException(nameof(major), SR.ArgumentOutOfRange_Version);
-
-            if (minor < 0)
-                throw new ArgumentOutOfRangeException(nameof(minor), SR.ArgumentOutOfRange_Version);
-
-            if (build < 0)
-                throw new ArgumentOutOfRangeException(nameof(build), SR.ArgumentOutOfRange_Version);
-
-            if (revision < 0)
-                throw new ArgumentOutOfRangeException(nameof(revision), SR.ArgumentOutOfRange_Version);
+            ArgumentOutOfRangeException.ThrowIfNegative(major);
+            ArgumentOutOfRangeException.ThrowIfNegative(minor);
+            ArgumentOutOfRangeException.ThrowIfNegative(build);
+            ArgumentOutOfRangeException.ThrowIfNegative(revision);
 
             _Major = major;
             _Minor = minor;
@@ -47,14 +42,9 @@ namespace System
 
         public Version(int major, int minor, int build)
         {
-            if (major < 0)
-                throw new ArgumentOutOfRangeException(nameof(major), SR.ArgumentOutOfRange_Version);
-
-            if (minor < 0)
-                throw new ArgumentOutOfRangeException(nameof(minor), SR.ArgumentOutOfRange_Version);
-
-            if (build < 0)
-                throw new ArgumentOutOfRangeException(nameof(build), SR.ArgumentOutOfRange_Version);
+            ArgumentOutOfRangeException.ThrowIfNegative(major);
+            ArgumentOutOfRangeException.ThrowIfNegative(minor);
+            ArgumentOutOfRangeException.ThrowIfNegative(build);
 
             _Major = major;
             _Minor = minor;
@@ -64,11 +54,8 @@ namespace System
 
         public Version(int major, int minor)
         {
-            if (major < 0)
-                throw new ArgumentOutOfRangeException(nameof(major), SR.ArgumentOutOfRange_Version);
-
-            if (minor < 0)
-                throw new ArgumentOutOfRangeException(nameof(minor), SR.ArgumentOutOfRange_Version);
+            ArgumentOutOfRangeException.ThrowIfNegative(major);
+            ArgumentOutOfRangeException.ThrowIfNegative(minor);
 
             _Major = major;
             _Minor = minor;
@@ -78,7 +65,7 @@ namespace System
 
         public Version(string version)
         {
-            Version v = Version.Parse(version);
+            Version v = Parse(version);
             _Major = v.Major;
             _Minor = v.Minor;
             _Build = v.Build;
@@ -133,13 +120,13 @@ namespace System
                 return CompareTo(v);
             }
 
-            throw new ArgumentException(SR.Arg_MustBeVersion);
+            throw new ArgumentException(SR.Arg_MustBeVersion, nameof(version));
         }
 
         public int CompareTo(Version? value)
         {
             return
-                object.ReferenceEquals(value, this) ? 0 :
+                ReferenceEquals(value, this) ? 0 :
                 value is null ? 1 :
                 _Major != value._Major ? (_Major > value._Major ? 1 : -1) :
                 _Minor != value._Minor ? (_Minor > value._Minor ? 1 : -1) :
@@ -148,14 +135,14 @@ namespace System
                 0;
         }
 
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             return Equals(obj as Version);
         }
 
-        public bool Equals(Version? obj)
+        public bool Equals([NotNullWhen(true)] Version? obj)
         {
-            return object.ReferenceEquals(obj, this) ||
+            return ReferenceEquals(obj, this) ||
                 (!(obj is null) &&
                 _Major == obj._Major &&
                 _Minor == obj._Minor &&
@@ -181,110 +168,121 @@ namespace System
         public override string ToString() =>
             ToString(DefaultFormatFieldCount);
 
-        public string ToString(int fieldCount) =>
-            fieldCount == 0 ? string.Empty :
-            fieldCount == 1 ? _Major.ToString() :
-            StringBuilderCache.GetStringAndRelease(ToCachedStringBuilder(fieldCount));
+        public string ToString(int fieldCount)
+        {
+            Span<char> dest = stackalloc char[(4 * Number.Int32NumberBufferLength) + 3]; // at most 4 Int32s and 3 periods
+            bool success = TryFormat(dest, fieldCount, out int charsWritten);
+            Debug.Assert(success);
+            return dest.Slice(0, charsWritten).ToString();
+        }
+
+        string IFormattable.ToString(string? format, IFormatProvider? formatProvider) =>
+            ToString();
 
         public bool TryFormat(Span<char> destination, out int charsWritten) =>
-            TryFormat(destination, DefaultFormatFieldCount, out charsWritten);
+            TryFormatCore(destination, DefaultFormatFieldCount, out charsWritten);
 
-        public bool TryFormat(Span<char> destination, int fieldCount, out int charsWritten)
+        public bool TryFormat(Span<char> destination, int fieldCount, out int charsWritten) =>
+            TryFormatCore(destination, fieldCount, out charsWritten);
+
+        /// <summary>Tries to format this version instance into a span of bytes.</summary>
+        /// <param name="utf8Destination">The span in which to write this instance's value formatted as a span of UTF-8 bytes.</param>
+        /// <param name="bytesWritten">When this method returns, contains the number of bytes that were written in <paramref name="utf8Destination"/>.</param>
+        /// <returns><see langword="true"/> if the formatting was successful; otherwise, <see langword="false"/>.</returns>
+        public bool TryFormat(Span<byte> utf8Destination, out int bytesWritten) =>
+            TryFormatCore(utf8Destination, DefaultFormatFieldCount, out bytesWritten);
+
+        /// <summary>Tries to format this version instance into a span of bytes.</summary>
+        /// <param name="utf8Destination">The span in which to write this instance's value formatted as a span of UTF-8 bytes.</param>
+        /// <param name="fieldCount">The number of components to return. This value ranges from 0 to 4.</param>
+        /// <param name="bytesWritten">When this method returns, contains the number of bytes that were written in <paramref name="utf8Destination"/>.</param>
+        /// <returns><see langword="true"/> if the formatting was successful; otherwise, <see langword="false"/>.</returns>
+        public bool TryFormat(Span<byte> utf8Destination, int fieldCount, out int bytesWritten) =>
+            TryFormatCore(utf8Destination, fieldCount, out bytesWritten);
+
+        private bool TryFormatCore<TChar>(Span<TChar> destination, int fieldCount, out int charsWritten) where TChar : unmanaged, IUtfChar<TChar>
         {
-            if (fieldCount == 0)
+            Debug.Assert(typeof(TChar) == typeof(char) || typeof(TChar) == typeof(byte));
+
+            switch ((uint)fieldCount)
             {
-                charsWritten = 0;
-                return true;
-            }
-            else if (fieldCount == 1)
-            {
-                return _Major.TryFormat(destination, out charsWritten);
+                case > 4:
+                    ThrowArgumentException("4");
+                    break;
+
+                case >= 3 when _Build == -1:
+                    ThrowArgumentException("2");
+                    break;
+
+                case 4 when _Revision == -1:
+                    ThrowArgumentException("3");
+                    break;
+
+                static void ThrowArgumentException(string failureUpperBound) =>
+                    throw new ArgumentException(SR.Format(SR.ArgumentOutOfRange_Bounds_Lower_Upper, "0", failureUpperBound), nameof(fieldCount));
             }
 
-            StringBuilder sb = ToCachedStringBuilder(fieldCount);
-            if (sb.Length <= destination.Length)
+            int totalCharsWritten = 0;
+
+            for (int i = 0; i < fieldCount; i++)
             {
-                sb.CopyTo(0, destination, sb.Length);
-                StringBuilderCache.Release(sb);
-                charsWritten = sb.Length;
-                return true;
+                if (i != 0)
+                {
+                    if (destination.IsEmpty)
+                    {
+                        charsWritten = 0;
+                        return false;
+                    }
+
+                    destination[0] = TChar.CastFrom('.');
+                    destination = destination.Slice(1);
+                    totalCharsWritten++;
+                }
+
+                int value = i switch
+                {
+                    0 => _Major,
+                    1 => _Minor,
+                    2 => _Build,
+                    _ => _Revision
+                };
+
+                int valueCharsWritten;
+                bool formatted = typeof(TChar) == typeof(char) ?
+                    ((uint)value).TryFormat(Unsafe.BitCast<Span<TChar>, Span<char>>(destination), out valueCharsWritten) :
+                    ((uint)value).TryFormat(Unsafe.BitCast<Span<TChar>, Span<byte>>(destination), out valueCharsWritten, default, CultureInfo.InvariantCulture);
+
+                if (!formatted)
+                {
+                    charsWritten = 0;
+                    return false;
+                }
+
+                totalCharsWritten += valueCharsWritten;
+                destination = destination.Slice(valueCharsWritten);
             }
 
-            StringBuilderCache.Release(sb);
-            charsWritten = 0;
-            return false;
+            charsWritten = totalCharsWritten;
+            return true;
         }
 
-        bool ISpanFormattable.TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider)
-        {
+        bool ISpanFormattable.TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider) =>
             // format and provider are ignored.
-            return TryFormat(destination, out charsWritten);
-        }
+            TryFormatCore(destination, DefaultFormatFieldCount, out charsWritten);
+
+        /// <inheritdoc cref="IUtf8SpanFormattable.TryFormat" />
+        bool IUtf8SpanFormattable.TryFormat(Span<byte> utf8Destination, out int bytesWritten, ReadOnlySpan<char> format, IFormatProvider? provider) =>
+            // format and provider are ignored.
+            TryFormatCore(utf8Destination, DefaultFormatFieldCount, out bytesWritten);
 
         private int DefaultFormatFieldCount =>
             _Build == -1 ? 2 :
             _Revision == -1 ? 3 :
             4;
 
-        private StringBuilder ToCachedStringBuilder(int fieldCount)
-        {
-            // Note: As we always have positive numbers then it is safe to convert the number to string
-            // regardless of the current culture as we'll not have any punctuation marks in the number.
-
-            if (fieldCount == 2)
-            {
-                StringBuilder sb = StringBuilderCache.Acquire();
-                sb.Append(_Major);
-                sb.Append('.');
-                sb.Append(_Minor);
-                return sb;
-            }
-            else
-            {
-                if (_Build == -1)
-                {
-                    throw new ArgumentException(SR.Format(SR.ArgumentOutOfRange_Bounds_Lower_Upper, "0", "2"), nameof(fieldCount));
-                }
-
-                if (fieldCount == 3)
-                {
-                    StringBuilder sb = StringBuilderCache.Acquire();
-                    sb.Append(_Major);
-                    sb.Append('.');
-                    sb.Append(_Minor);
-                    sb.Append('.');
-                    sb.Append(_Build);
-                    return sb;
-                }
-
-                if (_Revision == -1)
-                {
-                    throw new ArgumentException(SR.Format(SR.ArgumentOutOfRange_Bounds_Lower_Upper, "0", "3"), nameof(fieldCount));
-                }
-
-                if (fieldCount == 4)
-                {
-                    StringBuilder sb = StringBuilderCache.Acquire();
-                    sb.Append(_Major);
-                    sb.Append('.');
-                    sb.Append(_Minor);
-                    sb.Append('.');
-                    sb.Append(_Build);
-                    sb.Append('.');
-                    sb.Append(_Revision);
-                    return sb;
-                }
-
-                throw new ArgumentException(SR.Format(SR.ArgumentOutOfRange_Bounds_Lower_Upper, "0", "4"), nameof(fieldCount));
-            }
-        }
-
         public static Version Parse(string input)
         {
-            if (input == null)
-            {
-                throw new ArgumentNullException(nameof(input));
-            }
+            ArgumentNullException.ThrowIfNull(input);
 
             return ParseVersion(input.AsSpan(), throwOnFailure: true)!;
         }
@@ -320,11 +318,11 @@ namespace System
             // We musn't have any separators after build.
             int buildEnd = -1;
             int minorEnd = input.Slice(majorEnd + 1).IndexOf('.');
-            if (minorEnd != -1)
+            if (minorEnd >= 0)
             {
                 minorEnd += (majorEnd + 1);
                 buildEnd = input.Slice(minorEnd + 1).IndexOf('.');
-                if (buildEnd != -1)
+                if (buildEnd >= 0)
                 {
                     buildEnd += (minorEnd + 1);
                     if (input.Slice(buildEnd + 1).Contains('.'))
@@ -381,17 +379,14 @@ namespace System
         {
             if (throwOnFailure)
             {
-                if ((parsedComponent = int.Parse(component, NumberStyles.Integer, CultureInfo.InvariantCulture)) < 0)
-                {
-                    throw new ArgumentOutOfRangeException(componentName, SR.ArgumentOutOfRange_Version);
-                }
+                parsedComponent = int.Parse(component, NumberStyles.Integer, CultureInfo.InvariantCulture);
+                ArgumentOutOfRangeException.ThrowIfNegative(parsedComponent, componentName);
                 return true;
             }
 
             return int.TryParse(component, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsedComponent) && parsedComponent >= 0;
         }
 
-        // Force inline as the true/false ternary takes it above ALWAYS_INLINE size even though the asm ends up smaller
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool operator ==(Version? v1, Version? v2)
         {
@@ -399,8 +394,7 @@ namespace System
             // so it can become a simple test
             if (v2 is null)
             {
-                // return true/false not the test result https://github.com/dotnet/runtime/issues/4207
-                return (v1 is null) ? true : false;
+                return v1 is null;
             }
 
             // Quick reference equality test prior to calling the virtual Equality

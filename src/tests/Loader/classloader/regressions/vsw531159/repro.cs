@@ -2,15 +2,17 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using Xunit;
 
 public class Gen<U>
 {
 	public void Meth<T>(T t) where T : struct, U {}
 }
 
-public class Test
+public class Test_repro
 {
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		try
 		{

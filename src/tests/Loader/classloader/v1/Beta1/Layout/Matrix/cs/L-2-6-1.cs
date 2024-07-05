@@ -12,11 +12,13 @@
 //
 
 using System;
+using Xunit;
 
-class Test{
-	public static int Main(){
+public class Test_L_2_6_1{
+	[Fact]
+	public static int TestEntryPoint(){
 		int mi_RetCode;
-		mi_RetCode = B.Test();
+		mi_RetCode = B.Test_L_2_6_1();
 		
 		if(mi_RetCode == 100)
 			Console.WriteLine("Pass");
@@ -28,7 +30,7 @@ class Test{
 }
 
 struct B{
-	public static int Test(){
+	public static int Test_L_2_6_1(){
 		A a = new A();
 
 		int mi_RetCode = 100;
@@ -105,7 +107,7 @@ struct B{
 		
 		////////////////////////////////////////////
 		// Test access from within the nested class
-		if(Nested_Cls.Test() != 100)
+		if(Nested_Cls.Test_L_2_6_1() != 100)
 			mi_RetCode = 0;
 
 		return mi_RetCode;
@@ -247,7 +249,7 @@ struct A{
 		
 		
 		public struct Cls2{
-			public int Test(){
+			public int Test_L_2_6_1(){
 				int mi_RetCode = 100;
 				
 				/////////////////////////////////////////////////////////////////////////

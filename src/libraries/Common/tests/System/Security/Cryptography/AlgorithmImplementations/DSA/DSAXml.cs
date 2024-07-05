@@ -7,7 +7,7 @@ using Xunit;
 
 namespace System.Security.Cryptography.Dsa.Tests
 {
-    [SkipOnMono("Not supported on Browser", TestPlatforms.Browser)]
+    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst, "Not supported on Browser/iOS/tvOS/MacCatalyst")]
     public static class DSAXml
     {
         [Fact]
@@ -415,7 +415,7 @@ S      9      R      /       j       6       9        C        v        C
         }
 
         [ConditionalFact(typeof(DSAFactory), nameof(DSAFactory.SupportsKeyGeneration))]
-        [OuterLoop("DSA key generation is very slow")]
+        [OuterLoop("DSA key generation is very slow", ~TestPlatforms.Browser)]
         public static void FromToXml()
         {
             using (DSA dsa = DSAFactory.Create())

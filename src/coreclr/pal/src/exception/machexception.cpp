@@ -31,6 +31,7 @@ SET_DEFAULT_DEBUG_CHANNEL(EXCEPT); // some headers have code with asserts, so do
 #include "pal/virtual.h"
 #include "pal/map.hpp"
 #include "pal/environ.h"
+#include <minipal/utils.h>
 
 #include "machmessage.h"
 
@@ -356,32 +357,30 @@ PAL_ERROR CorUnix::CPalThread::DisableMachExceptions()
     return palError;
 }
 
-#if defined(HOST_AMD64)
-// Since HijackFaultingThread pushed the context, exception record and info on the stack, we need to adjust the
-// signature of PAL_DispatchException such that the corresponding arguments are considered to be on the stack
-// per GCC64 calling convention rules. Hence, the first 6 dummy arguments (corresponding to RDI, RSI, RDX,RCX, R8, R9).
+#if defined(HOST_ARM64)
 extern "C"
-void PAL_DispatchException(DWORD64 dwRDI, DWORD64 dwRSI, DWORD64 dwRDX, DWORD64 dwRCX, DWORD64 dwR8, DWORD64 dwR9, PCONTEXT pContext, PEXCEPTION_RECORD pExRecord, MachExceptionInfo *pMachExceptionInfo)
-#elif defined(HOST_ARM64)
-extern "C"
-void PAL_DispatchException(PCONTEXT pContext, PEXCEPTION_RECORD pExRecord, MachExceptionInfo *pMachExceptionInfo)
+void
+RestoreCompleteContext(
+  PCONTEXT ContextRecord,
+  PEXCEPTION_RECORD ExceptionRecord
+);
 #endif
+
+__attribute__((noinline))
+static void PAL_DispatchExceptionInner(PCONTEXT pContext, PEXCEPTION_RECORD pExRecord)
 {
-    CPalThread *pThread = InternalGetCurrentThread();
+    // Stash the inner context record into a local in a frame other than PAL_DispatchException
+    // to ensure we have a compiler-defined callee stack frame state to record the context record
+    // local before we call SEHProcessException. The instrumentation introduced by native sanitizers
+    // doesn't interface that well with the fake caller frames we define for PAL_DispatchException,
+    // but they work fine for any callees of PAL_DispatchException.
+    CONTEXT *contextRecord = pContext;
+    g_hardware_exception_context_locvar_offset = (int)((char*)&contextRecord - (char*)__builtin_frame_address(0));
 
-    CONTEXT *contextRecord;
-    EXCEPTION_RECORD *exceptionRecord;
-    AllocateExceptionRecords(&exceptionRecord, &contextRecord);
-
-    *contextRecord = *pContext;
-    *exceptionRecord = *pExRecord;
-
-    contextRecord->ContextFlags |= CONTEXT_EXCEPTION_ACTIVE;
+    pContext->ContextFlags |= CONTEXT_EXCEPTION_ACTIVE;
     bool continueExecution;
-
     {
-        // The exception object takes ownership of the exceptionRecord and contextRecord
-        PAL_SEHException exception(exceptionRecord, contextRecord);
+        PAL_SEHException exception(pExRecord, pContext, true);
 
         TRACE("PAL_DispatchException(EC %08x EA %p)\n", pExRecord->ExceptionCode, pExRecord->ExceptionAddress);
 
@@ -389,8 +388,8 @@ void PAL_DispatchException(PCONTEXT pContext, PEXCEPTION_RECORD pExRecord, MachE
         if (continueExecution)
         {
             // Make a copy of the exception records so that we can free them before restoring the context
-            *pContext = *contextRecord;
-            *pExRecord = *exceptionRecord;
+            *pContext = *exception.ExceptionPointers.ContextRecord;
+            *pExRecord = *exception.ExceptionPointers.ExceptionRecord;
         }
 
         // The exception records are destroyed by the PAL_SEHException destructor now.
@@ -398,14 +397,37 @@ void PAL_DispatchException(PCONTEXT pContext, PEXCEPTION_RECORD pExRecord, MachE
 
     if (continueExecution)
     {
+        __asan_handle_no_return();
 #if defined(HOST_ARM64)
         // RtlRestoreContext assembly corrupts X16 & X17, so it cannot be
         // used for GCStress=C restore
-        MachSetThreadContext(pContext);
+        RestoreCompleteContext(pContext, pExRecord);
 #else
         RtlRestoreContext(pContext, pExRecord);
 #endif
     }
+}
+
+#if defined(HOST_AMD64)
+// Since HijackFaultingThread pushed the context, exception record and info on the stack, we need to adjust the
+// signature of PAL_DispatchException such that the corresponding arguments are considered to be on the stack
+// per GCC64 calling convention rules. Hence, the first 6 dummy arguments (corresponding to RDI, RSI, RDX,RCX, R8, R9).
+extern "C"
+void PAL_DispatchException(DWORD64 dwRDI, DWORD64 dwRSI, DWORD64 dwRDX, DWORD64 dwRCX, DWORD64 dwR8, DWORD64 dwR9, PCONTEXT pContext, PEXCEPTION_RECORD pExRecord, MachExceptionInfo *pMachExceptionInfo)
+#elif defined(HOST_ARM64)
+
+extern "C"
+void PAL_DispatchException(PCONTEXT pContext, PEXCEPTION_RECORD pExRecord, MachExceptionInfo *pMachExceptionInfo)
+#endif
+{
+    // At the time of executing this function, this thread's stack is a lie.
+    // This frame and the calling frame were never actually pushed onto the stack
+    // and were synthetically added by HijackFaultingThread.
+    // We need to let ASAN know that its stack tracking is out of date.
+    __asan_handle_no_return();
+    CPalThread *pThread = InternalGetCurrentThread();
+
+    PAL_DispatchExceptionInner(pContext, pExRecord);
 
     // Send the forward request to the exception thread to process
     MachMessage sSendMessage;
@@ -640,8 +662,7 @@ Function :
 
 Parameters:
     thread - thread the exception happened
-    task - task the exception happened
-    message - exception message
+    exceptionInfo - exception info
 
 Return value :
     None
@@ -649,11 +670,9 @@ Return value :
 static
 void
 HijackFaultingThread(
-    mach_port_t thread,             // [in] thread the exception happened on
-    mach_port_t task,               // [in] task the exception happened on
-    MachMessage& message)           // [in] exception message
+    mach_port_t thread,               // [in] thread the exception happened on
+    MachExceptionInfo& exceptionInfo) // [in] exception info
 {
-    MachExceptionInfo exceptionInfo(thread, message);
     EXCEPTION_RECORD exceptionRecord;
     CONTEXT threadContext;
     kern_return_t machret;
@@ -830,7 +849,7 @@ HijackFaultingThread(
     if (fIsStackOverflow)
     {
         // Allocate the minimal stack necessary for handling stack overflow
-        int stackOverflowStackSize = 7 * 4096;
+        int stackOverflowStackSize = 15 * 4096;
         // Align the size to virtual page size and add one virtual page as a stack guard
         stackOverflowStackSize = ALIGN_UP(stackOverflowStackSize, GetVirtualPageSize()) + GetVirtualPageSize();
         void* stackOverflowHandlerStack = mmap(NULL, stackOverflowStackSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
@@ -1154,8 +1173,23 @@ SEHExceptionThread(void *args)
 
             if (!feFound)
             {
-                NONPAL_TRACE("HijackFaultingThread thread %08x\n", thread);
-                HijackFaultingThread(thread, mach_task_self(), sMessage);
+                MachExceptionInfo exceptionInfo(thread, sMessage);
+
+#if defined(HOST_ARM64)
+                // Check for a special case of invalid instruction that is used to implement RestoreCompleteContext
+                if (arm_thread_state64_get_pc_fptr(exceptionInfo.ThreadState) == (void*)RestoreCompleteContext)
+                {
+                    // The CONTEXT pointer was passed to RestoreCompleteContext in x0
+                    CONTEXT *pContext = (CONTEXT *)exceptionInfo.ThreadState.__x[0];
+                    machret = CONTEXT_SetThreadContextOnPort(thread, pContext);
+                    CHECK_MACH("CONTEXT_SetThreadContextOnPort", machret);
+                }
+                else
+#endif // HOST_ARM64
+                {
+                    NONPAL_TRACE("HijackFaultingThread thread %08x\n", thread);
+                    HijackFaultingThread(thread, exceptionInfo);
+                }
 
                 // Send the result of handling the exception back in a reply.
                 NONPAL_TRACE("ReplyToNotification KERN_SUCCESS thread %08x port %08x\n", thread, sMessage.GetRemotePort());
@@ -1411,203 +1445,8 @@ SEHInitializeMachExceptions(DWORD flags)
 #endif // _DEBUG
     }
 
-    // Tell the system to ignore SIGPIPE signals rather than use the default
-    // behavior of terminating the process. Ignoring SIGPIPE will cause
-    // calls that would otherwise raise that signal to return EPIPE instead.
-    // The PAL expects EPIPE from those functions and won't handle a
-    // SIGPIPE signal.
-    signal(SIGPIPE, SIG_IGN);
-
     // We're done
     return TRUE;
-}
-
-extern "C"
-void
-ActivationHandler(CONTEXT* context)
-{
-    if (g_activationFunction != NULL)
-    {
-        g_activationFunction(context);
-    }
-
-#ifdef TARGET_ARM64
-    // RtlRestoreContext assembly corrupts X16 & X17, so it cannot be
-    // used for Activation restore
-    MachSetThreadContext(context);
-#else
-    RtlRestoreContext(context, NULL);
-#endif
-    DebugBreak();
-}
-
-extern "C" void ActivationHandlerWrapper();
-extern "C" int ActivationHandlerReturnOffset;
-extern "C" unsigned int XmmYmmStateSupport();
-
-#if defined(HOST_AMD64)
-bool IsHardwareException(x86_exception_state64_t exceptionState)
-{
-    static const int MaxHardwareExceptionVector = 31;
-    return exceptionState.__trapno <= MaxHardwareExceptionVector;
-}
-#elif defined(HOST_ARM64)
-bool IsHardwareException(arm_exception_state64_t exceptionState)
-{
-    // Infer exception state from the ESR_EL* register value.
-    // Bits 31-26 represent the ESR.EC field
-    const int ESR_EC_SHIFT = 26;
-    const int ESR_EC_MASK = 0x3f;
-    const int esr_ec = (exceptionState.__esr >> ESR_EC_SHIFT) & ESR_EC_MASK;
-
-    const int ESR_EC_SVC = 0x15; // Supervisor Call exception from aarch64.
-
-    // Assume only supervisor calls from aarch64 are not hardware exceptions
-    return (esr_ec != ESR_EC_SVC);
-}
-#else
-#error Unexpected architecture
-#endif
-
-/*++
-Function :
-    InjectActivationInternal
-
-    Sets up the specified thread to call the ActivationHandler.
-
-Parameters:
-    pThread - PAL thread instance
-
-Return value :
-    PAL_ERROR
---*/
-PAL_ERROR
-InjectActivationInternal(CPalThread* pThread)
-{
-    PAL_ERROR palError;
-
-    mach_port_t threadPort = pThread->GetMachPortSelf();
-
-    kern_return_t MachRet = SuspendMachThread(threadPort);
-    palError = (MachRet == KERN_SUCCESS) ? NO_ERROR : ERROR_GEN_FAILURE;
-
-    if (palError == NO_ERROR)
-    {
-#if defined(HOST_AMD64)
-        x86_exception_state64_t ExceptionState;
-        const thread_state_flavor_t exceptionFlavor = x86_EXCEPTION_STATE64;
-        const mach_msg_type_number_t exceptionCount = x86_EXCEPTION_STATE64_COUNT;
-
-        x86_thread_state64_t ThreadState;
-        const thread_state_flavor_t threadFlavor = x86_THREAD_STATE64;
-        const mach_msg_type_number_t threadCount = x86_THREAD_STATE64_COUNT;
-#elif defined(HOST_ARM64)
-        arm_exception_state64_t ExceptionState;
-        const thread_state_flavor_t exceptionFlavor = ARM_EXCEPTION_STATE64;
-        const mach_msg_type_number_t exceptionCount = ARM_EXCEPTION_STATE64_COUNT;
-
-        arm_thread_state64_t ThreadState;
-        const thread_state_flavor_t threadFlavor = ARM_THREAD_STATE64;
-        const mach_msg_type_number_t threadCount = ARM_THREAD_STATE64_COUNT;
-#else
-#error Unexpected architecture
-#endif
-        mach_msg_type_number_t count = exceptionCount;
-
-        MachRet = thread_get_state(threadPort,
-                                   exceptionFlavor,
-                                   (thread_state_t)&ExceptionState,
-                                   &count);
-        _ASSERT_MSG(MachRet == KERN_SUCCESS, "thread_get_state for *_EXCEPTION_STATE64\n");
-
-        // Inject the activation only if the thread doesn't have a pending hardware exception
-        if (!IsHardwareException(ExceptionState))
-        {
-            count = threadCount;
-            MachRet = thread_get_state(threadPort,
-                                       threadFlavor,
-                                       (thread_state_t)&ThreadState,
-                                       &count);
-            _ASSERT_MSG(MachRet == KERN_SUCCESS, "thread_get_state for *_THREAD_STATE64\n");
-
-#if defined(HOST_AMD64)
-            if ((g_safeActivationCheckFunction != NULL) && g_safeActivationCheckFunction(ThreadState.__rip, /* checkingCurrentThread */ FALSE))
-            {
-                // TODO: it would be nice to preserve the red zone in case a jitter would want to use it
-                // Do we really care about unwinding through the wrapper?
-                size_t* sp = (size_t*)ThreadState.__rsp;
-                *(--sp) = ThreadState.__rip;
-                *(--sp) = ThreadState.__rbp;
-                size_t rbpAddress = (size_t)sp;
-#elif defined(HOST_ARM64)
-            if ((g_safeActivationCheckFunction != NULL) && g_safeActivationCheckFunction((size_t)arm_thread_state64_get_pc_fptr(ThreadState), /* checkingCurrentThread */ FALSE))
-            {
-                // TODO: it would be nice to preserve the red zone in case a jitter would want to use it
-                // Do we really care about unwinding through the wrapper?
-                size_t* sp = (size_t*)arm_thread_state64_get_sp(ThreadState);
-                *(--sp) = (size_t)arm_thread_state64_get_pc_fptr(ThreadState);
-                *(--sp) = arm_thread_state64_get_fp(ThreadState);
-                size_t fpAddress = (size_t)sp;
-#else
-#error Unexpected architecture
-#endif
-                size_t contextAddress = (((size_t)sp) - sizeof(CONTEXT)) & ~15;
-
-                // Fill in the context in the helper frame with the full context of the suspended thread.
-                // The ActivationHandler will use the context to resume the execution of the thread
-                // after the activation function returns.
-                CONTEXT *pContext = (CONTEXT *)contextAddress;
-#if defined(HOST_AMD64)
-                pContext->ContextFlags = CONTEXT_FULL | CONTEXT_SEGMENTS;
-#else
-                pContext->ContextFlags = CONTEXT_FULL;
-#endif
-#ifdef XSTATE_SUPPORTED
-                if (XmmYmmStateSupport() == 1)
-                {
-                    pContext->ContextFlags |= CONTEXT_XSTATE;
-                }
-#endif
-                MachRet = CONTEXT_GetThreadContextFromPort(threadPort, pContext);
-                _ASSERT_MSG(MachRet == KERN_SUCCESS, "CONTEXT_GetThreadContextFromPort\n");
-
-#if defined(HOST_AMD64)
-                size_t returnAddressAddress = contextAddress - sizeof(size_t);
-                *(size_t*)(returnAddressAddress) =  ActivationHandlerReturnOffset + (size_t)ActivationHandlerWrapper;
-
-                // Make the instruction register point to ActivationHandler
-                ThreadState.__rip = (size_t)ActivationHandler;
-                ThreadState.__rsp = returnAddressAddress;
-                ThreadState.__rbp = rbpAddress;
-                ThreadState.__rdi = contextAddress;
-#elif defined(HOST_ARM64)
-                // Make the call to ActivationHandler
-                arm_thread_state64_set_lr_fptr(ThreadState, ActivationHandlerReturnOffset + (size_t)ActivationHandlerWrapper);
-                arm_thread_state64_set_pc_fptr(ThreadState, ActivationHandler);
-                arm_thread_state64_set_sp(ThreadState, contextAddress);
-                arm_thread_state64_set_fp(ThreadState, fpAddress);
-                ThreadState.__x[0] = contextAddress;
-#else
-#error Unexpected architecture
-#endif
-
-                MachRet = thread_set_state(threadPort,
-                                           threadFlavor,
-                                           (thread_state_t)&ThreadState,
-                                           threadCount);
-                _ASSERT_MSG(MachRet == KERN_SUCCESS, "thread_set_state\n");
-            }
-        }
-
-        MachRet = thread_resume(threadPort);
-        palError = (MachRet == ERROR_SUCCESS) ? NO_ERROR : ERROR_GEN_FAILURE;
-    }
-    else
-    {
-        printf("Suspension failed with error 0x%x\n", palError);
-    }
-
-    return palError;
 }
 
 #endif // HAVE_MACH_EXCEPTIONS

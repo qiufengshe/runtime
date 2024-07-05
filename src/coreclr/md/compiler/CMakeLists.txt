@@ -37,7 +37,6 @@ set(MDCOMPILER_HEADERS
   disp.h
   filtermanager.h
   importhelper.h
-  mdperf.h
   mdutil.h
   regmeta.h
 )
@@ -66,19 +65,13 @@ add_library_clr(mdcompiler_dac ${MDCOMPILER_SOURCES})
 set_target_properties(mdcompiler_dac PROPERTIES DAC_COMPONENT TRUE)
 target_precompile_headers(mdcompiler_dac PRIVATE stdafx.h)
 
-add_library_clr(mdcompiler_wks_obj OBJECT ${MDCOMPILER_WKS_SOURCES})
-target_compile_definitions(mdcompiler_wks_obj PRIVATE FEATURE_METADATA_EMIT_ALL)
-target_precompile_headers(mdcompiler_wks_obj PRIVATE stdafx.h)
-add_library(mdcompiler_wks INTERFACE)
-target_sources(mdcompiler_wks INTERFACE $<TARGET_OBJECTS:mdcompiler_wks_obj>)
+add_library_clr(mdcompiler_wks OBJECT ${MDCOMPILER_WKS_SOURCES})
+target_compile_definitions(mdcompiler_wks PRIVATE FEATURE_METADATA_EMIT_ALL)
+target_precompile_headers(mdcompiler_wks PRIVATE stdafx.h)
 
 add_library_clr(mdcompiler-dbi ${MDCOMPILER_SOURCES})
 set_target_properties(mdcompiler-dbi PROPERTIES DBI_COMPONENT TRUE)
 target_precompile_headers(mdcompiler-dbi PRIVATE stdafx.h)
-
-add_library_clr(mdcompiler_crossgen ${MDCOMPILER_SOURCES})
-set_target_properties(mdcompiler_crossgen PROPERTIES CROSSGEN_COMPONENT TRUE)
-target_precompile_headers(mdcompiler_crossgen PRIVATE stdafx.h)
 
 add_library_clr(mdcompiler_ppdb ${MDCOMPILER_SOURCES})
 target_compile_definitions(mdcompiler_ppdb PRIVATE FEATURE_METADATA_EMIT_ALL FEATURE_METADATA_EMIT_PORTABLE_PDB)

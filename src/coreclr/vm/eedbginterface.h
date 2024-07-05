@@ -18,7 +18,7 @@
 #include "field.h"
 #include "stackwalk.h"
 
-#ifdef EnC_SUPPORTED
+#ifdef FEATURE_METADATA_UPDATER
 #include "encee.h"
 #endif
 
@@ -168,7 +168,7 @@ public:
 
 #ifndef DACCESS_COMPILE
 
-#ifdef EnC_SUPPORTED
+#ifdef FEATURE_METADATA_UPDATER
 
     // Apply an EnC edit
     virtual HRESULT EnCApplyChanges(EditAndContinueModule *pModule,
@@ -183,7 +183,7 @@ public:
                                          void *debuggerFuncHandle,
                                          SIZE_T resumeIP,
                                          CONTEXT *pContext) = 0;
-#endif //EnC_SUPPORTED
+#endif //FEATURE_METADATA_UPDATER
 
     //
     // New methods to support the new debugger.
@@ -344,14 +344,6 @@ public:
                                   CorDebugThreadState state) = 0;
 
     virtual CorDebugUserState GetPartialUserState( Thread *pThread ) = 0;
-
-#ifdef FEATURE_PREJIT
-#ifndef DACCESS_COMPILE
-    virtual void SetNGENDebugFlags(BOOL fAllowOpt) = 0;
-
-    virtual void GetNGENDebugFlags(BOOL *fAllowOpt) = 0;
-#endif
-#endif // FEATURE_PREJIT
 
 #endif // #ifndef DACCESS_COMPILE
 

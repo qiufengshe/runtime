@@ -1,11 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-// ==++==
-//
-
-//
-// ==--==
 #include "unixasmmacros.inc"
 #include "asmconstants.h"
 
@@ -76,6 +71,7 @@ LOCAL_LABEL(LNoFloatingPoint):
         // Note that remoting expect target in r4.
         ldr     r4, [r5,#CallDescrData__pTarget]
         blx     r4
+LOCAL_LABEL(CallDescrWorkerInternalReturnAddress):
 
         ldr     r3, [r5,#CallDescrData__fpReturnSize]
 
@@ -130,6 +126,10 @@ LOCAL_LABEL(LReturnDone):
 
         EPILOG_STACK_RESTORE_OFFSET   r7, #8
         EPILOG_POP              "{r4,r5,r7,pc}"
+
+CallDescrWorkerInternalReturnAddressOffset:
+    .global CallDescrWorkerInternalReturnAddressOffset
+    .word LOCAL_LABEL(CallDescrWorkerInternalReturnAddress) - C_FUNC(CallDescrWorkerInternal)
 
         NESTED_END CallDescrWorkerInternal,_TEXT
 
@@ -262,29 +262,6 @@ ThePreStubPatchLabel:
         NESTED_END NDirectImportThunk, _TEXT
 
 // ------------------------------------------------------------------
-// The call in fixup precode initally points to this function.
-// The pupose of this function is to load the MethodDesc and forward the call the prestub.
-        NESTED_ENTRY PrecodeFixupThunk, _TEXT, NoHandler
-
-        // r12 = FixupPrecode *
-
-        PROLOG_PUSH     "{r0-r1}"
-
-        // Inline computation done by FixupPrecode::GetMethodDesc()
-        ldrb    r0, [r12, #3]           // m_PrecodeChunkIndex
-        ldrb    r1, [r12, #2]           // m_MethodDescChunkIndex
-
-        add     r12,r12,r0,lsl #3
-        add     r0,r12,r0,lsl #2
-        ldr     r0, [r0,#8]
-        add     r12,r0,r1,lsl #2
-
-        EPILOG_POP      "{r0-r1}"
-        b C_FUNC(ThePreStub)
-
-        NESTED_END PrecodeFixupThunk, _TEXT
-
-// ------------------------------------------------------------------
 // void ResolveWorkerAsmStub(r0, r1, r2, r3, r4:IndirectionCellAndFlags, r12:DispatchToken)
 //
 // The stub dispatch thunk which transfers control to VSD_ResolveWorker.
@@ -366,11 +343,8 @@ LEAF_ENTRY JIT_ProfilerEnterLeaveTailcallStub, _TEXT
     bx lr
 LEAF_END JIT_ProfilerEnterLeaveTailcallStub, _TEXT
 
-#define PROFILE_ENTER    1
-#define PROFILE_LEAVE    2
-#define PROFILE_TAILCALL 4
 // size of profiler data structure plus alignment padding
-#define SIZEOF__PROFILE_PLATFORM_SPECIFIC_DATA 104+4
+#define PADDED_SIZEOF__PROFILE_PLATFORM_SPECIFIC_DATA  SIZEOF__PROFILE_PLATFORM_SPECIFIC_DATA+4
 
 // typedef struct _PROFILE_PLATFORM_SPECIFIC_DATA
 // {
@@ -409,23 +383,23 @@ NESTED_ENTRY \helper\()Naked, _TEXT, NoHandler
     CHECK_STACK_ALIGNMENT
 
     // set the other args, starting with functionID
-    str         r0, [sp, #80]
+    str         r0, [sp, PROFILE_PLATFORM_SPECIFIC_DATA__functionId]
 
     // probeSp is the original sp when this stub was called
-    add         r2, sp, SIZEOF__PROFILE_PLATFORM_SPECIFIC_DATA+20
-    str         r2, [sp, #84] 
+    add         r2, sp, PADDED_SIZEOF__PROFILE_PLATFORM_SPECIFIC_DATA+20
+    str         r2, [sp, PROFILE_PLATFORM_SPECIFIC_DATA__probeSp]
 
     // get the address of the arguments from the frame pointer, store in profiledSp
     add         r2, r11, #8
-    str         r2, [sp, #88]
+    str         r2, [sp, PROFILE_PLATFORM_SPECIFIC_DATA__profiledSp]
 
     // clear hiddenArg
     movw        r2, #0
-    str         r2, [sp, #92]
+    str         r2, [sp, PROFILE_PLATFORM_SPECIFIC_DATA__hiddenArg]
     
     // set the flag to indicate what hook this is
     movw        r2, \flags
-    str         r2, [sp, #96]
+    str         r2, [sp, PROFILE_PLATFORM_SPECIFIC_DATA__flags]
 
     // sp is the address of PROFILE_PLATFORM_SPECIFIC_DATA, then call to C++
     mov         r1, sp
@@ -591,136 +565,6 @@ LOCAL_LABEL(stackProbe_loop):
     bx lr
     NESTED_END stackProbe, _TEXT
 
-#ifdef FEATURE_PREJIT
-//------------------------------------------------
-// VirtualMethodFixupStub
-//
-// In NGEN images, virtual slots inherited from cross-module dependencies
-// point to a jump thunk that calls into the following function that will
-// call into a VM helper. The VM helper is responsible for patching up
-// thunk, upon executing the precode, so that all subsequent calls go directly
-// to the actual method body.
-//
-// This is done lazily for performance reasons.
-//
-// On entry:
-//
-// R0 = "this" pointer
-// R12 = Address of thunk + 4
-
-    NESTED_ENTRY VirtualMethodFixupStub, _TEXT, NoHandler
-
-    // Save arguments and return address
-    PROLOG_PUSH "{r0-r3, r7,r8, lr}" // keep increase by 8B for alignment
-    PROLOG_STACK_SAVE_OFFSET r7, #20
-
-    // Align stack
-    alloc_stack  SIZEOF__FloatArgumentRegisters + 4
-    vstm                sp, {d0-d7}
-
-
-    CHECK_STACK_ALIGNMENT
-
-    // R12 contains an address that is 4 bytes ahead of
-    // where the thunk starts. Refer to ZapImportVirtualThunk::Save
-    // for details on this.
-    //
-    // Move the correct thunk start address in R1
-    sub r1, r12, #4
-
-    // Call the helper in the VM to perform the actual fixup
-    // and tell us where to tail call. R0 already contains
-    // the this pointer.
-    bl C_FUNC(VirtualMethodFixupWorker)
-
-    // On return, R0 contains the target to tailcall to
-    mov         r12, r0
-
-    // pop the stack and restore original register state
-    vldm               sp, {d0-d7}
-    free_stack SIZEOF__FloatArgumentRegisters + 4
-    EPILOG_POP "{r0-r3, r7,r8, lr}"
-
-    PATCH_LABEL VirtualMethodFixupPatchLabel
-
-    // and tailcall to the actual method
-    bx r12
-
-    NESTED_END VirtualMethodFixupStub, _TEXT
-#endif // FEATURE_PREJIT
-
-//------------------------------------------------
-// ExternalMethodFixupStub
-//
-// In NGEN images, calls to cross-module external methods initially
-// point to a jump thunk that calls into the following function that will
-// call into a VM helper. The VM helper is responsible for patching up the
-// thunk, upon executing the precode, so that all subsequent calls go directly
-// to the actual method body.
-//
-// This is done lazily for performance reasons.
-//
-// On entry:
-//
-// R12 = Address of thunk + 4
-
-    NESTED_ENTRY ExternalMethodFixupStub, _TEXT, NoHandler
-
-    PROLOG_WITH_TRANSITION_BLOCK
-
-    add         r0, sp, #__PWTB_TransitionBlock // pTransitionBlock
-
-    // Adjust (read comment above for details) and pass the address of the thunk
-    sub         r1, r12, #4                     // pThunk
-
-    mov         r2, #0  // sectionIndex
-    mov         r3, #0  // pModule
-    bl          C_FUNC(ExternalMethodFixupWorker)
-
-    // mov the address we patched to in R12 so that we can tail call to it
-    mov         r12, r0
-
-    EPILOG_WITH_TRANSITION_BLOCK_TAILCALL
-    PATCH_LABEL ExternalMethodFixupPatchLabel
-    bx r12
-
-    NESTED_END ExternalMethodFixupStub, _TEXT
-
-#ifdef FEATURE_PREJIT
-//------------------------------------------------
-// StubDispatchFixupStub
-//
-// In NGEN images, calls to interface methods initially
-// point to a jump thunk that calls into the following function that will
-// call into a VM helper. The VM helper is responsible for patching up the
-// thunk with actual stub dispatch stub.
-//
-// On entry:
-//
-// R4 = Address of indirection cell
-
-    NESTED_ENTRY StubDispatchFixupStub, _TEXT, NoHandler
-
-    PROLOG_WITH_TRANSITION_BLOCK
-
-    // address of StubDispatchFrame
-    add         r0, sp, #__PWTB_TransitionBlock // pTransitionBlock
-    mov         r1, r4  // siteAddrForRegisterIndirect
-    mov         r2, #0  // sectionIndex
-    mov         r3, #0  // pModule
-
-    bl          C_FUNC(StubDispatchFixupWorker)
-
-    // mov the address we patched to in R12 so that we can tail call to it
-    mov         r12, r0
-
-    EPILOG_WITH_TRANSITION_BLOCK_TAILCALL
-    PATCH_LABEL StubDispatchFixupPatchLabel
-    bx   r12
-
-    NESTED_END StubDispatchFixupStub, _TEXT
-#endif // FEATURE_PREJIT
-
 //------------------------------------------------
 // JIT_RareDisableHelper
 //
@@ -740,71 +584,6 @@ LOCAL_LABEL(stackProbe_loop):
     EPILOG_POP "{r0-r1, r7,r8, r11, pc}"
 
     NESTED_END JIT_RareDisableHelper, _TEXT
-
-
-#ifdef FEATURE_CORECLR
-//
-// JIT Static access helpers for single appdomain case
-//
-
-// ------------------------------------------------------------------
-// void* JIT_GetSharedNonGCStaticBase(SIZE_T moduleDomainID, DWORD dwClassDomainID)
-
-    LEAF_ENTRY JIT_GetSharedNonGCStaticBase_SingleAppDomain, _TEXT
-
-    // If class is not initialized, bail to C++ helper
-    add     r2, r0, #DomainLocalModule__m_pDataBlob
-    ldrb    r2, [r2, r1]
-    tst     r2, #1
-    beq     LOCAL_LABEL(CallCppHelper1)
-
-    bx      lr
-
-LOCAL_LABEL(CallCppHelper1):
-    // Tail call JIT_GetSharedNonGCStaticBase_Helper
-    b     C_FUNC(JIT_GetSharedNonGCStaticBase_Helper)
-    LEAF_END JIT_GetSharedNonGCStaticBase_SingleAppDomain, _TEXT
-
-
-// ------------------------------------------------------------------
-// void* JIT_GetSharedNonGCStaticBaseNoCtor(SIZE_T moduleDomainID, DWORD dwClassDomainID)
-
-    LEAF_ENTRY JIT_GetSharedNonGCStaticBaseNoCtor_SingleAppDomain, _TEXT
-
-    bx lr
-    LEAF_END JIT_GetSharedNonGCStaticBaseNoCtor_SingleAppDomain, _TEXT
-
-
-// ------------------------------------------------------------------
-// void* JIT_GetSharedGCStaticBase(SIZE_T moduleDomainID, DWORD dwClassDomainID)
-
-    LEAF_ENTRY JIT_GetSharedGCStaticBase_SingleAppDomain, _TEXT
-
-    // If class is not initialized, bail to C++ helper
-    add     r2, r0, #DomainLocalModule__m_pDataBlob
-    ldrb    r2, [r2, r1]
-    tst     r2, #1
-    beq     LOCAL_LABEL(CallCppHelper3)
-
-    ldr     r0, [r0, #DomainLocalModule__m_pGCStatics]
-    bx lr
-
-LOCAL_LABEL(CallCppHelper3):
-    // Tail call Jit_GetSharedGCStaticBase_Helper
-    b     C_FUNC(JIT_GetSharedGCStaticBase_Helper)
-    LEAF_END JIT_GetSharedGCStaticBase_SingleAppDomain, _TEXT
-
-
-// ------------------------------------------------------------------
-// void* JIT_GetSharedGCStaticBaseNoCtor(SIZE_T moduleDomainID, DWORD dwClassDomainID)
-
-    LEAF_ENTRY JIT_GetSharedGCStaticBaseNoCtor_SingleAppDomain, _TEXT
-
-    ldr     r0, [r0, #DomainLocalModule__m_pGCStatics]
-    bx lr
-    LEAF_END JIT_GetSharedGCStaticBaseNoCtor_SingleAppDomain, _TEXT
-
-#endif
 
 
 #define __wbScratch r3
@@ -928,8 +707,9 @@ LOCAL_LABEL(CallCppHelper3):
     .endm
 
     .macro JIT_WRITEBARRIER_DESCRIPTOR name
-        .word \name
-        .word \name\()_End
+1:
+        .word \name-1b
+        .word \name\()_End-1b
         .word __\name\()__g_lowest_address_offset
         .word __\name\()__g_highest_address_offset
         .word __\name\()__g_ephemeral_low_offset
@@ -978,6 +758,22 @@ g_rgWriteBarrierDescriptors:
 
     .global g_rgWriteBarrierDescriptors
 
+// ------------------------------------------------------------------
+// __declspec(naked) void F_CALL_CONV JIT_WriteBarrier_Callable(Object **dst, Object* val)
+    LEAF_ENTRY JIT_WriteBarrier_Callable
+
+    // Branch to the write barrier
+#if defined(__clang__)
+    ldr     r2, =JIT_WriteBarrier_Loc-(1f+4) // or R3? See targetarm.h
+1:
+    add     r2, pc
+#else
+    ldr     r2, =JIT_WriteBarrier_Loc
+#endif
+    ldr     pc, [r2]
+
+    LEAF_END JIT_WriteBarrier_Callable
+
 #ifdef FEATURE_READYTORUN
 
     NESTED_ENTRY DelayLoad_MethodCall_FakeProlog, _TEXT, NoHandler
@@ -1016,8 +812,8 @@ DelayLoad_MethodCall:
 
     EPILOG_WITH_TRANSITION_BLOCK_TAILCALL
 
-    // Share the patch label
-    b C_FUNC(ExternalMethodFixupPatchLabel)
+    PATCH_LABEL ExternalMethodFixupPatchLabel
+    bx r12
 
     NESTED_END DelayLoad_MethodCall_FakeProlog, _TEXT
 
@@ -1106,7 +902,7 @@ DelayLoad_Helper\suffix:
 // The following helper will access ("probe") a word on each page of the stack
 // starting with the page right beneath sp down to the one pointed to by r4.
 // The procedure is needed to make sure that the "guard" page is pushed down below the allocated stack frame.
-// The call to the helper will be emitted by JIT in the function/funclet prolog when large (larger than 0x3000 bytes) stack frame is required.
+// The call to the helper will be emitted by JIT in the function/funclet prolog when stack frame is larger than an OS page.
 // On entry:
 //   r4 - points to the lowest address on the stack frame being allocated (i.e. [InitialSp - FrameSize])
 //   sp - points to some byte on the last probed page
@@ -1115,23 +911,23 @@ DelayLoad_Helper\suffix:
 //   r5 - is not preserved
 //
 // NOTE: this helper will probe at least one page below the one pointed to by sp.
-#define PAGE_SIZE      0x1000
-#define PAGE_SIZE_LOG2 12
+#define PROBE_PAGE_SIZE      4096
+#define PROBE_PAGE_SIZE_LOG2 12
 
         LEAF_ENTRY JIT_StackProbe, _TEXT
         PROLOG_PUSH "{r7}"
         PROLOG_STACK_SAVE r7
 
-        mov r5, sp                       // r5 points to some byte on the last probed page
-        bfc r5, #0, #PAGE_SIZE_LOG2      // r5 points to the **lowest address** on the last probed page
+        mov r5, sp                         // r5 points to some byte on the last probed page
+        bfc r5, #0, #PROBE_PAGE_SIZE_LOG2  // r5 points to the **lowest address** on the last probed page
         mov sp, r5
 
 ProbeLoop:
-                                         // Immediate operand for the following instruction can not be greater than 4095.
-        sub sp, #(PAGE_SIZE - 4)         // sp points to the **fourth** byte on the **next page** to probe
-        ldr r5, [sp, #-4]!               // sp points to the lowest address on the **last probed** page
+                                           // Immediate operand for the following instruction can not be greater than 4095.
+        sub sp, #(PROBE_PAGE_SIZE - 4)     // sp points to the **fourth** byte on the **next page** to probe
+        ldr r5, [sp, #-4]!                 // sp points to the lowest address on the **last probed** page
         cmp sp, r4
-        bhi ProbeLoop                    // If (sp > r4), then we need to probe at least one more page.
+        bhi ProbeLoop                      // If (sp > r4), then we need to probe at least one more page.
 
         EPILOG_STACK_RESTORE r7
         EPILOG_POP "{r7}"

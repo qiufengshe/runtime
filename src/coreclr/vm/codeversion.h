@@ -68,18 +68,22 @@ public:
 #endif
 
 #ifndef DACCESS_COMPILE
-    BOOL SetNativeCodeInterlocked(PCODE pCode, PCODE pExpected = NULL);
+    BOOL SetNativeCodeInterlocked(PCODE pCode, PCODE pExpected = 0);
 #endif
 
+    // NOTE: Don't change existing values to avoid breaking changes in event tracing
     enum OptimizationTier
     {
         OptimizationTier0,
         OptimizationTier1,
         OptimizationTier1OSR,
         OptimizationTierOptimized, // may do less optimizations than tier 1
+        OptimizationTier0Instrumented,
+        OptimizationTier1Instrumented,
     };
 #ifdef FEATURE_TIERED_COMPILATION
     OptimizationTier GetOptimizationTier() const;
+    bool IsFinalTier() const;
 #ifndef DACCESS_COMPILE
     void SetOptimizationTier(OptimizationTier tier);
 #endif
@@ -174,7 +178,7 @@ public:
     void SetIL(COR_ILMETHOD* pIL);
     void SetJitFlags(DWORD flags);
     void SetInstrumentedILMap(SIZE_T cMap, COR_IL_MAP * rgMap);
-    HRESULT AddNativeCodeVersion(MethodDesc* pClosedMethodDesc, NativeCodeVersion::OptimizationTier optimizationTier, 
+    HRESULT AddNativeCodeVersion(MethodDesc* pClosedMethodDesc, NativeCodeVersion::OptimizationTier optimizationTier,
         NativeCodeVersion* pNativeCodeVersion, PatchpointInfo* patchpointInfo = NULL, unsigned ilOffset = 0);
     HRESULT GetOrCreateActiveNativeCodeVersion(MethodDesc* pClosedMethodDesc, NativeCodeVersion* pNativeCodeVersion);
     HRESULT SetActiveNativeCodeVersion(NativeCodeVersion activeNativeCodeVersion);
@@ -190,7 +194,7 @@ public:
 
         // The CLR has initiated the call to the profiler's GetReJITParameters() callback
         // but it hasn't completed yet. At this point we have to assume the profiler has
-        // commited to a specific IL body, even if the CLR doesn't know what it is yet.
+        // committed to a specific IL body, even if the CLR doesn't know what it is yet.
         // If the profiler calls RequestRejit we need to allocate a new ILCodeVersion
         // and call GetReJITParameters() again.
         kStateGettingReJITParameters = 0x00000001,
@@ -209,6 +213,7 @@ public:
 
     RejitFlags GetRejitState() const;
     BOOL GetEnableReJITCallback() const;
+    BOOL IsDeoptimized() const;
 #ifndef DACCESS_COMPILE
     void SetRejitState(RejitFlags newState);
     void SetEnableReJITCallback(BOOL state);
@@ -254,7 +259,7 @@ class NativeCodeVersionNode
 
 public:
 #ifndef DACCESS_COMPILE
-    NativeCodeVersionNode(NativeCodeVersionId id, MethodDesc* pMethod, ReJITID parentId, NativeCodeVersion::OptimizationTier optimizationTier, 
+    NativeCodeVersionNode(NativeCodeVersionId id, MethodDesc* pMethod, ReJITID parentId, NativeCodeVersion::OptimizationTier optimizationTier,
         PatchpointInfo* patchpointInfo, unsigned ilOffset);
 #endif
 
@@ -361,7 +366,7 @@ class ILCodeVersionNode
 public:
     ILCodeVersionNode();
 #ifndef DACCESS_COMPILE
-    ILCodeVersionNode(Module* pModule, mdMethodDef methodDef, ReJITID id);
+    ILCodeVersionNode(Module* pModule, mdMethodDef methodDef, ReJITID id, BOOL isDeoptimized);
 #endif
     PTR_Module GetModule() const;
     mdMethodDef GetMethodDef() const;
@@ -372,6 +377,7 @@ public:
     ILCodeVersion::RejitFlags GetRejitState() const;
     BOOL GetEnableReJITCallback() const;
     PTR_ILCodeVersionNode GetNextILVersionNode() const;
+    BOOL IsDeoptimized() const;
 #ifndef DACCESS_COMPILE
     void SetIL(COR_ILMETHOD* pIL);
     void SetJitFlags(DWORD flags);
@@ -390,6 +396,7 @@ private:
     VolatilePtr<COR_ILMETHOD, PTR_COR_ILMETHOD> m_pIL;
     Volatile<DWORD> m_jitFlags;
     InstrumentedILOffsetMapping m_instrumentedILMap;
+    BOOL m_deoptimized;
 };
 
 class ILCodeVersionCollection
@@ -468,36 +475,6 @@ private:
     PTR_NativeCodeVersionNode m_pFirstVersionNode;
 };
 
-class MethodDescVersioningStateHashTraits : public NoRemoveSHashTraits<DefaultSHashTraits<PTR_MethodDescVersioningState>>
-{
-public:
-    typedef typename DefaultSHashTraits<PTR_MethodDescVersioningState>::element_t element_t;
-    typedef typename DefaultSHashTraits<PTR_MethodDescVersioningState>::count_t count_t;
-
-    typedef const PTR_MethodDesc key_t;
-
-    static key_t GetKey(element_t e)
-    {
-        LIMITED_METHOD_CONTRACT;
-        return e->GetMethodDesc();
-    }
-    static BOOL Equals(key_t k1, key_t k2)
-    {
-        LIMITED_METHOD_CONTRACT;
-        return k1 == k2;
-    }
-    static count_t Hash(key_t k)
-    {
-        LIMITED_METHOD_CONTRACT;
-        return (count_t)dac_cast<TADDR>(k);
-    }
-
-    static element_t Null() { LIMITED_METHOD_CONTRACT; return dac_cast<PTR_MethodDescVersioningState>(nullptr); }
-    static bool IsNull(const element_t &e) { LIMITED_METHOD_CONTRACT; return e == NULL; }
-};
-
-typedef SHash<MethodDescVersioningStateHashTraits> MethodDescVersioningStateHash;
-
 class ILCodeVersioningState
 {
 public:
@@ -530,44 +507,17 @@ private:
     mdMethodDef m_methodDef;
 };
 
-class ILCodeVersioningStateHashTraits : public NoRemoveSHashTraits<DefaultSHashTraits<PTR_ILCodeVersioningState>>
-{
-public:
-    typedef typename DefaultSHashTraits<PTR_ILCodeVersioningState>::element_t element_t;
-    typedef typename DefaultSHashTraits<PTR_ILCodeVersioningState>::count_t count_t;
-
-    typedef const ILCodeVersioningState::Key key_t;
-
-    static key_t GetKey(element_t e)
-    {
-        LIMITED_METHOD_CONTRACT;
-        return e->GetKey();
-    }
-    static BOOL Equals(key_t k1, key_t k2)
-    {
-        LIMITED_METHOD_CONTRACT;
-        return k1 == k2;
-    }
-    static count_t Hash(key_t k)
-    {
-        LIMITED_METHOD_CONTRACT;
-        return (count_t)k.Hash();
-    }
-
-    static element_t Null() { LIMITED_METHOD_CONTRACT; return dac_cast<PTR_ILCodeVersioningState>(nullptr); }
-    static bool IsNull(const element_t &e) { LIMITED_METHOD_CONTRACT; return e == NULL; }
-};
-
-typedef SHash<ILCodeVersioningStateHashTraits> ILCodeVersioningStateHash;
-
 class CodeVersionManager
 {
     friend class ILCodeVersion;
+    friend struct _DacGlobals;
+
+    SVAL_DECL(BOOL, s_HasNonDefaultILVersions);
 
 public:
-    CodeVersionManager();
+    CodeVersionManager() = default;
 
-    DWORD GetNonDefaultILVersionCount();
+    BOOL HasNonDefaultILVersions();
     ILCodeVersionCollection GetILCodeVersions(PTR_MethodDesc pMethod);
     ILCodeVersionCollection GetILCodeVersions(PTR_Module pModule, mdMethodDef methodDef);
     ILCodeVersion GetActiveILCodeVersion(PTR_MethodDesc pMethod);
@@ -587,7 +537,7 @@ public:
         HRESULT hrStatus;
     };
 
-    HRESULT AddILCodeVersion(Module* pModule, mdMethodDef methodDef, ReJITID rejitId, ILCodeVersion* pILCodeVersion);
+    HRESULT AddILCodeVersion(Module* pModule, mdMethodDef methodDef, ILCodeVersion* pILCodeVersion, BOOL isDeoptimized);
     HRESULT AddNativeCodeVersion(ILCodeVersion ilCodeVersion, MethodDesc* pClosedMethodDesc, NativeCodeVersion::OptimizationTier optimizationTier, NativeCodeVersion* pNativeCodeVersion,
         PatchpointInfo* patchpointInfo = NULL, unsigned ilOffset = 0);
     PCODE PublishVersionableCodeIfNecessary(
@@ -595,9 +545,13 @@ public:
         CallerGCMode callerGCMode,
         bool *doBackpatchRef,
         bool *doFullBackpatchRef);
+
+private:
     HRESULT PublishNativeCodeVersion(MethodDesc* pMethodDesc, NativeCodeVersion nativeCodeVersion);
     HRESULT GetOrCreateMethodDescVersioningState(MethodDesc* pMethod, MethodDescVersioningState** ppMethodDescVersioningState);
     HRESULT GetOrCreateILCodeVersioningState(Module* pModule, mdMethodDef methodDef, ILCodeVersioningState** ppILCodeVersioningState);
+
+public:
     HRESULT SetActiveILCodeVersions(ILCodeVersion* pActiveVersions, DWORD cActiveVersions, CDynArray<CodePublishError> * pPublishErrors);
     static HRESULT AddCodePublishError(Module* pModule, mdMethodDef methodDef, MethodDesc* pMD, HRESULT hrStatus, CDynArray<CodePublishError> * pErrors);
     static HRESULT AddCodePublishError(NativeCodeVersion nativeCodeVersion, HRESULT hrStatus, CDynArray<CodePublishError> * pErrors);
@@ -637,12 +591,6 @@ private:
 
     static bool s_initialNativeCodeVersionMayNotBeTheDefaultNativeCodeVersion;
 #endif
-
-    //Module,MethodDef -> ILCodeVersioningState
-    ILCodeVersioningStateHash m_ilCodeVersioningStateMap;
-
-    //closed MethodDesc -> MethodDescVersioningState
-    MethodDescVersioningStateHash m_methodDescVersioningStateMap;
 
 private:
     static CrstStatic s_lock;

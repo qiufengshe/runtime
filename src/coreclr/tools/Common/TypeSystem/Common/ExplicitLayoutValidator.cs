@@ -2,153 +2,107 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 namespace Internal.TypeSystem
 {
-    public struct ExplicitLayoutValidator
+    public static class ExplicitLayoutValidator
     {
         private enum FieldLayoutTag : byte
         {
             Empty,
             NonORef,
             ORef,
+            ByRef,
         }
 
-        private readonly int _pointerSize;
-
-        private readonly FieldLayoutTag[] _fieldLayout;
-
-        private readonly MetadataType _typeBeingValidated;
-
-        private ExplicitLayoutValidator(MetadataType type, int typeSizeInBytes)
+        private sealed class Validator(MetadataType type) : FieldLayoutIntervalCalculator<FieldLayoutTag>(type.Context.Target.PointerSize)
         {
-            _typeBeingValidated = type;
-            _pointerSize = type.Context.Target.PointerSize;
-            _fieldLayout = new FieldLayoutTag[typeSizeInBytes];
+            // We want to mark empty intervals as having NonORef data.
+            protected override FieldLayoutTag EmptyIntervalData => FieldLayoutTag.NonORef;
+
+            protected override bool IntervalsHaveCompatibleTags(FieldLayoutTag existingTag, FieldLayoutTag nextTag) => existingTag == nextTag;
+
+            protected override FieldLayoutInterval CombineIntervals(FieldLayoutInterval firstInterval, FieldLayoutInterval nextInterval)
+            {
+                if (!IntervalsHaveCompatibleTags(firstInterval.Tag, nextInterval.Tag))
+                    ThrowFieldLayoutError(nextInterval.Start);
+
+                firstInterval.EndSentinel = nextInterval.EndSentinel;
+                return firstInterval;
+            }
+
+            protected override FieldLayoutTag GetIntervalDataForType(int offset, TypeDesc fieldType)
+            {
+                if (fieldType.IsGCPointer)
+                {
+                    if (offset % PointerSize != 0)
+                    {
+                        // Misaligned ORef
+                        ThrowFieldLayoutError(offset);
+                    }
+                    return FieldLayoutTag.ORef;
+                }
+                else if (fieldType.IsByRef)
+                {
+                    if (offset % PointerSize != 0)
+                    {
+                        // Misaligned ByRef
+                        ThrowFieldLayoutError(offset);
+                    }
+                    return FieldLayoutTag.ByRef;
+                }
+                else if (fieldType.IsPointer || fieldType.IsFunctionPointer)
+                {
+                    return FieldLayoutTag.NonORef;
+                }
+                else if (fieldType.IsValueType)
+                {
+                    MetadataType mdType = (MetadataType)fieldType;
+                    if (!mdType.ContainsGCPointers && !mdType.IsByRefLike)
+                    {
+                        // Plain value type, mark the entire range as NonORef
+                        return FieldLayoutTag.NonORef;
+                    }
+                    Debug.Fail("We should recurse on value types with GC pointers or ByRefLike types");
+                    return FieldLayoutTag.Empty;
+                }
+                else
+                {
+                    return FieldLayoutTag.Empty;
+                }
+            }
+
+            protected override bool NeedsRecursiveLayout(int offset, TypeDesc fieldType)
+            {
+                if (!fieldType.IsValueType || !((MetadataType)fieldType).ContainsGCPointers && !fieldType.IsByRefLike)
+                {
+                    return false;
+                }
+
+                if (offset % PointerSize != 0)
+                {
+                    // Misaligned struct with GC pointers or ByRef
+                    ThrowFieldLayoutError(offset);
+                }
+
+                return true;
+            }
+
+            private void ThrowFieldLayoutError(int offset)
+            {
+                ThrowHelper.ThrowTypeLoadException(ExceptionStringID.ClassLoadExplicitLayout, type, offset.ToStringInvariant());
+            }
         }
 
         public static void Validate(MetadataType type, ComputedInstanceFieldLayout layout)
         {
-            ExplicitLayoutValidator validator = new ExplicitLayoutValidator(type, layout.ByteCountUnaligned.AsInt);
+            Validator validator = new(type);
             foreach (FieldAndOffset fieldAndOffset in layout.Offsets)
             {
                 validator.AddToFieldLayout(fieldAndOffset.Offset.AsInt, fieldAndOffset.Field.FieldType);
             }
-        }
-
-        private void AddToFieldLayout(int offset, TypeDesc fieldType)
-        {
-            if (fieldType.IsGCPointer)
-            {
-                if (offset % _pointerSize != 0)
-                {
-                    // Misaligned ORef
-                    ThrowFieldLayoutError(offset);
-                }
-                SetFieldLayout(offset, _pointerSize, FieldLayoutTag.ORef);
-            }
-            else if (fieldType.IsPointer || fieldType.IsFunctionPointer)
-            {
-                SetFieldLayout(offset, _pointerSize, FieldLayoutTag.NonORef);
-            }
-            else if (fieldType.IsValueType)
-            {
-                if (fieldType.IsByRefLike && offset % _pointerSize != 0)
-                {
-                    // Misaligned ByRefLike
-                    ThrowFieldLayoutError(offset);
-                }
-
-                MetadataType mdType = (MetadataType)fieldType;
-                int fieldSize = mdType.InstanceByteCountUnaligned.AsInt;
-                if (!mdType.ContainsGCPointers)
-                {
-                    // Plain value type, mark the entire range as NonORef
-                    SetFieldLayout(offset, fieldSize, FieldLayoutTag.NonORef);
-                }
-                else
-                {
-                    if (offset % _pointerSize != 0)
-                    {
-                        // Misaligned struct with GC pointers
-                        ThrowFieldLayoutError(offset);
-                    }
-
-                    bool[] fieldORefMap = new bool[fieldSize];
-                    MarkORefLocations(mdType, fieldORefMap, offset: 0);
-                    for (int index = 0; index < fieldSize; index++)
-                    {
-                        SetFieldLayout(offset + index, fieldORefMap[index] ? FieldLayoutTag.ORef : FieldLayoutTag.NonORef);
-                    }
-                }
-            }
-            else if (fieldType.IsByRef)
-            {
-                if (offset % _pointerSize != 0)
-                {
-                    // Misaligned pointer field
-                    ThrowFieldLayoutError(offset);
-                }
-                SetFieldLayout(offset, _pointerSize, FieldLayoutTag.NonORef);
-            }
-            else
-            {
-                Debug.Assert(false, fieldType.ToString());
-            }
-        }
-
-        private void MarkORefLocations(MetadataType type, bool[] orefMap, int offset)
-        {
-            // Recurse into struct fields
-            foreach (FieldDesc field in type.GetFields())
-            {
-                if (!field.IsStatic)
-                {
-                    int fieldOffset = offset + field.Offset.AsInt;
-                    if (field.FieldType.IsGCPointer)
-                    {
-                        for (int index = 0; index < _pointerSize; index++)
-                        {
-                            orefMap[fieldOffset + index] = true;
-                        }
-                    }
-                    else if (field.FieldType.IsValueType)
-                    {
-                        MetadataType mdFieldType = (MetadataType)field.FieldType;
-                        if (mdFieldType.ContainsGCPointers)
-                        {
-                            MarkORefLocations(mdFieldType, orefMap, fieldOffset);
-                        }
-                    }
-                }
-            }
-        }
-
-        private void SetFieldLayout(int offset, int count, FieldLayoutTag tag)
-        {
-            for (int index = 0; index < count; index++)
-            {
-                SetFieldLayout(offset + index, tag);
-            }
-        }
-
-        private void SetFieldLayout(int offset, FieldLayoutTag tag)
-        {
-            FieldLayoutTag existingTag = _fieldLayout[offset];
-            if (existingTag != tag)
-            {
-                if (existingTag != FieldLayoutTag.Empty)
-                {
-                    ThrowFieldLayoutError(offset);
-                }
-                _fieldLayout[offset] = tag;
-            }
-        }
-
-        private void ThrowFieldLayoutError(int offset)
-        {
-            ThrowHelper.ThrowTypeLoadException(ExceptionStringID.ClassLoadExplicitLayout, _typeBeingValidated, offset.ToStringInvariant());
         }
     }
 }

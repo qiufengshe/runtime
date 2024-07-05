@@ -64,7 +64,16 @@ enum EtwThreadFlags
     kEtwThreadFlagThreadPoolWorker =  0x00000004,
 };
 
-#ifndef FEATURE_REDHAWK
+enum EtwGCSettingFlags
+{
+    kEtwGCFlagConcurrent =      0x00000001,
+    kEtwGCFlagLargePages =      0x00000002,
+    kEtwGCFlagFrozenSegs =      0x00000004,
+    kEtwGCFlagHardLimitConfig = 0x00000008,
+    kEtwGCFlagNoAffinitize =    0x00000010,
+};
+
+#ifndef FEATURE_NATIVEAOT
 
 #if defined(FEATURE_EVENT_TRACE)
 
@@ -112,12 +121,15 @@ enum EtwThreadFlags
 
 #define ETW_TRACING_INITIALIZED(RegHandle) (TRUE)
 #define ETW_EVENT_ENABLED(Context, EventDescriptor) (EventPipeHelper::IsEnabled(Context, EventDescriptor.Level, EventDescriptor.Keyword) || \
-        (XplatEventLogger::IsKeywordEnabled(Context, EventDescriptor.Level, EventDescriptor.Keyword)))
+        (XplatEventLogger::IsKeywordEnabled(Context, EventDescriptor.Level, EventDescriptor.Keyword)) || \
+        (UserEventsHelper::IsEnabled(Context, EventDescriptor.Level, EventDescriptor.Keyword)))
 #define ETW_CATEGORY_ENABLED(Context, Level, Keyword) (EventPipeHelper::IsEnabled(Context, Level, Keyword) || \
-        (XplatEventLogger::IsKeywordEnabled(Context, Level, Keyword)))
+        (XplatEventLogger::IsKeywordEnabled(Context, Level, Keyword)) || \
+        (UserEventsHelper::IsEnabled(Context, Level, Keyword)))
 #define ETW_TRACING_ENABLED(Context, EventDescriptor) (EventEnabled##EventDescriptor())
 #define ETW_TRACING_CATEGORY_ENABLED(Context, Level, Keyword) (EventPipeHelper::IsEnabled(Context, Level, Keyword) || \
-        (XplatEventLogger::IsKeywordEnabled(Context, Level, Keyword)))
+        (XplatEventLogger::IsKeywordEnabled(Context, Level, Keyword)) || \
+        (UserEventsHelper::IsEnabled(Context, Level, Keyword)))
 #define ETW_PROVIDER_ENABLED(ProviderSymbol) (TRUE)
 #else //defined(FEATURE_PERFTRACING)
 #define ETW_INLINE
@@ -147,7 +159,7 @@ enum EtwThreadFlags
 
 #endif // FEATURE_EVENT_TRACE
 
-#endif // FEATURE_REDHAWK
+#endif // FEATURE_NATIVEAOT
 
 // During a heap walk, this is the storage for keeping track of all the nodes and edges
 // being batched up by ETW, and for remembering whether we're also supposed to call into
@@ -205,13 +217,13 @@ struct ProfilingScanContext;
     ETWTraceStartup trace##StartEventName##(Microsoft_Windows_DotNETRuntimePrivateHandle, &StartEventName, &StartupId, &EndEventName, &StartupId);
 #define ETWFireEvent(EventName) FireEtw##EventName(GetClrInstanceId())
 
-#ifndef FEATURE_REDHAWK
+#ifndef FEATURE_NATIVEAOT
 // Headers
 #include <initguid.h>
 #include <wmistr.h>
 #include <evntrace.h>
 #include <evntprov.h>
-#endif //!FEATURE_REDHAWK
+#endif //!FEATURE_NATIVEAOT
 #endif //!defined(HOST_UNIX)
 
 
@@ -220,7 +232,7 @@ struct ProfilingScanContext;
 #include "../gc/env/etmdummy.h"
 #endif // FEATURE_EVENT_TRACE
 
-#ifndef FEATURE_REDHAWK
+#ifndef FEATURE_NATIVEAOT
 
 #include "corprof.h"
 
@@ -334,10 +346,10 @@ private:
     ComponentSpan GetNextComponentString(LPCWSTR start) const
     {
         const WCHAR ComponentDelimiter = W(':');
-        const WCHAR * end = wcschr(start, ComponentDelimiter);
+        const WCHAR * end = u16_strchr(start, ComponentDelimiter);
         if (end == nullptr)
         {
-            end = start + wcslen(start);
+            end = start + u16_strlen(start);
         }
 
         return ComponentSpan(start, end);
@@ -350,7 +362,7 @@ private:
         {
             auto const length = component.End - component.Start;
             providerName = new WCHAR[length + 1];
-            wcsncpy(providerName, component.Start, length);
+            u16_strncpy_s(providerName, length + 1, component.Start, length);
             providerName[length] = '\0';
         }
         return providerName;
@@ -361,7 +373,7 @@ private:
         auto enabledKeywordsMask = (uint64_t)(-1);
         if ((component.End - component.Start) != 0)
         {
-            enabledKeywordsMask = _wcstoui64(component.Start, nullptr, 16);
+            enabledKeywordsMask = u16_strtoui64(component.Start, nullptr, 16);
         }
         return enabledKeywordsMask;
     }
@@ -383,7 +395,7 @@ private:
         {
             auto const length = component.End - component.Start;
             argument = new WCHAR[length + 1];
-            wcsncpy(argument, component.Start, length);
+            u16_strncpy_s(argument, length + 1, component.Start, length);
             argument[length] = '\0';
         }
         return argument;
@@ -448,7 +460,7 @@ private:
 #ifdef FEATURE_EVENT_TRACE
     static LTTNG_TRACE_CONTEXT * const GetProvider(LPCWSTR providerName)
     {
-        auto length = wcslen(providerName);
+        auto length = u16_strlen(providerName);
         for (auto provider : ALL_LTTNG_PROVIDERS_CONTEXT)
         {
             if (_wcsicmp(provider->Name, providerName) == 0)
@@ -496,7 +508,7 @@ public:
 #endif
 
     /*
-    This method is where COMPlus_LTTngConfig environment variable is parsed and is registered with the runtime provider
+    This method is where DOTNET_LTTngConfig environment variable is parsed and is registered with the runtime provider
     context structs generated by src/scripts/genEventing.py.
     It expects the environment variable to look like:
     provider:keywords:level,provider:keywords:level
@@ -525,7 +537,7 @@ public:
         while (configToParse != nullptr)
         {
             const WCHAR comma = W(',');
-            auto end = wcschr(configToParse, comma);
+            auto end = (LPWSTR)u16_strchr(configToParse, comma);
             configuration.Parse(configToParse);
             XplatEventLoggerController::UpdateProviderContext(configuration);
             if (end == nullptr)
@@ -642,6 +654,13 @@ public:
     static bool Enabled();
     static bool IsEnabled(DOTNET_TRACE_CONTEXT Context, UCHAR Level, ULONGLONG Keyword);
 };
+
+class UserEventsHelper
+{
+public:
+    static bool Enabled();
+    static bool IsEnabled(DOTNET_TRACE_CONTEXT Context, UCHAR Level, ULONGLONG Keyword);
+};
 #endif // defined(FEATURE_PERFTRACING)
 
 #endif // FEATURE_EVENT_TRACE
@@ -681,7 +700,11 @@ class CrstBase;
 class BulkTypeEventLogger;
 class TypeHandle;
 class Thread;
-
+template<typename ELEMENT, typename TRAITS>
+class SetSHash;
+template<typename ELEMENT>
+class PtrSetSHashTraits;
+typedef SetSHash<MethodDesc*, PtrSetSHashTraits<MethodDesc*>> MethodDescSet;
 
 // All ETW helpers must be a part of this namespace
 // We have auto-generated macros to directly fire the events
@@ -726,6 +749,7 @@ namespace ETW
         friend class ETW::MethodLog;
 #ifdef FEATURE_EVENT_TRACE
         static VOID SendThreadRundownEvent();
+        static VOID SendGCRundownEvent();
         static VOID IterateDomain(BaseDomain *pDomain, DWORD enumerationOptions);
         static VOID IterateAppDomain(AppDomain * pAppDomain, DWORD enumerationOptions);
         static VOID IterateCollectibleLoaderAllocator(AssemblyLoaderAllocator *pLoaderAllocator, DWORD enumerationOptions);
@@ -759,6 +783,7 @@ namespace ETW
                 MethodDCEndILToNativeMap=           0x00020000,
                 JitMethodILToNativeMap=             0x00040000,
                 TypeUnload=                         0x00080000,
+                JittedMethodRichDebugInfo=          0x00100000,
 
                 // Helpers
                 ModuleRangeEnabledAny = ModuleRangeLoad | ModuleRangeDCStart | ModuleRangeDCEnd | ModuleRangeLoadPrivate,
@@ -812,7 +837,7 @@ namespace ETW
         friend class ETW::EnumerationLog;
 #if defined(FEATURE_EVENT_TRACE)
         static VOID SendModuleEvent(Module *pModule, DWORD dwEventOptions, BOOL bFireDomainModuleEvents=FALSE);
-        static ULONG SendModuleRange(__in Module *pModule, __in DWORD dwEventOptions);
+        static ULONG SendModuleRange(_In_ Module *pModule, _In_ DWORD dwEventOptions);
         static VOID SendAssemblyEvent(Assembly *pAssembly, DWORD dwEventOptions);
         static VOID SendDomainEvent(BaseDomain *pBaseDomain, DWORD dwEventOptions, LPCWSTR wszFriendlyName=NULL);
     public:
@@ -852,9 +877,9 @@ namespace ETW
 
         }LoaderStructs;
 
-        static VOID DomainLoadReal(BaseDomain *pDomain, __in_opt LPWSTR wszFriendlyName=NULL);
+        static VOID DomainLoadReal(BaseDomain *pDomain, _In_opt_ LPWSTR wszFriendlyName=NULL);
 
-        static VOID DomainLoad(BaseDomain *pDomain, __in_opt LPWSTR wszFriendlyName = NULL)
+        static VOID DomainLoad(BaseDomain *pDomain, _In_opt_ LPWSTR wszFriendlyName = NULL)
         {
             if (ETW_PROVIDER_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PROVIDER))
             {
@@ -867,7 +892,7 @@ namespace ETW
         static VOID ModuleLoad(Module *pModule, LONG liReportedSharedModule);
 #else
     public:
-        static VOID DomainLoad(BaseDomain *pDomain, __in_opt LPWSTR wszFriendlyName=NULL) {};
+        static VOID DomainLoad(BaseDomain *pDomain, _In_opt_ LPWSTR wszFriendlyName=NULL) {};
         static VOID DomainUnload(AppDomain *pDomain) {};
         static VOID CollectibleLoaderAllocatorUnload(AssemblyLoaderAllocator *pLoaderAllocator) {};
         static VOID ModuleLoad(Module *pModule, LONG liReportedSharedModule) {};
@@ -887,13 +912,14 @@ namespace ETW
             BOOL fUnloadOrDCEnd,
             BOOL fSendMethodEvent,
             BOOL fSendILToNativeMapEvent,
+            BOOL fSendRichDebugInfoEvent,
             BOOL fGetCodeIds);
         static VOID SendEventsForNgenMethods(Module *pModule, DWORD dwEventOptions);
-        static VOID SendMethodJitStartEvent(MethodDesc *pMethodDesc, SString *namespaceOrClassName=NULL, SString *methodName=NULL, SString *methodSignature=NULL);
-        static VOID SendMethodILToNativeMapEvent(MethodDesc * pMethodDesc, DWORD dwEventOptions, PCODE pNativeCodeStartAddress, ReJITID ilCodeId);
-        static VOID SendMethodEvent(MethodDesc *pMethodDesc, DWORD dwEventOptions, BOOL bIsJit, SString *namespaceOrClassName=NULL, SString *methodName=NULL, SString *methodSignature=NULL, PCODE pNativeCodeStartAddress = 0, PrepareCodeConfig *pConfig = NULL);
+        static VOID SendMethodJitStartEvent(MethodDesc *pMethodDesc, COR_ILMETHOD_DECODER* methodDecoder, SString *namespaceOrClassName=NULL, SString *methodName=NULL, SString *methodSignature=NULL);
+        static VOID SendMethodILToNativeMapEvent(MethodDesc * pMethodDesc, DWORD dwEventOptions, PCODE pNativeCodeStartAddress, DWORD nativeCodeId, ReJITID ilCodeId);
+        static VOID SendMethodRichDebugInfo(MethodDesc * pMethodDesc, PCODE pNativeCodeStartAddress, DWORD nativeCodeId, ReJITID ilCodeId, MethodDescSet* sentMethodDetailsSet);
+        static VOID SendMethodEvent(MethodDesc *pMethodDesc, DWORD dwEventOptions, BOOL bIsJit, SString *namespaceOrClassName=NULL, SString *methodName=NULL, SString *methodSignature=NULL, PCODE pNativeCodeStartAddress = 0, PrepareCodeConfig *pConfig = NULL, MethodDescSet* sentMethodDetailsSet = NULL);
         static VOID SendHelperEvent(ULONGLONG ullHelperStartAddress, ULONG ulHelperSize, LPCWSTR pHelperName);
-        static VOID SendMethodDetailsEvent(MethodDesc *pMethodDesc);
     public:
         typedef union _MethodStructs
         {
@@ -922,24 +948,28 @@ namespace ETW
 
         static VOID GetR2RGetEntryPointStart(MethodDesc *pMethodDesc);
         static VOID GetR2RGetEntryPoint(MethodDesc *pMethodDesc, PCODE pEntryPoint);
-        static VOID MethodJitting(MethodDesc *pMethodDesc, SString *namespaceOrClassName, SString *methodName, SString *methodSignature);
+        static VOID MethodJitting(MethodDesc *pMethodDesc, COR_ILMETHOD_DECODER* methodDecoder, SString *namespaceOrClassName, SString *methodName, SString *methodSignature);
         static VOID MethodJitted(MethodDesc *pMethodDesc, SString *namespaceOrClassName, SString *methodName, SString *methodSignature, PCODE pNativeCodeStartAddress, PrepareCodeConfig *pConfig);
+        static VOID SendMethodDetailsEvent(MethodDesc *pMethodDesc);
+        static VOID SendNonDuplicateMethodDetailsEvent(MethodDesc* pMethodDesc, MethodDescSet* set);
         static VOID StubInitialized(ULONGLONG ullHelperStartAddress, LPCWSTR pHelperName);
         static VOID StubsInitialized(PVOID *pHelperStartAddress, PVOID *pHelperNames, LONG ulNoOfHelpers);
         static VOID MethodRestored(MethodDesc * pMethodDesc);
         static VOID MethodTableRestored(MethodTable * pMethodTable);
         static VOID DynamicMethodDestroyed(MethodDesc *pMethodDesc);
+        static VOID LogMethodInstrumentationData(MethodDesc* method, uint32_t cbData, BYTE *data, TypeHandle* pTypeHandles, uint32_t numTypeHandles, MethodDesc** pMethods, uint32_t numMethods);
 #else // FEATURE_EVENT_TRACE
     public:
         static VOID GetR2RGetEntryPointStart(MethodDesc *pMethodDesc) {};
         static VOID GetR2RGetEntryPoint(MethodDesc *pMethodDesc, PCODE pEntryPoint) {};
-        static VOID MethodJitting(MethodDesc *pMethodDesc, SString *namespaceOrClassName, SString *methodName, SString *methodSignature);
+        static VOID MethodJitting(MethodDesc *pMethodDesc, COR_ILMETHOD_DECODER* methodDecoder, SString *namespaceOrClassName, SString *methodName, SString *methodSignature);
         static VOID MethodJitted(MethodDesc *pMethodDesc, SString *namespaceOrClassName, SString *methodName, SString *methodSignature, PCODE pNativeCodeStartAddress, PrepareCodeConfig *pConfig);
         static VOID StubInitialized(ULONGLONG ullHelperStartAddress, LPCWSTR pHelperName) {};
         static VOID StubsInitialized(PVOID *pHelperStartAddress, PVOID *pHelperNames, LONG ulNoOfHelpers) {};
         static VOID MethodRestored(MethodDesc * pMethodDesc) {};
         static VOID MethodTableRestored(MethodTable * pMethodTable) {};
         static VOID DynamicMethodDestroyed(MethodDesc *pMethodDesc) {};
+        static VOID LogMethodInstrumentationData(MethodDesc* method, uint32_t cbData, BYTE *data, TypeHandle* pTypeHandles, uint32_t numTypeHandles, MethodDesc** pMethods, uint32_t numMethods) {};
 #endif // FEATURE_EVENT_TRACE
     };
 
@@ -948,8 +978,8 @@ namespace ETW
     {
 #ifdef FEATURE_EVENT_TRACE
     public:
-        static VOID StrongNameVerificationStart(DWORD dwInFlags, __in LPWSTR strFullyQualifiedAssemblyName);
-        static VOID StrongNameVerificationStop(DWORD dwInFlags,ULONG result, __in LPWSTR strFullyQualifiedAssemblyName);
+        static VOID StrongNameVerificationStart(DWORD dwInFlags, _In_ LPWSTR strFullyQualifiedAssemblyName);
+        static VOID StrongNameVerificationStop(DWORD dwInFlags,ULONG result, _In_ LPWSTR strFullyQualifiedAssemblyName);
 
         static void FireFieldTransparencyComputationStart(LPCWSTR wszFieldName,
                                                           LPCWSTR wszModuleName,
@@ -1133,6 +1163,19 @@ namespace ETW
             } ContentionFlags;
         } ContentionStructs;
     };
+
+    class WaitHandleLog
+    {
+    public:
+        typedef union _WaitHandleStructs
+        {
+            typedef  enum _WaitSource {
+                Unknown=0,
+                MonitorWait=1
+            } WaitSource;
+        } WaitHandleStructs;
+    };
+
     // Class to wrap all Interop logic for ETW
     class InteropLog
     {
@@ -1157,7 +1200,8 @@ namespace ETW
             typedef enum _Sku
             {
                 DesktopCLR=0x1,
-                CoreCLR=0x2
+                CoreCLR=0x2,
+                Mono=0x4
             }Sku;
 
             typedef enum _EtwMode
@@ -1304,16 +1348,16 @@ EXTERN_C DOTNET_TRACE_CONTEXT MICROSOFT_WINDOWS_DOTNETRUNTIME_STRESS_PROVIDER_DO
 // Special Handling of Startup events
 //
 
-// "mc.exe -MOF" already generates this block for XP-suported builds inside ClrEtwAll.h;
+// "mc.exe -MOF" already generates this block for XP-supported builds inside ClrEtwAll.h;
 // on Vista+ builds, mc is run without -MOF, and we still have code that depends on it, so
 // we manually place it here.
 ETW_INLINE
 ULONG
 CoMofTemplate_h(
-    __in REGHANDLE RegHandle,
-    __in PCEVENT_DESCRIPTOR Descriptor,
-    __in_opt LPCGUID EventGuid,
-    __in const unsigned short  ClrInstanceID
+    _In_ REGHANDLE RegHandle,
+    _In_ PCEVENT_DESCRIPTOR Descriptor,
+    _In_opt_ LPCGUID EventGuid,
+    _In_ const unsigned short  ClrInstanceID
     )
 {
 #define ARGUMENT_COUNT_h 1
@@ -1370,14 +1414,14 @@ public:
         }
     }
 };
-// "mc.exe -MOF" already generates this block for XP-suported builds inside ClrEtwAll.h;
+// "mc.exe -MOF" already generates this block for XP-supported builds inside ClrEtwAll.h;
 // on Vista+ builds, mc is run without -MOF, and we still have code that depends on it, so
 // we manually place it here.
 FORCEINLINE
 BOOLEAN __stdcall
 McGenEventTracingEnabled(
-    __in PMCGEN_TRACE_CONTEXT EnableInfo,
-    __in PCEVENT_DESCRIPTOR EventDescriptor
+    _In_ PMCGEN_TRACE_CONTEXT EnableInfo,
+    _In_ PCEVENT_DESCRIPTOR EventDescriptor
     )
 {
 
@@ -1471,9 +1515,9 @@ struct CallStackFrame
 FORCEINLINE
 BOOLEAN __stdcall
 McGenEventProviderEnabled(
-    __in PMCGEN_TRACE_CONTEXT Context,
-    __in UCHAR Level,
-    __in ULONGLONG Keyword
+    _In_ PMCGEN_TRACE_CONTEXT Context,
+    _In_ UCHAR Level,
+    _In_ ULONGLONG Keyword
     )
 {
     if(!Context) {
@@ -1505,10 +1549,10 @@ McGenEventProviderEnabled(
 #endif // FEATURE_EVENT_TRACE && !defined(HOST_UNIX)
 
 
-#endif // !FEATURE_REDHAWK
+#endif // !FEATURE_NATIVEAOT
 
-// These parts of the ETW namespace are common for both FEATURE_REDHAWK and
-// !FEATURE_REDHAWK builds.
+// These parts of the ETW namespace are common for both FEATURE_NATIVEAOT and
+// !FEATURE_NATIVEAOT builds.
 
 
 struct ProfilingScanContext;

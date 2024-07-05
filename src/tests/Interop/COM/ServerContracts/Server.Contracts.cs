@@ -184,6 +184,17 @@ namespace Server.Contract
         void Pass_Through_LCID(out int lcid);
     }
 
+    [ComVisible(true)]
+    [Guid("7FBB8677-BDD0-4E5A-B38B-CA92A4555466")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMiscTypesTesting
+    {
+        object Marshal_Variant(object obj);
+
+        // Test API for marshalling an arbitrary type via VARIANT
+        object Marshal_Instance_Variant([MarshalAs(UnmanagedType.LPWStr)] string init);
+    }
+
     public struct HResult
     {
         public int hr;
@@ -201,12 +212,15 @@ namespace Server.Contract
 
         [PreserveSig]
         HResult Return_As_HResult_Struct(int hresultToReturn);
+
+        void Throw_HResult_HelpLink(int hresultToReturn, [MarshalAs(UnmanagedType.LPWStr)] string helpLink, uint helpContext);
     }
 
     public enum IDispatchTesting_Exception
     {
         Disp,
         HResult,
+        Int,
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -216,6 +230,12 @@ namespace Server.Contract
         public float y;
         public float z;
         public float w;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct HRESULT
+    {
+        public int Value;
     }
 
     [ComVisible(true)]
@@ -256,6 +276,32 @@ namespace Server.Contract
     }
 
     [ComVisible(true)]
+    [Guid("a5e04c1c-474e-46d2-bbc0-769d04e12b54")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]
+    public interface IDispatchTestingPreserveSig1
+    {
+        void Reserved1();
+        void Reserved2();
+        void Reserved3();
+
+        [PreserveSig]
+        int TriggerException(IDispatchTesting_Exception excep, int errorCode);
+    }
+
+    [ComVisible(true)]
+    [Guid("a5e04c1c-474e-46d2-bbc0-769d04e12b54")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]
+    public interface IDispatchTestingPreserveSig2
+    {
+        void Reserved1();
+        void Reserved2();
+        void Reserved3();
+
+        [PreserveSig]
+        HRESULT TriggerException(IDispatchTesting_Exception excep, int errorCode);
+    }
+
+    [ComVisible(true)]
     [Guid("83AFF8E4-C46A-45DB-9D91-2ADB5164545E")]
     [InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]
     public interface IEventTesting
@@ -272,6 +318,24 @@ namespace Server.Contract
         [DispId(100)]
         void OnEvent([MarshalAs(UnmanagedType.BStr)] string msg);
     };
+
+    [ComVisible(true)]
+    [Guid("B630A508-4DA5-4C14-A7AB-618AD66B2EBF")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIDispatch)]
+    public interface IDispatchCoerceTesting
+    {
+        int ReturnToManaged(short vt);
+        int ManagedArgument(int arg);
+        string BoolToString();
+        void ReturnToManaged_Void(int value);
+        double ReturnToManaged_Double(int value);
+        string ReturnToManaged_String(int value);
+        decimal ReturnToManaged_Decimal(int value);
+        DateTime ReturnToManaged_DateTime(int value);
+        Color ReturnToManaged_Color(int value);
+        System.Reflection.Missing ReturnToManaged_Missing(int value);
+        DBNull ReturnToManaged_DBNull(int value);
+    }
 
     [ComVisible(true)]
     [Guid("98cc27f0-d521-4f79-8b63-e980e3a92974")]
@@ -332,12 +396,19 @@ namespace Server.Contract
     {
     }
 
-    [ComImport]
     [InterfaceType(ComInterfaceType.InterfaceIsIInspectable)]
     [Guid("e9e1ccf9-8e93-4850-ac1c-a71692cb68c5")]
     internal interface IInspectableTesting2
     {
         int Add(int i, int j);
+    }
+
+    [ComImport]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    [Guid("57f396a1-58a0-425f-8807-9f938a534984")]
+    internal interface ITrackMyLifetimeTesting
+    {
+        IntPtr GetAllocationCountCallback();
     }
 }
 

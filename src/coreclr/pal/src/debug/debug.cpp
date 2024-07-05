@@ -40,11 +40,12 @@ SET_DEFAULT_DEBUG_CHANNEL(DEBUG); // some headers have code with asserts, so do 
 
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
 #if HAVE_PROCFS_CTL
 #include <unistd.h>
-#elif HAVE_TTRACE // HAVE_PROCFS_CTL
+#elif defined(HAVE_TTRACE) // HAVE_PROCFS_CTL
 #include <sys/ttrace.h>
-#else // HAVE_TTRACE
+#else // defined(HAVE_TTRACE)
 #include <sys/ptrace.h>
 #endif  // HAVE_PROCFS_CTL
 #if HAVE_VM_READ
@@ -203,7 +204,7 @@ OutputDebugStringW(
     }
 
     /* strLen includes the null terminator */
-    if ((lpOutputStringA = (LPSTR) InternalMalloc((strLen * sizeof(CHAR)))) == NULL)
+    if ((lpOutputStringA = (LPSTR) malloc((strLen * sizeof(CHAR)))) == NULL)
     {
         ERROR("Insufficient memory available !\n");
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
@@ -742,6 +743,7 @@ PAL_ProbeMemory(
     BOOL fWriteAccess)
 {
     int fds[2];
+    int flags;
 
     if (pipe(fds) != 0)
     {
@@ -749,8 +751,11 @@ PAL_ProbeMemory(
         return FALSE;
     }
 
-    fcntl(fds[0], O_NONBLOCK);
-    fcntl(fds[1], O_NONBLOCK);
+    flags = fcntl(fds[0], F_GETFL, 0);
+    fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
+    
+    flags = fcntl(fds[1], F_GETFL, 0);
+    fcntl(fds[1], F_SETFL, flags | O_NONBLOCK);
 
     PVOID pEnd = (PBYTE)pBuffer + cbBuffer;
     BOOL result = TRUE;

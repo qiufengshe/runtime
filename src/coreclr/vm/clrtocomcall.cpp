@@ -24,6 +24,7 @@
 #include "corhost.h"
 #include "reflectioninvocation.h"
 #include "sigbuilder.h"
+#include "callconvbuilder.hpp"
 #include "callsiteinspect.h"
 
 #define DISPATCH_INVOKE_SLOT 6
@@ -37,19 +38,17 @@ void CreateCLRToDispatchCOMStub(
             DWORD        dwStubFlags             // NDirectStubFlags
             );
 
-#ifndef CROSSGEN_COMPILE
 
-PCODE TheGenericComplusCallStub()
+PCODE TheGenericCLRToCOMCallStub()
 {
     LIMITED_METHOD_CONTRACT;
 
-    return GetEEFuncEntryPoint(GenericComPlusCallStub);
+    return GetEEFuncEntryPoint(GenericCLRToCOMCallStub);
 }
 
-#endif //#ifndef CROSSGEN_COMPILE
 
 
-ComPlusCallInfo *ComPlusCall::PopulateComPlusCallMethodDesc(MethodDesc* pMD, DWORD* pdwStubFlags)
+CLRToCOMCallInfo *CLRToCOMCall::PopulateCLRToCOMCallMethodDesc(MethodDesc* pMD, DWORD* pdwStubFlags)
 {
     CONTRACTL
     {
@@ -62,27 +61,21 @@ ComPlusCallInfo *ComPlusCall::PopulateComPlusCallMethodDesc(MethodDesc* pMD, DWO
     MethodTable *pMT = pMD->GetMethodTable();
     MethodTable *pItfMT = NULL;
 
-    // We are going to use this MethodDesc for a CLR->COM call
-    g_IBCLogger.LogMethodCodeAccess(pMD);
-
-    if (pMD->IsComPlusCall())
+    if (pMD->IsCLRToCOMCall())
     {
-        ComPlusCallMethodDesc *pCMD = (ComPlusCallMethodDesc *)pMD;
-        if (pCMD->m_pComPlusCallInfo == NULL)
+        CLRToCOMCallMethodDesc *pCMD = (CLRToCOMCallMethodDesc *)pMD;
+        if (pCMD->m_pCLRToCOMCallInfo == NULL)
         {
-            // We are going to write the m_pComPlusCallInfo field of the MethodDesc
-            g_IBCLogger.LogMethodDescWriteAccess(pMD);
-
             LoaderHeap *pHeap = pMD->GetLoaderAllocator()->GetHighFrequencyHeap();
-            ComPlusCallInfo *pTemp = (ComPlusCallInfo *)(void *)pHeap->AllocMem(S_SIZE_T(sizeof(ComPlusCallInfo)));
+            CLRToCOMCallInfo *pTemp = (CLRToCOMCallInfo *)(void *)pHeap->AllocMem(S_SIZE_T(sizeof(CLRToCOMCallInfo)));
 
             pTemp->InitStackArgumentSize();
 
-            InterlockedCompareExchangeT(&pCMD->m_pComPlusCallInfo, pTemp, NULL);
+            InterlockedCompareExchangeT(&pCMD->m_pCLRToCOMCallInfo, pTemp, NULL);
         }
     }
 
-    ComPlusCallInfo *pComInfo = ComPlusCallInfo::FromMethodDesc(pMD);
+    CLRToCOMCallInfo *pComInfo = CLRToCOMCallInfo::FromMethodDesc(pMD);
     _ASSERTE(pComInfo != NULL);
 
     if (pMD->IsInterface())
@@ -123,7 +116,7 @@ ComPlusCallInfo *ComPlusCall::PopulateComPlusCallMethodDesc(MethodDesc* pMD, DWO
     // Determine if this is a special COM event call.
     BOOL fComEventCall = pItfMT->IsComEventItfType();
 
-    // Determine if the call needs to do early bound to late bound convertion.
+    // Determine if the call needs to do early bound to late bound conversion.
     BOOL fLateBound = !fComEventCall && pItfMT->IsInterface() && pItfMT->GetComInterfaceType() == ifDispatch;
 
     if (fLateBound)
@@ -151,7 +144,7 @@ ComPlusCallInfo *ComPlusCall::PopulateComPlusCallMethodDesc(MethodDesc* pMD, DWO
     return pComInfo;
 }
 
-MethodDesc* ComPlusCall::GetILStubMethodDesc(MethodDesc* pMD, DWORD dwStubFlags)
+MethodDesc* CLRToCOMCall::GetILStubMethodDesc(MethodDesc* pMD, DWORD dwStubFlags)
 {
     STANDARD_VM_CONTRACT;
 
@@ -165,74 +158,32 @@ MethodDesc* ComPlusCall::GetILStubMethodDesc(MethodDesc* pMD, DWORD dwStubFlags)
                     &sigDesc,
                     (CorNativeLinkType)0,
                     (CorNativeLinkFlags)0,
-                    (CorPinvokeMap)0,
+                    CallConv::GetDefaultUnmanagedCallingConvention(),
                     dwStubFlags);
 }
 
 
-#ifndef CROSSGEN_COMPILE
 
-PCODE ComPlusCall::GetStubForILStub(MethodDesc* pMD, MethodDesc** ppStubMD)
+PCODE CLRToCOMCall::GetStubForILStub(MethodDesc* pMD, MethodDesc** ppStubMD)
 {
     STANDARD_VM_CONTRACT;
 
-    _ASSERTE(pMD->IsComPlusCall() || pMD->IsGenericComPlusCall());
+    _ASSERTE(pMD->IsCLRToCOMCall());
+    _ASSERTE(*ppStubMD == NULL);
 
-    ComPlusCallInfo *pComInfo = NULL;
+    DWORD dwStubFlags;
+    CLRToCOMCallInfo* pComInfo = CLRToCOMCall::PopulateCLRToCOMCallMethodDesc(pMD, &dwStubFlags);
+
+    *ppStubMD = CLRToCOMCall::GetILStubMethodDesc(pMD, dwStubFlags);
 
     if (*ppStubMD != NULL)
     {
-        // pStubMD, if provided, must be preimplemented.
-        _ASSERTE((*ppStubMD)->IsPreImplemented());
-
-        pComInfo = ComPlusCallInfo::FromMethodDesc(pMD);
-        _ASSERTE(pComInfo != NULL);
-
-        _ASSERTE((*ppStubMD) ==  pComInfo->m_pStubMD.GetValue());
-
-        if (pComInfo->m_pInterfaceMT == NULL)
-        {
-            ComPlusCall::PopulateComPlusCallMethodDesc(pMD, NULL);
-        }
-        else
-        {
-            pComInfo->m_pInterfaceMT->CheckRestore();
-        }
-
-        if (pComInfo->m_pILStub == NULL)
-        {
-            PCODE pCode = JitILStub(*ppStubMD);
-            InterlockedCompareExchangeT<PCODE>(pComInfo->GetAddrOfILStubField(), pCode, NULL);
-        }
-        else
-        {
-            // Pointer to pre-implemented code initialized at NGen-time
-            _ASSERTE((*ppStubMD)->GetNativeCode() == pComInfo->m_pILStub);
-        }
+        PCODE pCode = JitILStub(*ppStubMD);
+        InterlockedCompareExchangeT<PCODE>(pComInfo->GetAddrOfILStubField(), pCode, NULL);
     }
     else
     {
-        DWORD dwStubFlags;
-        pComInfo = ComPlusCall::PopulateComPlusCallMethodDesc(pMD, &dwStubFlags);
-
-        if (!pComInfo->m_pStubMD.IsNull())
-        {
-            // Discard pre-implemented code
-            PCODE pPreImplementedCode = pComInfo->m_pStubMD.GetValue()->GetNativeCode();
-            InterlockedCompareExchangeT<PCODE>(pComInfo->GetAddrOfILStubField(), NULL, pPreImplementedCode);
-        }
-
-        *ppStubMD = ComPlusCall::GetILStubMethodDesc(pMD, dwStubFlags);
-
-        if (*ppStubMD != NULL)
-        {
-            PCODE pCode = JitILStub(*ppStubMD);
-            InterlockedCompareExchangeT<PCODE>(pComInfo->GetAddrOfILStubField(), pCode, NULL);
-        }
-        else
-        {
-            CreateCLRToDispatchCOMStub(pMD, dwStubFlags);
-        }
+        CreateCLRToDispatchCOMStub(pMD, dwStubFlags);
     }
 
     PCODE pStub = NULL;
@@ -245,7 +196,7 @@ PCODE ComPlusCall::GetStubForILStub(MethodDesc* pMD, MethodDesc** ppStubMD)
     }
     else
     {
-        pStub = TheGenericComplusCallStub();
+        pStub = TheGenericCLRToCOMCallStub();
     }
 
     return pStub;
@@ -337,7 +288,7 @@ I4ARRAYREF SetUpWrapperInfo(MethodDesc *pMD)
     return WrapperTypeArr;
 }
 
-UINT32 CLRToCOMEventCallWorker(ComPlusMethodFrame* pFrame, ComPlusCallMethodDesc *pMD)
+UINT32 CLRToCOMEventCallWorker(CLRToCOMMethodFrame* pFrame, CLRToCOMCallMethodDesc *pMD)
 {
     CONTRACTL
     {
@@ -349,13 +300,14 @@ UINT32 CLRToCOMEventCallWorker(ComPlusMethodFrame* pFrame, ComPlusCallMethodDesc
     }
     CONTRACTL_END;
 
-    struct _gc {
+    struct {
         OBJECTREF EventProviderTypeObj;
         OBJECTREF EventProviderObj;
         OBJECTREF ThisObj;
     } gc;
-    ZeroMemory(&gc, sizeof(gc));
-
+    gc.EventProviderTypeObj = NULL;
+    gc.EventProviderObj = NULL;
+    gc.ThisObj = NULL;
 
     LOG((LF_STUBS, LL_INFO1000, "Calling CLRToCOMEventCallWorker %s::%s \n", pMD->m_pszDebugClassName, pMD->m_pszDebugMethodName));
 
@@ -412,7 +364,7 @@ UINT32 CLRToCOMEventCallWorker(ComPlusMethodFrame* pFrame, ComPlusCallMethodDesc
     return 0;
 }
 
-CallsiteDetails CreateCallsiteDetails(_In_ FramedMethodFrame *pFrame)
+static CallsiteDetails CreateCallsiteDetails(_In_ FramedMethodFrame *pFrame)
 {
     CONTRACTL
     {
@@ -437,13 +389,13 @@ CallsiteDetails CreateCallsiteDetails(_In_ FramedMethodFrame *pFrame)
         DelegateEEClass* delegateCls = (DelegateEEClass*)pMD->GetMethodTable()->GetClass();
         _ASSERTE(pFrame->GetThis()->GetMethodTable()->IsDelegate());
 
-        if (pMD == delegateCls->m_pBeginInvokeMethod.GetValue())
+        if (pMD == delegateCls->m_pBeginInvokeMethod)
         {
             callsiteFlags |= CallsiteDetails::BeginInvoke;
         }
         else
         {
-            _ASSERTE(pMD == delegateCls->m_pEndInvokeMethod.GetValue());
+            _ASSERTE(pMD == delegateCls->m_pEndInvokeMethod);
             callsiteFlags |= CallsiteDetails::EndInvoke;
         }
 
@@ -490,15 +442,25 @@ CallsiteDetails CreateCallsiteDetails(_In_ FramedMethodFrame *pFrame)
         SigTypeContext::InitTypeContext(pMD, actualType, &typeContext);
     }
 
+    // If the signature is marked preserve sig, then the return
+    // is required to be an HRESULT, per COM rules. We set a flag to
+    // indicate this state to avoid issues when a C# developer defines
+    // an HRESULT in C# as a ValueClass with a single int field. This
+    // is convenient but does violate the COM ABI. Setting the flag
+    // lets us permit this convention and allow either a 4 byte primitive
+    // or the commonly used C# type "struct HResult { int Value; }".
+    if (IsMiPreserveSig(pMD->GetImplAttrs()))
+        callsiteFlags |= CallsiteDetails::HResultReturn;
+
     _ASSERTE(!signature.IsEmpty() && pModule != nullptr);
 
     // Create details
-    return CallsiteDetails{ { signature, pModule, &typeContext }, pFrame, pMD, fIsDelegate };
+    return CallsiteDetails{ { signature, pModule, &typeContext }, pFrame, pMD, fIsDelegate, callsiteFlags };
 }
 
 UINT32 CLRToCOMLateBoundWorker(
-    _In_ ComPlusMethodFrame *pFrame,
-    _In_ ComPlusCallMethodDesc *pMD)
+    _In_ CLRToCOMMethodFrame *pFrame,
+    _In_ CLRToCOMCallMethodDesc *pMD)
 {
     CONTRACTL
     {
@@ -517,7 +479,7 @@ UINT32 CLRToCOMLateBoundWorker(
 
     // Retrieve the method table and the method desc of the call.
     MethodTable *pItfMT = pMD->GetInterfaceMethodTable();
-    ComPlusCallMethodDesc *pItfMD = pMD;
+    CLRToCOMCallMethodDesc *pItfMD = pMD;
 
     // Make sure this is only called on IDispatch only interfaces.
     _ASSERTE(pItfMT->GetComInterfaceType() == ifDispatch);
@@ -525,11 +487,11 @@ UINT32 CLRToCOMLateBoundWorker(
     // If this is a method impl MD then we need to retrieve the actual interface MD that
     // this is a method impl for.
     // REVISIT_TODO: Stop using ComSlot to convert method impls to interface MD
-    // _ASSERTE(pMD->m_pComPlusCallInfo->m_cachedComSlot == 7);
+    // _ASSERTE(pMD->m_pCLRToCOMCallInfo->m_cachedComSlot == 7);
     if (!pMD->GetMethodTable()->IsInterface())
     {
         const unsigned cbExtraSlots = 7;
-        pItfMD = (ComPlusCallMethodDesc*)pItfMT->GetMethodDescForSlot(pMD->m_pComPlusCallInfo->m_cachedComSlot - cbExtraSlots);
+        pItfMD = (CLRToCOMCallMethodDesc*)pItfMT->GetMethodDescForSlot(pMD->m_pCLRToCOMCallInfo->m_cachedComSlot - cbExtraSlots);
         CONSISTENCY_CHECK(pMD->GetInterfaceMD() == pItfMD);
     }
 
@@ -543,7 +505,7 @@ UINT32 CLRToCOMLateBoundWorker(
     ULONG uSemantic;
 
     // See if there is property information for this member.
-    hr = pItfMT->GetModule()->GetPropertyInfoForMethodDef(pItfMD->GetMemberDef(), &propToken, &strMemberName, &uSemantic);
+    hr = pItfMT->GetMDImport()->GetPropertyInfoForMethodDef(pItfMD->GetMemberDef(), &propToken, &strMemberName, &uSemantic);
     if (hr != S_OK)
     {
         // Non-property method
@@ -647,7 +609,14 @@ UINT32 CLRToCOMLateBoundWorker(
         OBJECTREF RetValType;
         OBJECTREF RetVal;
     } gc;
-    ZeroMemory(&gc, sizeof(gc));
+    gc.MemberName = NULL;
+    gc.ItfTypeObj = NULL;
+    gc.Args = NULL;
+    gc.ArgsIsByRef = NULL;
+    gc.ArgsTypes = NULL;
+    gc.ArgsWrapperTypes = NULL;
+    gc.RetValType = NULL;
+    gc.RetVal = NULL;
     GCPROTECT_BEGIN(gc);
     {
         // Retrieve the exposed type object for the interface.
@@ -659,8 +628,8 @@ UINT32 CLRToCOMLateBoundWorker(
         hr = pItfMD->GetMDImport()->GetDispIdOfMemberDef(tkMember, (ULONG*)&dispId);
         if (hr == S_OK)
         {
-            WCHAR strTmp[ARRAYSIZE(DISPID_NAME_FORMAT_STRING W("4294967295"))];
-            _snwprintf_s(strTmp, COUNTOF(strTmp), _TRUNCATE, DISPID_NAME_FORMAT_STRING, dispId);
+            WCHAR strTmp[ARRAY_SIZE(DISPID_NAME_FORMAT_STRING) + MaxUnsigned32BitDecString];
+            _snwprintf_s(strTmp, ARRAY_SIZE(strTmp), _TRUNCATE, DISPID_NAME_FORMAT_STRING, dispId);
             gc.MemberName = StringObject::NewString(strTmp);
         }
         else
@@ -725,7 +694,7 @@ UINT32 CLRToCOMLateBoundWorker(
 
 #pragma optimize( "y", off )
 /*static*/
-UINT32 STDCALL CLRToCOMWorker(TransitionBlock * pTransitionBlock, ComPlusCallMethodDesc * pMD)
+UINT32 STDCALL CLRToCOMWorker(TransitionBlock * pTransitionBlock, CLRToCOMCallMethodDesc * pMD)
 {
     CONTRACTL
     {
@@ -744,8 +713,8 @@ UINT32 STDCALL CLRToCOMWorker(TransitionBlock * pTransitionBlock, ComPlusCallMet
 
     MAKE_CURRENT_THREAD_AVAILABLE();
 
-    FrameWithCookie<ComPlusMethodFrame> frame(pTransitionBlock, pMD);
-    ComPlusMethodFrame * pFrame = &frame;
+    FrameWithCookie<CLRToCOMMethodFrame> frame(pTransitionBlock, pMD);
+    CLRToCOMMethodFrame * pFrame = &frame;
 
     //we need to zero out the return value buffer because we will report it during GC
 #ifdef ENREGISTERED_RETURNTYPE_MAXSIZE
@@ -759,7 +728,7 @@ UINT32 STDCALL CLRToCOMWorker(TransitionBlock * pTransitionBlock, ComPlusCallMet
 
     INSTALL_UNWIND_AND_CONTINUE_HANDLER
 
-    _ASSERTE(pMD->IsComPlusCall());
+    _ASSERTE(pMD->IsCLRToCOMCall());
 
     // Make sure we have been properly loaded here
     CONSISTENCY_CHECK(GetAppDomain()->CheckCanExecuteManagedCode(pMD));
@@ -794,14 +763,12 @@ UINT32 STDCALL CLRToCOMWorker(TransitionBlock * pTransitionBlock, ComPlusCallMet
 
 #pragma optimize( "", on )
 
-#endif // CROSSGEN_COMPILE
 #endif // #ifndef DACCESS_COMPILE
 
-#ifndef CROSSGEN_COMPILE
 //---------------------------------------------------------
-// Debugger support for ComPlusMethodFrame
+// Debugger support for CLRToCOMMethodFrame
 //---------------------------------------------------------
-TADDR ComPlusCall::GetFrameCallIP(FramedMethodFrame *frame)
+TADDR CLRToCOMCall::GetFrameCallIP(FramedMethodFrame *frame)
 {
     CONTRACT (TADDR)
     {
@@ -813,14 +780,14 @@ TADDR ComPlusCall::GetFrameCallIP(FramedMethodFrame *frame)
     }
     CONTRACT_END;
 
-    ComPlusCallMethodDesc *pCMD = dac_cast<PTR_ComPlusCallMethodDesc>(frame->GetFunction());
+    CLRToCOMCallMethodDesc *pCMD = dac_cast<PTR_CLRToCOMCallMethodDesc>(frame->GetFunction());
     MethodTable *pItfMT = pCMD->GetInterfaceMethodTable();
     TADDR ip = NULL;
 #ifndef DACCESS_COMPILE
     SafeComHolder<IUnknown> pUnk   = NULL;
 #endif
 
-    _ASSERTE(pCMD->IsComPlusCall());
+    _ASSERTE(pCMD->IsCLRToCOMCall());
 
     // Note: if this is a COM event call, then the call will be delegated to a different object. The logic below will
     // fail with an invalid cast error. For V1, we just won't step into those.
@@ -836,7 +803,7 @@ TADDR ComPlusCall::GetFrameCallIP(FramedMethodFrame *frame)
 
 #ifndef DACCESS_COMPILE
 
-    Thread* thread = GetThread();
+    Thread* thread = GetThreadNULLOk();
     if (thread == NULL)
     {
         //
@@ -866,7 +833,7 @@ TADDR ComPlusCall::GetFrameCallIP(FramedMethodFrame *frame)
         if (pItfMT->GetComInterfaceType() == ifDispatch)
             ip = (TADDR)(*(void ***)(IUnknown*)pUnk)[DISPATCH_INVOKE_SLOT];
         else
-            ip = (TADDR)(*(void ***)(IUnknown*)pUnk)[pCMD->m_pComPlusCallInfo->m_cachedComSlot];
+            ip = (TADDR)(*(void ***)(IUnknown*)pUnk)[pCMD->m_pCLRToCOMCallInfo->m_cachedComSlot];
     }
 
 #else
@@ -876,7 +843,7 @@ TADDR ComPlusCall::GetFrameCallIP(FramedMethodFrame *frame)
     RETURN ip;
 }
 
-void ComPlusMethodFrame::GetUnmanagedCallSite(TADDR* ip,
+void CLRToCOMMethodFrame::GetUnmanagedCallSite(TADDR* ip,
                                               TADDR* returnIP,
                                               TADDR* returnSP)
 {
@@ -891,10 +858,10 @@ void ComPlusMethodFrame::GetUnmanagedCallSite(TADDR* ip,
     }
     CONTRACTL_END;
 
-    LOG((LF_CORDB, LL_INFO100000, "ComPlusMethodFrame::GetUnmanagedCallSite\n"));
+    LOG((LF_CORDB, LL_INFO100000, "CLRToCOMMethodFrame::GetUnmanagedCallSite\n"));
 
     if (ip != NULL)
-        *ip = ComPlusCall::GetFrameCallIP(this);
+        *ip = CLRToCOMCall::GetFrameCallIP(this);
 
     TADDR retSP = NULL;
     // We can't assert retSP here because the debugger may actually call this function even when
@@ -917,7 +884,7 @@ void ComPlusMethodFrame::GetUnmanagedCallSite(TADDR* ip,
 
 
 
-BOOL ComPlusMethodFrame::TraceFrame(Thread *thread, BOOL fromPatch,
+BOOL CLRToCOMMethodFrame::TraceFrame(Thread *thread, BOOL fromPatch,
                                     TraceDestination *trace, REGDISPLAY *regs)
 {
     CONTRACTL
@@ -955,7 +922,7 @@ BOOL ComPlusMethodFrame::TraceFrame(Thread *thread, BOOL fromPatch,
          !thread->m_fPreemptiveGCDisabled ||
          *PTR_TADDR(returnSP) == returnIP))
     {
-        LOG((LF_CORDB, LL_INFO10000, "ComPlusMethodFrame::TraceFrame: can't trace...\n"));
+        LOG((LF_CORDB, LL_INFO10000, "CLRToCOMMethodFrame::TraceFrame: can't trace...\n"));
         return FALSE;
     }
 
@@ -966,21 +933,20 @@ BOOL ComPlusMethodFrame::TraceFrame(Thread *thread, BOOL fromPatch,
     trace->InitForUnmanaged(ip);
 
     LOG((LF_CORDB, LL_INFO10000,
-         "ComPlusMethodFrame::TraceFrame: ip=0x%p\n", ip));
+         "CLRToCOMMethodFrame::TraceFrame: ip=0x%p\n", ip));
 
     return TRUE;
 }
-#endif //CROSSGEN_COMPILE
 
 #ifdef TARGET_X86
 
 #ifndef DACCESS_COMPILE
 
-CrstStatic   ComPlusCall::s_RetThunkCacheCrst;
-SHash<ComPlusCall::RetThunkSHashTraits> *ComPlusCall::s_pRetThunkCache = NULL;
+CrstStatic   CLRToCOMCall::s_RetThunkCacheCrst;
+SHash<CLRToCOMCall::RetThunkSHashTraits> *CLRToCOMCall::s_pRetThunkCache = NULL;
 
 // One time init.
-void ComPlusCall::Init()
+void CLRToCOMCall::Init()
 {
     CONTRACTL
     {
@@ -993,7 +959,7 @@ void ComPlusCall::Init()
     s_RetThunkCacheCrst.Init(CrstRetThunkCache);
 }
 
-LPVOID ComPlusCall::GetRetThunk(UINT numStackBytes)
+LPVOID CLRToCOMCall::GetRetThunk(UINT numStackBytes)
 {
     STANDARD_VM_CONTRACT;
 
@@ -1013,17 +979,20 @@ LPVOID ComPlusCall::GetRetThunk(UINT numStackBytes)
     {
         // cache miss -> create a new thunk
         AllocMemTracker dummyAmTracker;
-        pRetThunk = (LPVOID)dummyAmTracker.Track(SystemDomain::GetGlobalLoaderAllocator()->GetExecutableHeap()->AllocMem(S_SIZE_T((numStackBytes == 0) ? 1 : 3)));
+        size_t thunkSize = (numStackBytes == 0) ? 1 : 3;
+        pRetThunk = (LPVOID)dummyAmTracker.Track(SystemDomain::GetGlobalLoaderAllocator()->GetExecutableHeap()->AllocMem(S_SIZE_T(thunkSize)));
 
-        BYTE *pThunk = (BYTE *)pRetThunk;
+        ExecutableWriterHolder<BYTE> thunkWriterHolder((BYTE *)pRetThunk, thunkSize);
+        BYTE *pThunkRW = thunkWriterHolder.GetRW();
+
         if (numStackBytes == 0)
         {
-            pThunk[0] = 0xc3;
+            pThunkRW[0] = 0xc3;
         }
         else
         {
-            pThunk[0] = 0xc2;
-            *(USHORT *)&pThunk[1] = (USHORT)numStackBytes;
+            pThunkRW[0] = 0xc2;
+            *(USHORT *)&pThunkRW[1] = (USHORT)numStackBytes;
         }
 
         // add it to the cache

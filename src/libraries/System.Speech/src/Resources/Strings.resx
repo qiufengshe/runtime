@@ -1,17 +1,17 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <root>
-  <!-- 
-    Microsoft ResX Schema 
-    
+  <!--
+    Microsoft ResX Schema
+
     Version 2.0
-    
-    The primary goals of this format is to allow a simple XML format 
-    that is mostly human readable. The generation and parsing of the 
-    various data types are done through the TypeConverter classes 
+
+    The primary goals of this format is to allow a simple XML format
+    that is mostly human readable. The generation and parsing of the
+    various data types are done through the TypeConverter classes
     associated with the data types.
-    
+
     Example:
-    
+
     ... ado.net/XML headers & schema ...
     <resheader name="resmimetype">text/microsoft-resx</resheader>
     <resheader name="version">2.0</resheader>
@@ -26,36 +26,36 @@
         <value>[base64 mime encoded string representing a byte array form of the .NET Framework object]</value>
         <comment>This is a comment</comment>
     </data>
-                
-    There are any number of "resheader" rows that contain simple 
+
+    There are any number of "resheader" rows that contain simple
     name/value pairs.
-    
-    Each data row contains a name, and value. The row also contains a 
-    type or mimetype. Type corresponds to a .NET class that support 
-    text/value conversion through the TypeConverter architecture. 
-    Classes that don't support this are serialized and stored with the 
+
+    Each data row contains a name, and value. The row also contains a
+    type or mimetype. Type corresponds to a .NET class that support
+    text/value conversion through the TypeConverter architecture.
+    Classes that don't support this are serialized and stored with the
     mimetype set.
-    
-    The mimetype is used for serialized objects, and tells the 
-    ResXResourceReader how to depersist the object. This is currently not 
+
+    The mimetype is used for serialized objects, and tells the
+    ResXResourceReader how to depersist the object. This is currently not
     extensible. For a given mimetype the value must be set accordingly:
-    
-    Note - application/x-microsoft.net.object.binary.base64 is the format 
-    that the ResXResourceWriter will generate, however the reader can 
+
+    Note - application/x-microsoft.net.object.binary.base64 is the format
+    that the ResXResourceWriter will generate, however the reader can
     read any of the formats listed below.
-    
+
     mimetype: application/x-microsoft.net.object.binary.base64
-    value   : The object must be serialized with 
+    value   : The object must be serialized with
             : System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
             : and then encoded with base64 encoding.
-    
+
     mimetype: application/x-microsoft.net.object.soap.base64
-    value   : The object must be serialized with 
+    value   : The object must be serialized with
             : System.Runtime.Serialization.Formatters.Soap.SoapFormatter
             : and then encoded with base64 encoding.
 
     mimetype: application/x-microsoft.net.object.bytearray.base64
-    value   : The object must be serialized into a byte array 
+    value   : The object must be serialized into a byte array
             : using a System.ComponentModel.TypeConverter
             : and then encoded with base64 encoding.
     -->
@@ -502,10 +502,10 @@ Possible constructors are: '{2}'.</value>
   <data name="NoLanguageSet" xml:space="preserve">
     <value>Must set 'language' attribute for grammars with scripts.</value>
   </data>
-  <data name="MethodAttributeDefinedMultipeTimes" xml:space="preserve">
+  <data name="MethodAttributeDefinedMultipleTimes" xml:space="preserve">
     <value>Attribute 'method' in 'script' defined more than once.</value>
   </data>
-  <data name="RuleAttributeDefinedMultipeTimes" xml:space="preserve">
+  <data name="RuleAttributeDefinedMultipleTimes" xml:space="preserve">
     <value>Attribute 'rule' in 'script'  defined more than once.</value>
   </data>
   <data name="InvalidAssemblyReferenceAttribute" xml:space="preserve">
@@ -836,7 +836,7 @@ Possible constructors are: '{2}'.</value>
     <value>Rate must be from -10 through 10.</value>
   </data>
   <data name="EndSilenceOutOfRange" xml:space="preserve">
-    <value>Property cannot be negative or greater than 100 seconds.</value>
+    <value>Property cannot be negative or greater than 10 seconds.</value>
   </data>
   <data name="RejectionThresholdOutOfRange" xml:space="preserve">
     <value>RejectionThreshold must be between 0.0 and 1.0.</value>
@@ -1157,7 +1157,43 @@ Possible constructors are: '{2}'.</value>
     <value>The local recognizer cannot activate a rule, dictation, or other stream until it is initialized. Call SetInput first.</value>
   </data>
   <data name="SapiErrorUnused0" xml:space="preserve">
-    <value>Error code not used.</value>
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused1" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused2" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused3" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused4" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused5" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused6" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused7" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused8" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused9" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused10" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused11" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
+  </data>
+  <data name="SapiErrorUnused12" xml:space="preserve">
+    <value></value> <!-- SAPI does not use this code -->
   </data>
   <data name="SapiErrorNotSupportedLang" xml:space="preserve">
     <value>The requested language is not supported.</value>
@@ -1232,7 +1268,7 @@ Possible constructors are: '{2}'.</value>
     <value>The user has chosen to disable speech from running on the machine, or the system is not set up to run speech.</value>
   </data>
   <data name="SapiErrorRecognizerNotFound" xml:space="preserve">
-    <value>No recognizer is installed. </value>
+    <value>No recognizer is installed.</value>
   </data>
   <data name="SapiErrorAudioNotFound" xml:space="preserve">
     <value>No audio device is installed.</value>
@@ -1269,5 +1305,35 @@ Possible constructors are: '{2}'.</value>
   </data>
   <data name="SapiErrorNotSupportedForInprocRecognizer" xml:space="preserve">
     <value>The method called is not supported for the in-process recognizer.</value>
+  </data>
+  <data name="SapiLexInvalidData" xml:space="preserve">
+    <value>The lexicon data is invalid or corrupted.</value>
+  </data>
+  <data name="SapiLexUnexpectedFormat" xml:space="preserve">
+    <value>The lexicon is not in the expected format.</value>
+  </data>
+  <data name="SapiNonWordTransition" xml:space="preserve">
+    <value>One of the parse transitions is not a word transition.</value>
+  </data>
+  <data name="SapiSisrAttributesNotAllowed" xml:space="preserve">
+    <value>Attributes are not allowed at the top level.</value>
+  </data>
+  <data name="SapiSisrMixedNotAllowed" xml:space="preserve">
+    <value>Mixed content is not allowed at the top level.</value>
+  </data>
+  <data name="SapiStringEmpty" xml:space="preserve">
+    <value>The string cannot be empty.</value>
+  </data>
+  <data name="SapiStringTooLong" xml:space="preserve">
+    <value>The string is too long.</value>
+  </data>
+  <data name="SapiVoiceNotFound" xml:space="preserve">
+    <value>No given voice is found.</value>
+  </data>
+  <data name="SapiErrorOverload" xml:space="preserve">
+    <value>The operation cannot be carried out due to overload and should be attempted again.</value>
+  </data>
+  <data name="SapiConfigInvalidData" xml:space="preserve">
+    <value>The data in the CFG grammar is invalid or corrupted.</value>
   </data>
 </root>

@@ -11,7 +11,7 @@
 #include "ep-rt.h"
 
 static ep_rt_spin_lock_handle_t _ep_threads_lock = {0};
-static ep_rt_thread_list_t _ep_threads = {0};
+static dn_list_t *_ep_threads = NULL;
 
 /*
  * Forward declares of all static functions.
@@ -37,11 +37,8 @@ ep_thread_alloc (void)
 	instance->os_thread_id = ep_rt_thread_id_t_to_uint64_t (ep_rt_current_thread_get_id ());
 	memset (instance->session_state, 0, sizeof (instance->session_state));
 
-	EP_SPIN_LOCK_ENTER (&_ep_threads_lock, section1)
-		ep_raise_error_if_nok_holding_spin_lock (ep_rt_thread_list_append (&_ep_threads, instance), section1);
-	EP_SPIN_LOCK_EXIT (&_ep_threads_lock, section1)
-
 	instance->writing_event_in_progress = UINT32_MAX;
+	instance->unregistered = 0;
 
 ep_on_exit:
 	return instance;
@@ -64,29 +61,9 @@ ep_thread_free (EventPipeThread *thread)
 		EP_ASSERT (thread->session_state [i] == NULL);
 	}
 #endif
-	bool found = false;
-	EP_SPIN_LOCK_ENTER (&_ep_threads_lock, section1)
-		// Remove ourselves from the global list
-		ep_rt_thread_list_iterator_t iterator = ep_rt_thread_list_iterator_begin (&_ep_threads);
-		while (!ep_rt_thread_list_iterator_end (&_ep_threads, &iterator)) {
-			if (ep_rt_thread_list_iterator_value (&iterator) == thread) {
-				ep_rt_thread_list_remove (&_ep_threads, thread);
-				found = true;
-				break;
-			}
-			ep_rt_thread_list_iterator_next (&iterator);
-		}
-	EP_SPIN_LOCK_EXIT (&_ep_threads_lock, section1)
 
-	EP_ASSERT (found || !"We couldn't find ourselves in the global thread list");
-
-ep_on_exit:
 	ep_rt_spin_lock_free (&thread->rt_lock);
 	ep_rt_object_free (thread);
-	return;
-
-ep_on_error:
-	ep_exit_error_handler ();
 }
 
 void
@@ -111,21 +88,63 @@ ep_thread_init (void)
 	if (!ep_rt_spin_lock_is_valid (&_ep_threads_lock))
 		EP_UNREACHABLE ("Failed to allocate threads lock.");
 
-	ep_rt_thread_list_alloc (&_ep_threads);
-	if (!ep_rt_thread_list_is_valid (&_ep_threads))
+	_ep_threads = dn_list_alloc ();
+	if (!_ep_threads)
 		EP_UNREACHABLE ("Failed to allocate threads list.");
 }
 
-void
-ep_thread_fini (void)
+bool
+ep_thread_register (EventPipeThread *thread)
 {
-	// If threads are still included in list (depending on runtime shutdown order),
-	// don't clean up since TLS destructor migh callback freeing items, no new
-	// threads should however not be added to list at this stage.
-	if (ep_rt_thread_list_is_empty (&_ep_threads)) {
-		ep_rt_thread_list_free (&_ep_threads, NULL);
-		ep_rt_spin_lock_free (&_ep_threads_lock);
-	}
+	ep_rt_spin_lock_requires_lock_not_held (&_ep_threads_lock);
+
+	ep_return_false_if_nok (thread != NULL);
+
+	bool result = false;
+
+	ep_thread_addref (thread);
+
+	ep_rt_spin_lock_acquire (&_ep_threads_lock);
+		result = dn_list_push_back (_ep_threads, thread);
+	ep_rt_spin_lock_release (&_ep_threads_lock);
+
+	if (!result)
+		ep_thread_release (thread);
+
+	ep_rt_spin_lock_requires_lock_not_held (&_ep_threads_lock);
+
+	return result;
+}
+
+bool
+ep_thread_unregister (EventPipeThread *thread)
+{
+	ep_rt_spin_lock_requires_lock_not_held (&_ep_threads_lock);
+
+	ep_return_false_if_nok (thread != NULL);
+
+	bool found = false;
+	EP_SPIN_LOCK_ENTER (&_ep_threads_lock, section1)
+		// Remove ourselves from the global list
+		DN_LIST_FOREACH_BEGIN (EventPipeThread *, current_thread, _ep_threads) {
+			if (current_thread == thread) {
+				dn_list_remove (_ep_threads, thread);
+				ep_rt_volatile_store_uint32_t(&thread->unregistered, 1);
+				ep_thread_release (thread);
+				found = true;
+				break;
+			}
+		} DN_LIST_FOREACH_END;
+	EP_SPIN_LOCK_EXIT (&_ep_threads_lock, section1)
+
+	EP_ASSERT (found || !"We couldn't find ourselves in the global thread list");
+
+ep_on_exit:
+	ep_rt_spin_lock_requires_lock_not_held (&_ep_threads_lock);
+	return found;
+
+ep_on_error:
+	ep_exit_error_handler ();
 }
 
 EventPipeThread *
@@ -141,21 +160,18 @@ ep_thread_get_or_create (void)
 }
 
 void
-ep_thread_get_threads (ep_rt_thread_array_t *threads)
+ep_thread_get_threads (dn_vector_ptr_t *threads)
 {
 	EP_ASSERT (threads != NULL);
 
 	EP_SPIN_LOCK_ENTER (&_ep_threads_lock, section1)
-		ep_rt_thread_list_iterator_t threads_iterator = ep_rt_thread_list_iterator_begin (&_ep_threads);
-		while (!ep_rt_thread_list_iterator_end (&_ep_threads, &threads_iterator)) {
-			EventPipeThread *thread = ep_rt_thread_list_iterator_value (&threads_iterator);
+		DN_LIST_FOREACH_BEGIN (EventPipeThread *, thread, _ep_threads) {
 			if (thread) {
 				// Add ref so the thread doesn't disappear when we release the lock
 				ep_thread_addref (thread);
-				ep_rt_thread_array_append (threads, thread);
+				dn_vector_ptr_push_back (threads, thread);
 			}
-			ep_rt_thread_list_iterator_next (&threads_iterator);
-		}
+		} DN_VECTOR_PTR_FOREACH_END;
 	EP_SPIN_LOCK_EXIT (&_ep_threads_lock, section1)
 
 ep_on_exit:
@@ -214,7 +230,6 @@ ep_thread_get_session_state (
 
 	ep_thread_requires_lock_held (thread);
 
-	EP_ASSERT (thread->session_state [ep_session_get_index (session)] != NULL);
 	return thread->session_state [ep_session_get_index (session)];
 }
 
@@ -342,6 +357,19 @@ ep_on_error:
 	ep_exit_error_handler ();
 }
 
+uint32_t
+ep_thread_session_state_get_buffer_count_estimate(const EventPipeThreadSessionState *thread_session_state)
+{
+	// this is specifically unprotected and allowed to be incorrect due to memory ordering
+	//
+	// buffer_list won't become NULL after getting this reference in the scope of this function.
+	//
+	// buffer_list is only set to NULL when the session is being freed
+	// when this code won't be called.
+	EventPipeBufferList *buffer_list = thread_session_state->buffer_list;
+	return buffer_list == NULL ? 0 : buffer_list->buffer_count;
+}
+
 void
 ep_thread_session_state_free (EventPipeThreadSessionState *thread_session_state)
 {
@@ -437,7 +465,7 @@ ep_thread_session_state_increment_sequence_number (EventPipeThreadSessionState *
 #endif /* !defined(EP_INCLUDE_SOURCE_FILES) || defined(EP_FORCE_INCLUDE_SOURCE_FILES) */
 #endif /* ENABLE_PERFTRACING */
 
-#ifndef EP_INCLUDE_SOURCE_FILES
+#if !defined(ENABLE_PERFTRACING) || (defined(EP_INCLUDE_SOURCE_FILES) && !defined(EP_FORCE_INCLUDE_SOURCE_FILES))
 extern const char quiet_linker_empty_file_warning_eventpipe_thread;
 const char quiet_linker_empty_file_warning_eventpipe_thread = 0;
 #endif

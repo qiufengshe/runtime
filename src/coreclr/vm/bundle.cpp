@@ -55,18 +55,19 @@ BundleFileLocation Bundle::Probe(const SString& path, bool pathIsBundleRelative)
 
     BundleFileLocation loc;
 
-    // Skip over m_base_path, if any. For example: 
+    // Skip over m_base_path, if any. For example:
     //    Bundle.Probe("lib.dll") => m_probe("lib.dll")
     //    Bundle.Probe("path/to/exe/lib.dll") => m_probe("lib.dll")
     //    Bundle.Probe("path/to/exe/and/some/more/lib.dll") => m_probe("and/some/more/lib.dll")
 
-    StackScratchBuffer scratchBuffer;
-    LPCSTR utf8Path(path.GetUTF8(scratchBuffer));
+    StackSString pathBuffer;
+    pathBuffer.SetAndConvertToUTF8(path.GetUnicode());
+    LPCSTR utf8Path(pathBuffer.GetUTF8());
 
     if (!pathIsBundleRelative)
     {
 #ifdef TARGET_UNIX
-        if (wcsncmp(m_basePath, path, m_basePath.GetCount()) == 0)
+        if (u16_strncmp(m_basePath, path, m_basePath.GetCount()) == 0)
 #else
         if (_wcsnicmp(m_basePath, path, m_basePath.GetCount()) == 0)
 #endif // TARGET_UNIX
@@ -80,7 +81,21 @@ BundleFileLocation Bundle::Probe(const SString& path, bool pathIsBundleRelative)
         }
     }
 
-    m_probe(utf8Path, &loc.Offset, &loc.Size);
+    INT64 fileSize = 0;
+    INT64 compressedSize = 0;
+
+    m_probe(utf8Path, &loc.Offset, &fileSize, &compressedSize);
+
+    if (compressedSize)
+    {
+        loc.Size = compressedSize;
+        loc.UncompresedSize = fileSize;
+    }
+    else
+    {
+        loc.Size = fileSize;
+        loc.UncompresedSize = 0;
+    }
 
     return loc;
 }

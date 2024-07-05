@@ -1,12 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Diagnostics;
 using System.Collections;
-using System.ComponentModel;
-using System.Globalization;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 
 namespace System.Data
 {
@@ -119,7 +119,7 @@ namespace System.Data
 
         // Case-sensitive smart search: it will look for a table using the ns only if required to
         // resolve a conflict
-        internal DataTable? GetTableSmart(string name, string ns)
+        internal DataTable? GetTableSmart(string name, string? ns)
         {
             int fCount = 0;
             DataTable? fTable = null;
@@ -259,7 +259,7 @@ namespace System.Data
         /// </summary>
         internal string AssignName()
         {
-            string? newName = null;
+            string newName;
             while (Contains(newName = MakeName(_defaultNameIndex)))
             {
                 _defaultNameIndex++;
@@ -631,7 +631,7 @@ namespace System.Data
             if ((null != tableName) && (0 < tableName.Length))
             {
                 int count = _list.Count;
-                int result = 0;
+                int result;
                 for (int i = 0; i < count; i++)
                 {
                     DataTable table = (DataTable)_list[i]!;
@@ -668,7 +668,7 @@ namespace System.Data
             if ((null != tableName) && (0 < tableName.Length))
             {
                 int count = _list.Count;
-                int result = 0;
+                int result;
                 for (int i = 0; i < count; i++)
                 {
                     DataTable table = (DataTable)_list[i]!;
@@ -701,7 +701,7 @@ namespace System.Data
         /// <summary>
         /// Makes a default name with the given index.  e.g. Table1, Table2, ... Tablei
         /// </summary>
-        private string MakeName(int index) => 1 == index ?
+        private static string MakeName(int index) => 1 == index ?
             "Table1" :
             "Table" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
 

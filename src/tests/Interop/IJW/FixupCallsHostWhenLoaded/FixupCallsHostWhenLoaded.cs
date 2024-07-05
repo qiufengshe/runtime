@@ -5,13 +5,14 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using TestLibrary;
+using Xunit;
 
 namespace FixupCallsHostWhenLoaded
 {
-    class FixupCallsHostWhenLoaded
+    public class FixupCallsHostWhenLoaded
     {
-        static int Main(string[] args)
+        [Fact]
+        public static int TestEntryPoint()
         {
             // Disable running on Windows 7 until IJW activation work is complete.
             if(Environment.OSVersion.Platform != PlatformID.Win32NT || TestLibrary.Utilities.IsWindows7)
@@ -21,8 +22,7 @@ namespace FixupCallsHostWhenLoaded
 
             try
             {
-                // Load a fake mscoree.dll to avoid starting desktop
-                IntPtr ijwHost = NativeLibrary.Load(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "mscoree.dll"));
+                IntPtr ijwHost = NativeLibrary.Load(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "ijwhost.dll"));
 
                 WasModuleVTableQueriedDelegate wasModuleVTableQueried = Marshal.GetDelegateForFunctionPointer<WasModuleVTableQueriedDelegate>(NativeLibrary.GetExport(ijwHost, "WasModuleVTableQueried"));
 
@@ -30,9 +30,9 @@ namespace FixupCallsHostWhenLoaded
                 Assembly.Load("IjwNativeDll");
 
                 IntPtr ijwModuleHandle = GetModuleHandle("IjwNativeDll.dll");
-                
-                Assert.AreNotEqual(IntPtr.Zero, ijwModuleHandle);
-                Assert.IsTrue(wasModuleVTableQueried(ijwModuleHandle));
+
+                Assert.NotEqual(IntPtr.Zero, ijwModuleHandle);
+                Assert.True(wasModuleVTableQueried(ijwModuleHandle));
             }
             catch (Exception e)
             {

@@ -24,8 +24,9 @@
 #include "eehash.h"
 #include "contractimpl.h"
 #include "generics.h"
-#include "fixuppointer.h"
 #include "gcinfotypes.h"
+#include "enum_class_flags.h"
+#include "threadstatics.h"
 
 /*
  * Forward Declarations
@@ -33,7 +34,6 @@
 class    AppDomain;
 class    ArrayClass;
 class    ArrayMethodDesc;
-struct   ClassCtorInfoEntry;
 class ClassLoader;
 class FCallMethodDesc;
 class    EEClass;
@@ -64,6 +64,56 @@ class ClassFactoryBase;
 #endif // FEATURE_COMINTEROP_UNMANAGED_ACTIVATION
 class ArgDestination;
 enum class WellKnownAttribute : DWORD;
+struct MethodTableAuxiliaryData;
+
+typedef DPTR(MethodTableAuxiliaryData) PTR_MethodTableAuxiliaryData;
+typedef DPTR(MethodTableAuxiliaryData const) PTR_Const_MethodTableAuxiliaryData;
+
+enum class StaticsOffsetType
+{
+    Normal,
+    ThreadLocal
+};
+
+enum class ResolveVirtualStaticMethodFlags
+{
+    None = 0,
+    AllowNullResult = 1,
+    VerifyImplemented = 2,
+    AllowVariantMatches = 4,
+    InstantiateResultOverFinalMethodDesc = 8,
+
+    support_use_as_flags // Enable the template functions in enum_class_flags.h
+};
+
+
+enum class FindDefaultInterfaceImplementationFlags
+{
+    None,
+    AllowVariance = 1,
+    ThrowOnConflict = 2,
+    InstantiateFoundMethodDesc = 4,
+
+    support_use_as_flags // Enable the template functions in enum_class_flags.h
+};
+
+enum class MethodTableStaticsFlags
+{
+    None = 0,
+    Present = 0x1,
+    Generic = 0x2,
+    Thread = 0x4,
+
+    support_use_as_flags // Enable the template functions in enum_class_flags.h
+};
+
+enum class MethodDataComputeOptions
+{
+    NoCache, // Do not place the results of getting the MethodData into the cache, but use it if it is there
+    NoCacheVirtualsOnly, // Do not place the results of getting the MethodData into the cache, but use it if it is there. If freshly computed, only fill in virtual data, and ignore non-virtuals
+    Cache, // Place result of getting MethodData into the cache if it is not already there
+    CacheOnly, // Get the MethodData from the cache. If not present, simply do not return one
+};
 
 //============================================================================
 // This is the in-memory structure of a class and it will evolve.
@@ -100,29 +150,22 @@ enum class WellKnownAttribute : DWORD;
 //
 struct InterfaceInfo_t
 {
-#ifdef DACCESS_COMPILE
-    friend class NativeImageDumper;
-#endif
 
     // Method table of the interface
-#if defined(FEATURE_NGEN_RELOCS_OPTIMIZATIONS)
-    RelativeFixupPointer<PTR_MethodTable> m_pMethodTable;
-#else
-    FixupPointer<PTR_MethodTable> m_pMethodTable;
-#endif
+    PTR_MethodTable m_pMethodTable;
 
 public:
     FORCEINLINE PTR_MethodTable GetMethodTable()
     {
         LIMITED_METHOD_CONTRACT;
-        return ReadPointerMaybeNull(this, &InterfaceInfo_t::m_pMethodTable);
+        return VolatileLoadWithoutBarrier(&m_pMethodTable);
     }
 
 #ifndef DACCESS_COMPILE
     void SetMethodTable(MethodTable * pMT)
     {
         LIMITED_METHOD_CONTRACT;
-        m_pMethodTable.SetValueMaybeNull(pMT);
+        return VolatileStoreWithoutBarrier(&m_pMethodTable, pMT);
     }
 
     // Get approximate method table. This is used by the type loader before the type is fully loaded.
@@ -132,7 +175,7 @@ public:
 #ifndef DACCESS_COMPILE
     InterfaceInfo_t(InterfaceInfo_t &right)
     {
-        m_pMethodTable.SetValueMaybeNull(right.m_pMethodTable.GetValueMaybeNull());
+        VolatileStoreWithoutBarrier(&m_pMethodTable, VolatileLoadWithoutBarrier(&right.m_pMethodTable));
     }
 #else // !DACCESS_COMPILE
 private:
@@ -253,42 +296,25 @@ struct GenericsDictInfo
 };  // struct GenericsDictInfo
 typedef DPTR(GenericsDictInfo) PTR_GenericsDictInfo;
 
-struct GenericsStaticsInfo
-{
-    // Pointer to field descs for statics
-    RelativePointer<PTR_FieldDesc> m_pFieldDescs;
 
-    // Method table ID for statics
-    SIZE_T              m_DynamicTypeID;
+// These various statics structures exist directly before the MethodTableAuxiliaryData
 
-};  // struct GenericsStaticsInfo
+// Any MethodTable which has static variables has this structure
+struct DynamicStaticsInfo;
+struct ThreadStaticsInfo;
+struct GenericsStaticsInfo;
+
+typedef DPTR(DynamicStaticsInfo) PTR_DynamicStaticsInfo;
+typedef DPTR(ThreadStaticsInfo) PTR_ThreadStaticsInfo;
 typedef DPTR(GenericsStaticsInfo) PTR_GenericsStaticsInfo;
 
-
-// CrossModuleGenericsStaticsInfo is used in NGen images for statics of cross-module
-// generic instantiations. CrossModuleGenericsStaticsInfo is optional member of
-// MethodTableWriteableData.
-struct CrossModuleGenericsStaticsInfo
-{
-    // Module this method table statics are attached to.
-    //
-    // The statics has to be attached to module referenced from the generic instantiation
-    // in domain-neutral code. We need to guarantee that the module for the statics
-    // has a valid local represenation in an appdomain.
-    //
-    PTR_Module          m_pModuleForStatics;
-
-    // Method table ID for statics
-    SIZE_T              m_DynamicTypeID;
-};  // struct CrossModuleGenericsStaticsInfo
-typedef DPTR(CrossModuleGenericsStaticsInfo) PTR_CrossModuleGenericsStaticsInfo;
-
 //
-// This struct consolidates the writeable parts of the MethodTable
-// so that we can layout a read-only MethodTable with a pointer
-// to the writeable parts of the MethodTable in an ngen image
+// This struct consolidates the auxiliary parts of the MethodTable
+// so that we can layout a variety of variable sized structures and
+// access them from the MethodTable with a very small and simple set of
+// indirections.
 //
-struct MethodTableWriteableData
+struct MethodTableAuxiliaryData
 {
     friend class MethodTable;
 #if defined(DACCESS_COMPILE)
@@ -301,47 +327,43 @@ struct MethodTableWriteableData
         // TO BE UPDATED IN ORDER TO ENSURE THAT METHODTABLES DUPLICATED FOR GENERIC INSTANTIATIONS
         // CARRY THE CORRECT INITIAL FLAGS.
 
-        enum_flag_Unrestored                = 0x00000004,
-        enum_flag_HasApproxParent           = 0x00000010,
-        enum_flag_UnrestoredTypeKey         = 0x00000020,
-        enum_flag_IsNotFullyLoaded          = 0x00000040,
-        enum_flag_DependenciesLoaded        = 0x00000080,     // class and all depedencies loaded up to CLASS_LOADED_BUT_NOT_VERIFIED
+        enum_flag_Initialized             = 0x0001,
+        enum_flag_HasCheckedCanCompareBitsOrUseFastGetHashCode   = 0x0002,  // Whether we have checked the overridden Equals or GetHashCode
+        enum_flag_CanCompareBitsOrUseFastGetHashCode       = 0x0004,     // Is any field type or sub field type overridden Equals or GetHashCode
 
-        // enum_unused                      = 0x00000100,
+        enum_flag_HasApproxParent           = 0x0010,
+        // enum_unused                      = 0x0020,
+        enum_flag_IsNotFullyLoaded          = 0x0040,
+        enum_flag_DependenciesLoaded        = 0x0080,     // class and all dependencies loaded up to CLASS_LOADED_BUT_NOT_VERIFIED
 
-        enum_flag_CanCompareBitsOrUseFastGetHashCode       = 0x00000200,     // Is any field type or sub field type overrode Equals or GetHashCode
-        enum_flag_HasCheckedCanCompareBitsOrUseFastGetHashCode   = 0x00000400,  // Whether we have checked the overridden Equals or GetHashCode
-
-#ifdef FEATURE_PREJIT
-        // These flags are used only at ngen time. We store them here since
-        // we are running out of available flags in MethodTable. They may eventually
-        // go into ngen speficic state.
-        enum_flag_NGEN_IsFixedUp            = 0x00010000, // This MT has been fixed up during NGEN
-        enum_flag_NGEN_IsNeedsRestoreCached = 0x00020000, // Set if we have cached the results of needs restore computation
-        enum_flag_NGEN_CachedNeedsRestore   = 0x00040000, // The result of the needs restore computation
-        // enum_unused                      = 0x00080000,
-
-#ifdef FEATURE_READYTORUN_COMPILER
-        enum_flag_NGEN_IsLayoutFixedComputed                    = 0x0010000, // Set if we have cached the result of IsLayoutFixed computation
-        enum_flag_NGEN_IsLayoutFixed                            = 0x0020000, // The result of the IsLayoutFixed computation
-        enum_flag_NGEN_IsLayoutInCurrentVersionBubbleComputed   = 0x0040000, // Set if we have cached the result of IsLayoutInCurrentVersionBubble computation
-        enum_flag_NGEN_IsLayoutInCurrentVersionBubble           = 0x0080000, // The result of the IsLayoutInCurrentVersionBubble computation
-#endif
-
-#endif // FEATURE_PREJIT
+        enum_flag_IsInitError               = 0x0100,
+        enum_flag_IsStaticDataAllocated     = 0x0200,     // When this is set, if the class can be marked as initialized without any further code execution it will be.
+        // unum_unused                      = 0x0400,
+        enum_flag_IsTlsIndexAllocated       = 0x0800,
+        enum_flag_MayHaveOpenInterfaceInInterfaceMap = 0x1000,
+        // enum_unused                      = 0x2000,
 
 #ifdef _DEBUG
-        enum_flag_ParentMethodTablePointerValid =  0x40000000,
-        enum_flag_HasInjectedInterfaceDuplicates = 0x80000000,
+        enum_flag_ParentMethodTablePointerValid =  0x4000,
+        enum_flag_HasInjectedInterfaceDuplicates = 0x8000,
 #endif
     };
-    DWORD      m_dwFlags;                  // Lot of empty bits here.
+    union
+    {
+        DWORD      m_dwFlags;                  // Lot of empty bits here.
+        struct
+        {
+            uint16_t m_loFlags;
+            int16_t m_offsetToNonVirtualSlots;
+        };
+    };
 
-    /*
-     * m_hExposedClassObject is LoaderAllocator slot index to
-     * a RuntimeType instance for this class.
-     */
-    LOADERHANDLE m_hExposedClassObject;
+
+    PTR_Module m_pLoaderModule;
+
+    // Non-unloadable context: internal RuntimeType object handle
+    // Unloadable context: slot index in LoaderAllocator's pinned table
+    RUNTIMETYPEHANDLE m_hExposedClassObject;
 
 #ifdef _DEBUG
     // to avoid verify same method table too many times when it's not changing, we cache the GC count
@@ -354,11 +376,25 @@ struct MethodTableWriteableData
     DWORD m_dwPadding;               // Just to keep the size a multiple of 8
 #endif
 
+    // These pointers make it easier to examine the various statics structures in the debugger
+    PTR_DynamicStaticsInfo m_debugOnlyDynamicStatics;
+    PTR_GenericsStaticsInfo m_debugOnlyGenericStatics;
+    PTR_ThreadStaticsInfo m_debugOnlyThreadStatics;
 #endif
 
-    // Optional CrossModuleGenericsStaticsInfo may be here.
-
 public:
+    inline PTR_Module GetLoaderModule() const
+    {
+        return m_pLoaderModule;
+    }
+
+#ifndef DACCESS_COMPILE
+    inline void SetLoaderModule(Module *pModule)
+    {
+        m_pLoaderModule = pModule;
+    }
+#endif // DACCESS_COMPILE
+
 #ifdef _DEBUG
     inline BOOL IsParentMethodTablePointerValid() const
     {
@@ -374,51 +410,79 @@ public:
     }
 #endif
 
-#ifdef FEATURE_PREJIT
-
-    void Save(DataImage *image, MethodTable *pMT, DWORD profilingFlags) const;
-    void Fixup(DataImage *image, MethodTable *pMT, BOOL needsRestore);
-
-    inline BOOL IsFixedUp() const
+    inline BOOL IsInitError() const
     {
-        LIMITED_METHOD_CONTRACT;
-
-        return (m_dwFlags & enum_flag_NGEN_IsFixedUp);
-    }
-    inline void SetFixedUp()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        m_dwFlags |= enum_flag_NGEN_IsFixedUp;
+        LIMITED_METHOD_DAC_CONTRACT;
+        return (VolatileLoad(&m_dwFlags) & enum_flag_IsInitError);
     }
 
-    inline BOOL IsNeedsRestoreCached() const
+#ifndef DACCESS_COMPILE
+    inline void SetInitError()
     {
         LIMITED_METHOD_CONTRACT;
+        InterlockedOr((LONG*)&m_dwFlags, (LONG)enum_flag_IsInitError);
+    }
+#endif
 
-        return (m_dwFlags & enum_flag_NGEN_IsNeedsRestoreCached);
+    inline BOOL IsTlsIndexAllocated() const
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return (VolatileLoad(&m_dwFlags) & enum_flag_IsTlsIndexAllocated);
     }
 
-    inline BOOL GetCachedNeedsRestore() const
+#ifndef DACCESS_COMPILE
+    inline void SetIsTlsIndexAllocated()
     {
         LIMITED_METHOD_CONTRACT;
+        InterlockedOr((LONG*)&m_dwFlags, (LONG)enum_flag_IsTlsIndexAllocated);
+    }
+#endif
 
-        _ASSERTE(IsNeedsRestoreCached());
-        return (m_dwFlags & enum_flag_NGEN_CachedNeedsRestore);
+    DWORD* getIsClassInitedFlagAddress()
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        _ASSERTE(enum_flag_Initialized == 1); // This is an assumption in the JIT and in hand-written assembly at this time.
+        return &m_dwFlags;
     }
 
-    inline void SetCachedNeedsRestore(BOOL fNeedsRestore)
+    inline BOOL IsClassInited() const
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return VolatileLoad(&m_dwFlags) & enum_flag_Initialized;
+    }
+
+    inline bool IsClassInitedOrPreinitedDecided(bool *initResult) const
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+
+        DWORD dwFlags = VolatileLoad(&m_dwFlags);
+        *initResult = m_dwFlags & enum_flag_Initialized;
+        return (dwFlags & (enum_flag_IsStaticDataAllocated|enum_flag_Initialized)) != 0;
+    }
+
+#ifndef DACCESS_COMPILE
+    inline void SetClassInited()
     {
         LIMITED_METHOD_CONTRACT;
-
-        _ASSERTE(!IsNeedsRestoreCached());
-        m_dwFlags |= enum_flag_NGEN_IsNeedsRestoreCached;
-        if (fNeedsRestore) m_dwFlags |= enum_flag_NGEN_CachedNeedsRestore;
+        InterlockedOr((LONG*)&m_dwFlags, (LONG)enum_flag_Initialized);
     }
-#endif // FEATURE_PREJIT
+#endif
 
+    inline BOOL IsStaticDataAllocated() const
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return (VolatileLoad(&m_dwFlags) & enum_flag_IsStaticDataAllocated);
+    }
 
-    inline LOADERHANDLE GetExposedClassObjectHandle() const
+#ifndef DACCESS_COMPILE
+    inline void SetIsStaticDataAllocated(bool markAsInitedToo)
+    {
+        LIMITED_METHOD_CONTRACT;
+        InterlockedOr((LONG*)&m_dwFlags, markAsInitedToo ? (LONG)(enum_flag_IsStaticDataAllocated|enum_flag_Initialized) : (LONG)enum_flag_IsStaticDataAllocated);
+    }
+#endif
+
+    inline RUNTIMETYPEHANDLE GetExposedClassObjectHandle() const
     {
         LIMITED_METHOD_CONTRACT;
         return m_hExposedClassObject;
@@ -429,45 +493,177 @@ public:
         LIMITED_METHOD_CONTRACT;
 
         // Used only during method table initialization - no need for logging or Interlocked Exchange.
-        m_dwFlags |= (MethodTableWriteableData::enum_flag_UnrestoredTypeKey |
-                      MethodTableWriteableData::enum_flag_Unrestored |
-                      MethodTableWriteableData::enum_flag_IsNotFullyLoaded |
-                      MethodTableWriteableData::enum_flag_HasApproxParent);
-    }
-
-    void SetIsRestoredForBuildMethodTable()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        // Used only during method table initialization - no need for logging or Interlocked Exchange.
-        m_dwFlags &= ~(MethodTableWriteableData::enum_flag_UnrestoredTypeKey |
-                       MethodTableWriteableData::enum_flag_Unrestored);
+        m_dwFlags |= (MethodTableAuxiliaryData::enum_flag_IsNotFullyLoaded |
+                      MethodTableAuxiliaryData::enum_flag_HasApproxParent);
     }
 
     void SetIsRestoredForBuildArrayMethodTable()
     {
         LIMITED_METHOD_CONTRACT;
 
-        // Used only during method table initialization - no need for logging or Interlocked Exchange.
-        SetIsRestoredForBuildMethodTable();
-
         // Array's parent is always precise
-        m_dwFlags &= ~(MethodTableWriteableData::enum_flag_HasApproxParent);
+        m_dwFlags &= ~(MethodTableAuxiliaryData::enum_flag_HasApproxParent);
 
     }
 
-    inline CrossModuleGenericsStaticsInfo * GetCrossModuleGenericsStaticsInfo()
+    // The NonVirtualSlots array grows backwards, so this pointer points at just AFTER the first entry in the array
+    // To access, use a construct like... GetNonVirtualSlotsArray(pAuxiliaryData)[-(1 + index)]
+    static inline PTR_PCODE GetNonVirtualSlotsArray(PTR_Const_MethodTableAuxiliaryData pAuxiliaryData)
     {
         LIMITED_METHOD_DAC_CONTRACT;
-
-        SIZE_T size = sizeof(MethodTableWriteableData);
-        return PTR_CrossModuleGenericsStaticsInfo(dac_cast<TADDR>(this) + size);
+        return dac_cast<PTR_PCODE>(dac_cast<TADDR>(pAuxiliaryData) + pAuxiliaryData->GetOffsetToNonVirtualSlots());
     }
 
-};  // struct MethodTableWriteableData
+    inline int16_t GetOffsetToNonVirtualSlots() const
+    {
+        return m_offsetToNonVirtualSlots;
+    }
 
-typedef DPTR(MethodTableWriteableData) PTR_MethodTableWriteableData;
-typedef DPTR(MethodTableWriteableData const) PTR_Const_MethodTableWriteableData;
+    inline void SetOffsetToNonVirtualSlots(int16_t offset)
+    {
+        m_offsetToNonVirtualSlots = offset;
+    }
+
+    static inline PTR_DynamicStaticsInfo GetDynamicStaticsInfo(PTR_Const_MethodTableAuxiliaryData pAuxiliaryData);
+    static inline PTR_GenericsStaticsInfo GetGenericStaticsInfo(PTR_Const_MethodTableAuxiliaryData pAuxiliaryData);
+    static inline PTR_ThreadStaticsInfo GetThreadStaticsInfo(PTR_Const_MethodTableAuxiliaryData pAuxiliaryData);
+    inline void SetMayHaveOpenInterfacesInInterfaceMap()
+    {
+        LIMITED_METHOD_CONTRACT;
+        InterlockedOr((LONG*)&m_dwFlags, MethodTableAuxiliaryData::enum_flag_MayHaveOpenInterfaceInInterfaceMap);
+    }
+
+    inline bool MayHaveOpenInterfacesInInterfaceMap() const
+    {
+        return !!(m_dwFlags & MethodTableAuxiliaryData::enum_flag_MayHaveOpenInterfaceInInterfaceMap);
+    }
+};  // struct MethodTableAuxiliaryData
+
+// All MethodTables which have static variables will have one of these. It contains the pointers necessary to
+// find the normal (non-thread) static variables of the type.
+struct DynamicStaticsInfo
+{
+private:
+    // The detail of whether or not the class has been initialized is stored in the statics pointers as well as in
+    // its normal flag location. This is done so that when getting the statics base for a class, we can get the statics
+    // base address and check to see if it is initialized without needing a barrier between reading the flag and reading
+    // the static field address.
+    static constexpr TADDR ISCLASSNOTINITED = 1;
+    static constexpr TADDR ISCLASSNOTINITEDMASK = ISCLASSNOTINITED;
+    static constexpr TADDR STATICSPOINTERMASK = ~ISCLASSNOTINITEDMASK;
+
+    void InterlockedSetClassInited(bool isGC)
+    {
+        TADDR oldVal;
+        TADDR oldValFromInterlockedOp;
+        TADDR *pAddr = isGC ? &m_pGCStatics : &m_pNonGCStatics;
+        do
+        {
+            oldVal = VolatileLoadWithoutBarrier(pAddr);
+            // Mask off the ISCLASSNOTINITED bit
+            oldValFromInterlockedOp = InterlockedCompareExchangeT(pAddr, oldVal & STATICSPOINTERMASK, oldVal);
+        } while(oldValFromInterlockedOp != oldVal); // We can loop if we happened to allocate the statics pointer in the middle of this operation
+    }
+
+public:
+    TADDR m_pGCStatics; // Always access through helper methods to properly handle the ISCLASSNOTINITED bit
+    TADDR m_pNonGCStatics; // Always access through helper methods to properly handle the ISCLASSNOTINITED bit
+    PTR_MethodTable m_pMethodTable;
+    PTR_OBJECTREF GetGCStaticsPointer() { TADDR staticsVal = VolatileLoadWithoutBarrier(&m_pGCStatics); return dac_cast<PTR_OBJECTREF>(staticsVal & STATICSPOINTERMASK); }
+    PTR_BYTE GetNonGCStaticsPointer() { TADDR staticsVal = VolatileLoadWithoutBarrier(&m_pNonGCStatics); return dac_cast<PTR_BYTE>(staticsVal & STATICSPOINTERMASK); }
+    PTR_OBJECTREF GetGCStaticsPointerAssumeIsInited() { TADDR staticsVal = m_pGCStatics; _ASSERTE(staticsVal != 0); _ASSERTE((staticsVal & (ISCLASSNOTINITEDMASK)) == 0); return dac_cast<PTR_OBJECTREF>(staticsVal); }
+    PTR_BYTE GetNonGCStaticsPointerAssumeIsInited() { TADDR staticsVal = m_pNonGCStatics; _ASSERTE(staticsVal != 0); _ASSERTE((staticsVal & (ISCLASSNOTINITEDMASK)) == 0); return dac_cast<PTR_BYTE>(staticsVal); }
+    bool GetIsInitedAndGCStaticsPointerIfInited(PTR_OBJECTREF *ptrResult) { TADDR staticsVal = VolatileLoadWithoutBarrier(&m_pGCStatics); *ptrResult = dac_cast<PTR_OBJECTREF>(staticsVal); return !(staticsVal & ISCLASSNOTINITED); }
+    bool GetIsInitedAndNonGCStaticsPointerIfInited(PTR_BYTE *ptrResult) { TADDR staticsVal = VolatileLoadWithoutBarrier(&m_pNonGCStatics); *ptrResult = dac_cast<PTR_BYTE>(staticsVal); return !(staticsVal & ISCLASSNOTINITED); }
+
+    // This function sets the pointer portion of a statics pointer. It returns false if the statics value was already set.
+    bool InterlockedUpdateStaticsPointer(bool isGC, TADDR newVal, bool isClassInitedByUpdatingStaticPointer)
+    {
+        TADDR oldVal;
+        TADDR oldValFromInterlockedOp;
+        TADDR *pAddr = isGC ? &m_pGCStatics : &m_pNonGCStatics;
+        do
+        {
+            oldVal = VolatileLoad(pAddr);
+
+            // Check to see if statics value has already been set
+            if ((oldVal & STATICSPOINTERMASK) != 0)
+            {
+                // If it has, then we don't need to do anything
+                return false;
+            }
+            
+            if (isClassInitedByUpdatingStaticPointer)
+            {
+                oldValFromInterlockedOp = InterlockedCompareExchangeT(pAddr, newVal, oldVal);
+            }
+            else
+            {
+                oldValFromInterlockedOp = InterlockedCompareExchangeT(pAddr, newVal | oldVal, oldVal);
+            }
+        } while(oldValFromInterlockedOp != oldVal);
+        return true;
+    }
+    void SetClassInited()
+    {
+        InterlockedSetClassInited(true);
+        InterlockedSetClassInited(false);
+    }
+
+#ifndef DACCESS_COMPILE
+    void Init(MethodTable* pMT)
+    {
+        m_pGCStatics = ISCLASSNOTINITED;
+        m_pNonGCStatics = ISCLASSNOTINITED;
+        m_pMethodTable = pMT;
+    }
+#endif
+
+    PTR_MethodTable GetMethodTable() const { return m_pMethodTable; }
+};
+
+/* static */ inline PTR_DynamicStaticsInfo MethodTableAuxiliaryData::GetDynamicStaticsInfo(PTR_Const_MethodTableAuxiliaryData pAuxiliaryData)
+{
+    return dac_cast<PTR_DynamicStaticsInfo>(dac_cast<TADDR>(pAuxiliaryData) - sizeof(DynamicStaticsInfo));
+}
+
+// Any Generic MethodTable which has static variables has this structure. Note that it ends
+// with a DynamicStatics structure so that lookups for just DynamicStatics will find that structure
+// when looking for statics pointers
+// In addition, for simplicity in access, all MethodTables which have a ThreadStaticsInfo have this structure
+// but it is unitialized and should not be used if the type is not generic
+struct GenericsStaticsInfo
+{
+    // Pointer to field descs for statics
+    PTR_FieldDesc       m_pFieldDescs;
+
+    DynamicStaticsInfo      m_DynamicStatics;
+};  // struct GenericsStaticsInfo
+
+/* static */ inline PTR_GenericsStaticsInfo MethodTableAuxiliaryData::GetGenericStaticsInfo(PTR_Const_MethodTableAuxiliaryData pAuxiliaryData)
+{
+    return dac_cast<PTR_GenericsStaticsInfo>(dac_cast<TADDR>(pAuxiliaryData) - sizeof(GenericsStaticsInfo));
+}
+
+// And MethodTable with Thread Statics has this structure. NOTE: This structure includes
+// GenericsStatics which may not actually have the m_pFieldDescs filled in if the MethodTable
+// is not actually Generic
+struct ThreadStaticsInfo
+{
+    TLSIndex NonGCTlsIndex;
+    TLSIndex GCTlsIndex;
+    GenericsStaticsInfo m_genericStatics;
+    void Init()
+    {
+        NonGCTlsIndex = TLSIndex::Unallocated();
+        GCTlsIndex = TLSIndex::Unallocated();
+    }
+};
+
+/* static */ inline PTR_ThreadStaticsInfo MethodTableAuxiliaryData::GetThreadStaticsInfo(PTR_Const_MethodTableAuxiliaryData pAuxiliaryData)
+{
+    return dac_cast<PTR_ThreadStaticsInfo>(dac_cast<TADDR>(pAuxiliaryData) - sizeof(ThreadStaticsInfo));
+}
 
 #ifdef UNIX_AMD64_ABI_ITF
 inline
@@ -636,41 +832,33 @@ public:
     static void         CallFinalizer(Object *obj);
 
 public:
-    PTR_Module GetModule();
-    PTR_Module GetModule_NoLogging();
+    PTR_Module GetModule()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return m_pModule;
+    }
+
+#ifndef DACCESS_COMPILE
+    void SetModule(Module* pModule)
+    {
+        LIMITED_METHOD_CONTRACT;
+        m_pModule = pModule;
+    }
+#endif
+
     Assembly *GetAssembly();
 
     PTR_Module GetModuleIfLoaded();
-
-    // GetDomain on an instantiated type, e.g. C<ty1,ty2> returns the SharedDomain if all the
-    // constituent parts of the type are SharedDomain (i.e. domain-neutral),
-    // and returns an AppDomain if any of the parts are from an AppDomain,
-    // i.e. are domain-bound.  Note that if any of the parts are domain-bound
-    // then they will all belong to the same domain.
-    PTR_BaseDomain GetDomain();
-
-    // Does this immediate item live in an NGEN module?
-    BOOL IsZapped();
-
-    // For types that are part of an ngen-ed assembly this gets the
-    // Module* that contains this methodtable.
-    PTR_Module GetZapModule();
 
     // For regular, non-constructed types, GetLoaderModule() == GetModule()
     // For constructed types (e.g. int[], Dict<int[], C>) the hash table through which a type
     // is accessed lives in a "loader module". The rule for determining the loader module must ensure
     // that a type never outlives its loader module with respect to app-domain unloading
     //
-    // GetModuleForStatics() is the third kind of module. GetModuleForStatics() is module that
-    // statics are attached to.
     PTR_Module GetLoaderModule();
     PTR_LoaderAllocator GetLoaderAllocator();
 
-    void SetLoaderModule(Module* pModule);
     void SetLoaderAllocator(LoaderAllocator* pAllocator);
-
-    // Get the domain local module - useful for static init checks
-    PTR_DomainLocalModule   GetDomainLocalModule();
 
     MethodTable *LoadEnclosingMethodTable(ClassLoadLevel targetLevel = CLASS_DEPENDENCIES_LOADED);
 
@@ -766,6 +954,9 @@ public:
     void SetIDynamicInterfaceCastable();
     BOOL IsIDynamicInterfaceCastable();
 
+    void SetIsTrackedReferenceWithFinalizer();
+    BOOL IsTrackedReferenceWithFinalizer();
+
 #ifdef FEATURE_TYPEEQUIVALENCE
     // mark the type as opted into type equivalence
     void SetHasTypeEquivalence()
@@ -827,14 +1018,6 @@ public:
 
     BOOL HasExplicitOrImplicitPublicDefaultConstructor();
 
-    //-------------------------------------------------------------------
-    // THE CLASS INITIALIZATION CONDITION
-    //  (and related DomainLocalModule storage)
-    //
-    // - populate the DomainLocalModule if needed
-    // - run the cctor
-    //
-
 public:
 
     // checks whether the class initialiser should be run on this class, and runs it if necessary
@@ -845,32 +1028,79 @@ public:
     // during object construction.
     void CheckRunClassInitAsIfConstructingThrowing();
 
+#if defined(TARGET_LOONGARCH64)
+    static int GetLoongArch64PassStructInRegisterFlags(TypeHandle th);
+#elif defined(TARGET_RISCV64)
+    static int GetRiscV64PassStructInRegisterFlags(TypeHandle th);
+#endif
+
 #if defined(UNIX_AMD64_ABI_ITF)
     // Builds the internal data structures and classifies struct eightbytes for Amd System V calling convention.
-    bool ClassifyEightBytes(SystemVStructRegisterPassingHelperPtr helperPtr, unsigned int nestingLevel, unsigned int startOffsetOfStruct, bool isNativeStruct);
+    bool ClassifyEightBytes(SystemVStructRegisterPassingHelperPtr helperPtr, unsigned int nestingLevel, unsigned int startOffsetOfStruct, bool isNativeStruct, MethodTable** pByValueClassCache = NULL);
     bool ClassifyEightBytesWithNativeLayout(SystemVStructRegisterPassingHelperPtr helperPtr, unsigned int nestingLevel, unsigned int startOffsetOfStruct, EEClassNativeLayoutInfo const* nativeLayoutInfo);
 #endif // defined(UNIX_AMD64_ABI_ITF)
+
+#if !defined(DACCESS_COMPILE)
+    void GetNativeSwiftPhysicalLowering(CORINFO_SWIFT_LOWERING* pSwiftLowering, bool useNativeLayout);
+#endif
 
     // Copy m_dwFlags from another method table
     void CopyFlags(MethodTable * pOldMT)
     {
         LIMITED_METHOD_CONTRACT;
         m_dwFlags = pOldMT->m_dwFlags;
-        m_wFlags2 = pOldMT->m_wFlags2;
+        m_dwFlags2 = pOldMT->m_dwFlags2;
     }
 
     // Init the m_dwFlags field for an array
     void SetIsArray(CorElementType arrayType);
 
-    BOOL IsClassPreInited();
-
     // mark the class as having its cctor run.
 #ifndef DACCESS_COMPILE
-    void SetClassInited();
-    BOOL  IsClassInited();
+    void SetClassInited()
+    {
+        // This must be before setting the MethodTable level flag, as otherwise there is a race condition where
+        // the MethodTable flag is set, which would allows the JIT to generate a call to a helper which assumes
+        // the DynamicStaticInfo level flag is set.
+        // The other race in the other direction is not a concern, as it can only cause allows reads/write from the static
+        // fields, which are effectively inited in any case once we reach this point.
+        if (IsDynamicStatics())
+        {
+            GetDynamicStaticsInfo()->SetClassInited();
+        }
+        GetAuxiliaryDataForWrite()->SetClassInited();
+    }
 
-    BOOL IsInitError();
-    void SetClassInitError();
+private:
+    bool IsInitedIfStaticDataAllocated();
+public:
+    // Is the MethodTable current initialized, and/or can the runtime initialize the MethodTable
+    // without running any user code. (This function may allocate memory, and may throw OutOfMemory)
+    bool IsClassInitedOrPreinited();
+#endif
+
+    // Is the MethodTable current known to be initialized
+    // If you want to know if it is initialized and allocation/throwing is permitted, call IsClassInitedOrPreinited instead
+    BOOL  IsClassInited()
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return GetAuxiliaryDataForWrite()->IsClassInited();
+    }
+
+    // Allocate any memory needed for statics, acquire TLSIndex for TLS statics, and check to see if the class can be considered pre-inited, and if so, set the initialized flag
+    void EnsureStaticDataAllocated();
+    void EnsureTlsIndexAllocated();
+
+    BOOL IsInitError()
+    {
+        return GetAuxiliaryData()->IsInitError();
+    }
+
+#ifndef DACCESS_COMPILE
+    void SetClassInitError()
+    {
+        return GetAuxiliaryDataForWrite()->SetInitError();
+    }
 #endif
 
     inline BOOL IsGlobalClass()
@@ -879,22 +1109,13 @@ public:
         return (GetTypeDefRid() == RidFromToken(COR_GLOBAL_PARENT_TOKEN));
     }
 
-    // uniquely identifes this type in the Domain table
-    DWORD GetClassIndex();
-
 private:
 
 #if defined(UNIX_AMD64_ABI_ITF)
     void AssignClassifiedEightByteTypes(SystemVStructRegisterPassingHelperPtr helperPtr, unsigned int nestingLevel) const;
     // Builds the internal data structures and classifies struct eightbytes for Amd System V calling convention.
-    bool ClassifyEightBytesWithManagedLayout(SystemVStructRegisterPassingHelperPtr helperPtr, unsigned int nestingLevel, unsigned int startOffsetOfStruct, bool isNativeStruct);
+    bool ClassifyEightBytesWithManagedLayout(SystemVStructRegisterPassingHelperPtr helperPtr, unsigned int nestingLevel, unsigned int startOffsetOfStruct, bool isNativeStruct, MethodTable** pByValueClassCache);
 #endif // defined(UNIX_AMD64_ABI_ITF)
-
-    DWORD   GetClassIndexFromToken(mdTypeDef typeToken)
-    {
-        LIMITED_METHOD_CONTRACT;
-        return RidFromToken(typeToken) - 1;
-    }
 
     // called from CheckRunClassInitThrowing().  The type wasn't marked as
     // inited while we were there, so let's attempt to do the work.
@@ -912,101 +1133,12 @@ public:
     BOOL HasClassConstructor();
     void SetHasClassConstructor();
     WORD GetClassConstructorSlot();
-    void SetClassConstructorSlot (WORD wCCtorSlot);
 
-    ClassCtorInfoEntry* GetClassCtorInfoIfExists();
-
-
-    void GetSavedExtent(TADDR *ppStart, TADDR *ppEnd);
-
-    //-------------------------------------------------------------------
-    // Save/Fixup/Restore/NeedsRestore
-    //
-    // Restore this method table if it's not already restored
-    // This is done by forcing a class load which in turn calls the Restore method
-    // The pending list is required for restoring types that reference themselves through
-    // instantiations of the superclass or interfaces e.g. System.Int32 : IComparable<System.Int32>
-
-
-#ifdef FEATURE_PREJIT
-
-    void Save(DataImage *image, DWORD profilingFlags);
-    void Fixup(DataImage *image);
-
-    // This is different from !IsRestored() in that it checks if restoring
-    // will ever be needed for this ngened data-structure.
-    // This is to be used at ngen time of a dependent module to determine
-    // if it can be accessed directly, or if the restoring mechanism needs
-    // to be hooked in.
-    BOOL ComputeNeedsRestore(DataImage *image, TypeHandleList *pVisited);
-
-    BOOL NeedsRestore(DataImage *image)
-    {
-        WRAPPER_NO_CONTRACT;
-        return ComputeNeedsRestore(image, NULL);
-    }
-
-private:
-    BOOL ComputeNeedsRestoreWorker(DataImage *image, TypeHandleList *pVisited);
-
-public:
-    // This returns true at NGen time if we can eager bind to all dictionaries along the inheritance chain
-    BOOL CanEagerBindToParentDictionaries(DataImage *image, TypeHandleList *pVisited);
-
-    // This returns true at NGen time if we may need to attach statics to
-    // other module than current loader module at runtime
-    BOOL NeedsCrossModuleGenericsStaticsInfo();
-
-    // Returns true at NGen time if we may need to write into the MethodTable at runtime
-    BOOL IsWriteable();
-
-#endif // FEATURE_PREJIT
-
-    void AllocateRegularStaticBoxes();
-    static OBJECTREF AllocateStaticBox(MethodTable* pFieldMT, BOOL fPinned, OBJECTHANDLE* pHandle = 0);
+    void AllocateRegularStaticBoxes(OBJECTREF** ppStaticBase);
+    void AllocateRegularStaticBox(FieldDesc* pField, Object** boxedStaticHandle);
+    static OBJECTREF AllocateStaticBox(MethodTable* pFieldMT, BOOL fPinned, bool canBeFrozen = false);
 
     void CheckRestore();
-
-    // Perform restore actions on type key components of method table (EEClass pointer + Module, generic args)
-    void DoRestoreTypeKey();
-
-    inline BOOL HasUnrestoredTypeKey() const
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-
-        return !IsPreRestored() &&
-            (GetWriteableData()->m_dwFlags & MethodTableWriteableData::enum_flag_UnrestoredTypeKey) != 0;
-    }
-
-    // Actually do the restore actions on the method table
-    void Restore();
-
-    void SetIsRestored();
-
-    inline BOOL IsRestored_NoLogging()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-
-        // If we are prerestored then we are considered a restored methodtable.
-        // Note that IsPreRestored is always false for jitted code.
-        if (IsPreRestored())
-            return TRUE;
-
-        return !(GetWriteableData_NoLogging()->m_dwFlags & MethodTableWriteableData::enum_flag_Unrestored);
-    }
-    inline BOOL IsRestored()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-
-        g_IBCLogger.LogMethodTableAccess(this);
-
-        // If we are prerestored then we are considered a restored methodtable.
-        // Note that IsPreRestored is always false for jitted code.
-        if (IsPreRestored())
-            return TRUE;
-
-        return !(GetWriteableData()->m_dwFlags & MethodTableWriteableData::enum_flag_Unrestored);
-    }
 
     //-------------------------------------------------------------------
     // LOAD LEVEL
@@ -1031,9 +1163,8 @@ public:
         CONTRACTL_END;
 
         PRECONDITION(!HasApproxParent());
-        PRECONDITION(IsRestored_NoLogging());
 
-        FastInterlockAnd(&GetWriteableDataForWrite()->m_dwFlags, ~MethodTableWriteableData::enum_flag_IsNotFullyLoaded);
+        InterlockedAnd((LONG*)&GetAuxiliaryDataForWrite()->m_dwFlags, ~MethodTableAuxiliaryData::enum_flag_IsNotFullyLoaded);
     }
 
     // Equivalent to GetLoadLevel() == CLASS_LOADED
@@ -1041,14 +1172,13 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        return (IsPreRestored())
-            || (GetWriteableData()->m_dwFlags & MethodTableWriteableData::enum_flag_IsNotFullyLoaded) == 0;
+        return (GetAuxiliaryData()->m_dwFlags & MethodTableAuxiliaryData::enum_flag_IsNotFullyLoaded) == 0;
     }
 
     inline BOOL CanCompareBitsOrUseFastGetHashCode()
     {
         LIMITED_METHOD_CONTRACT;
-        return (GetWriteableData_NoLogging()->m_dwFlags & MethodTableWriteableData::enum_flag_CanCompareBitsOrUseFastGetHashCode);
+        return (GetAuxiliaryData()->m_dwFlags & MethodTableAuxiliaryData::enum_flag_CanCompareBitsOrUseFastGetHashCode);
     }
 
     // If canCompare is true, this method ensure an atomic operation for setting
@@ -1059,8 +1189,8 @@ public:
         if (canCompare)
         {
             // Set checked and canCompare flags in one interlocked operation.
-            FastInterlockOr(&GetWriteableDataForWrite_NoLogging()->m_dwFlags,
-                MethodTableWriteableData::enum_flag_HasCheckedCanCompareBitsOrUseFastGetHashCode | MethodTableWriteableData::enum_flag_CanCompareBitsOrUseFastGetHashCode);
+            InterlockedOr((LONG*)&GetAuxiliaryDataForWrite()->m_dwFlags,
+                MethodTableAuxiliaryData::enum_flag_HasCheckedCanCompareBitsOrUseFastGetHashCode | MethodTableAuxiliaryData::enum_flag_CanCompareBitsOrUseFastGetHashCode);
         }
         else
         {
@@ -1071,13 +1201,13 @@ public:
     inline BOOL HasCheckedCanCompareBitsOrUseFastGetHashCode()
     {
         LIMITED_METHOD_CONTRACT;
-        return (GetWriteableData_NoLogging()->m_dwFlags & MethodTableWriteableData::enum_flag_HasCheckedCanCompareBitsOrUseFastGetHashCode);
+        return (GetAuxiliaryData()->m_dwFlags & MethodTableAuxiliaryData::enum_flag_HasCheckedCanCompareBitsOrUseFastGetHashCode);
     }
 
     inline void SetHasCheckedCanCompareBitsOrUseFastGetHashCode()
     {
         WRAPPER_NO_CONTRACT;
-        FastInterlockOr(&GetWriteableDataForWrite_NoLogging()->m_dwFlags, MethodTableWriteableData::enum_flag_HasCheckedCanCompareBitsOrUseFastGetHashCode);
+        InterlockedOr((LONG*)&GetAuxiliaryDataForWrite()->m_dwFlags, MethodTableAuxiliaryData::enum_flag_HasCheckedCanCompareBitsOrUseFastGetHashCode);
     }
 
     inline void SetIsDependenciesLoaded()
@@ -1091,35 +1221,22 @@ public:
         CONTRACTL_END;
 
         PRECONDITION(!HasApproxParent());
-        PRECONDITION(IsRestored_NoLogging());
 
-        FastInterlockOr(&GetWriteableDataForWrite()->m_dwFlags, MethodTableWriteableData::enum_flag_DependenciesLoaded);
+        InterlockedOr((LONG*)&GetAuxiliaryDataForWrite()->m_dwFlags, MethodTableAuxiliaryData::enum_flag_DependenciesLoaded);
     }
 
     inline ClassLoadLevel GetLoadLevel()
     {
         LIMITED_METHOD_DAC_CONTRACT;
 
-        g_IBCLogger.LogMethodTableAccess(this);
+        DWORD dwFlags = GetAuxiliaryData()->m_dwFlags;
 
-        // Fast path for zapped images
-        if (IsPreRestored())
-            return CLASS_LOADED;
-
-        DWORD dwFlags = GetWriteableData()->m_dwFlags;
-
-        if (dwFlags & MethodTableWriteableData::enum_flag_IsNotFullyLoaded)
+        if (dwFlags & MethodTableAuxiliaryData::enum_flag_IsNotFullyLoaded)
         {
-            if (dwFlags & MethodTableWriteableData::enum_flag_UnrestoredTypeKey)
-                return CLASS_LOAD_UNRESTOREDTYPEKEY;
-
-            if (dwFlags & MethodTableWriteableData::enum_flag_Unrestored)
-                return CLASS_LOAD_UNRESTORED;
-
-            if (dwFlags & MethodTableWriteableData::enum_flag_HasApproxParent)
+            if (dwFlags & MethodTableAuxiliaryData::enum_flag_HasApproxParent)
                 return CLASS_LOAD_APPROXPARENTS;
 
-            if (!(dwFlags & MethodTableWriteableData::enum_flag_DependenciesLoaded))
+            if (!(dwFlags & MethodTableAuxiliaryData::enum_flag_DependenciesLoaded))
                 return CLASS_LOAD_EXACTPARENTS;
 
             return CLASS_DEPENDENCIES_LOADED;
@@ -1201,18 +1318,6 @@ public:
         SetFlag(enum_flag_IsIntrinsicType);
     }
 
-    // See the comment in code:MethodTable.DoFullyLoad for detailed description.
-    inline BOOL DependsOnEquivalentOrForwardedStructs()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return GetFlag(enum_flag_DependsOnEquivalentOrForwardedStructs);
-    }
-
-    inline void SetDependsOnEquivalentOrForwardedStructs()
-    {
-        SetFlag(enum_flag_DependsOnEquivalentOrForwardedStructs);
-    }
-
     // Is this a method table for a generic type instantiation, e.g. List<string>?
     inline BOOL HasInstantiation();
 
@@ -1236,6 +1341,22 @@ public:
     inline BOOL IsGenericTypeDefinition();
 
     BOOL ContainsGenericMethodVariables();
+
+    // When creating an interface map, under some circumstances the
+    // runtime will place the special marker type in the interface map instead
+    // of the fully loaded type. This is to reduce the amount of type loading
+    // performed at process startup.
+    //
+    // The current rule is that these interfaces can only appear
+    // on valuetypes that are not shared generic, and that the special
+    // marker type is the open generic type.
+    //
+    inline bool IsSpecialMarkerTypeForGenericCasting()
+    {
+        return IsGenericTypeDefinition();
+    }
+
+    static const DWORD MaxGenericParametersForSpecialMarkerType = 8;
 
     static BOOL ComputeContainsGenericVariables(Instantiation inst);
 
@@ -1290,8 +1411,9 @@ public:
         return !HasInstantiation() || IsGenericTypeDefinition();
     }
 
+    PTR_MethodTable GetTypicalMethodTable();
+
     BOOL HasSameTypeDefAs(MethodTable *pMT);
-    BOOL HasSameTypeDefAs_NoLogging(MethodTable *pMT);
 
     //-------------------------------------------------------------------
     // GENERICS & CODE SHARING
@@ -1305,9 +1427,6 @@ public:
     // Return the canonical representative MT amongst the set of MT's that share
     // code with the given MT because of generics.
     PTR_MethodTable GetCanonicalMethodTable();
-
-    // Returns fixup if canonical method table needs fixing up, NULL otherwise
-    TADDR GetCanonicalMethodTableFixup();
 
     //-------------------------------------------------------------------
     // Accessing methods by slot number
@@ -1327,17 +1446,7 @@ public:
         WRAPPER_NO_CONTRACT;
         CONSISTENCY_CHECK(slotNumber < GetNumVtableSlots());
 
-        TADDR pSlot = GetSlotPtrRaw(slotNumber);
-        if (slotNumber < GetNumVirtuals())
-        {
-            return VTableIndir2_t::GetValueMaybeNullAtPtr(pSlot);
-        }
-        else if (IsZapped() && slotNumber >= GetNumVirtuals())
-        {
-            // Non-virtual slots in NGened images are relative pointers
-            return RelativePointer<PCODE>::GetValueAtPtr(pSlot);
-        }
-        return *dac_cast<PTR_PCODE>(pSlot);
+        return *GetSlotPtrRaw(slotNumber);
     }
 
     // Special-case for when we know that the slot number corresponds
@@ -1348,49 +1457,30 @@ public:
 
         CONSISTENCY_CHECK(slotNum < GetNumVirtuals());
         // Virtual slots live in chunks pointed to by vtable indirections
-
-        DWORD index = GetIndexOfVtableIndirection(slotNum);
-        TADDR base = dac_cast<TADDR>(&(GetVtableIndirections()[index]));
-        DPTR(VTableIndir2_t) baseAfterInd = VTableIndir_t::GetValueMaybeNullAtPtr(base) + GetIndexAfterVtableIndirection(slotNum);
-        return VTableIndir2_t::GetValueMaybeNullAtPtr(dac_cast<TADDR>(baseAfterInd));
+        return *(GetVtableIndirections()[GetIndexOfVtableIndirection(slotNum)] + GetIndexAfterVtableIndirection(slotNum));
     }
 
-    TADDR GetSlotPtrRaw(UINT32 slotNum)
+    PTR_PCODE GetSlotPtrRaw(UINT32 slotNum)
     {
         WRAPPER_NO_CONTRACT;
         CONSISTENCY_CHECK(slotNum < GetNumVtableSlots());
 
         if (slotNum < GetNumVirtuals())
         {
-            // Virtual slots live in chunks pointed to by vtable indirections
-            DWORD index = GetIndexOfVtableIndirection(slotNum);
-            TADDR base = dac_cast<TADDR>(&(GetVtableIndirections()[index]));
-            DPTR(VTableIndir2_t) baseAfterInd = VTableIndir_t::GetValueMaybeNullAtPtr(base) + GetIndexAfterVtableIndirection(slotNum);
-            return dac_cast<TADDR>(baseAfterInd);
-        }
-        else if (HasSingleNonVirtualSlot())
-        {
-            // Non-virtual slots < GetNumVtableSlots live in a single chunk pointed to by an optional member,
-            // except when there is only one in which case it lives in the optional member itself
-            _ASSERTE(slotNum == GetNumVirtuals());
-            return GetNonVirtualSlotsPtr();
+             // Virtual slots live in chunks pointed to by vtable indirections
+            return GetVtableIndirections()[GetIndexOfVtableIndirection(slotNum)] + GetIndexAfterVtableIndirection(slotNum);
         }
         else
         {
-            // Non-virtual slots < GetNumVtableSlots live in a single chunk pointed to by an optional member
-            _ASSERTE(HasNonVirtualSlotsArray());
-            g_IBCLogger.LogMethodTableNonVirtualSlotsAccess(this);
-            return dac_cast<TADDR>(GetNonVirtualSlotsArray() + (slotNum - GetNumVirtuals()));
+            // Non-virtual slots < GetNumVtableSlots live before the MethodTableAuxiliaryData. The array grows backwards
+            _ASSERTE(HasNonVirtualSlots());
+            return MethodTableAuxiliaryData::GetNonVirtualSlotsArray(GetAuxiliaryDataForWrite()) - (1 + (slotNum - GetNumVirtuals()));
         }
     }
 
-    TADDR GetSlotPtr(UINT32 slotNum)
+    PTR_PCODE GetSlotPtr(UINT32 slotNum)
     {
         WRAPPER_NO_CONTRACT;
-
-        // Slots in NGened images are relative pointers
-        CONSISTENCY_CHECK(!IsZapped());
-
         return GetSlotPtrRaw(slotNum);
     }
 
@@ -1449,13 +1539,8 @@ public:
     #define VTABLE_SLOTS_PER_CHUNK 8
     #define VTABLE_SLOTS_PER_CHUNK_LOG2 3
 
-#if defined(FEATURE_NGEN_RELOCS_OPTIMIZATIONS)
-    typedef RelativePointer<PCODE> VTableIndir2_t;
-    typedef RelativePointer<DPTR(VTableIndir2_t)> VTableIndir_t;
-#else
-    typedef PlainPointer<PCODE> VTableIndir2_t;
-    typedef PlainPointer<DPTR(VTableIndir2_t)> VTableIndir_t;
-#endif
+    typedef PCODE VTableIndir2_t;
+    typedef DPTR(VTableIndir2_t) VTableIndir_t;
 
     static DWORD GetIndexOfVtableIndirection(DWORD slotNum);
     static DWORD GetStartSlotForVtableIndirection(UINT32 indirectionIndex, DWORD wNumVirtuals);
@@ -1498,56 +1583,11 @@ public:
     VtableIndirectionSlotIterator IterateVtableIndirectionSlots();
     VtableIndirectionSlotIterator IterateVtableIndirectionSlotsFrom(DWORD index);
 
-#ifdef FEATURE_PREJIT
-    static BOOL CanShareVtableChunksFrom(MethodTable *pTargetMT, Module *pCurrentLoaderModule, Module *pCurrentPreferredZapModule);
-    BOOL CanInternVtableChunk(DataImage *image, VtableIndirectionSlotIterator it);
-#else
-    static BOOL CanShareVtableChunksFrom(MethodTable *pTargetMT, Module *pCurrentLoaderModule);
-#endif
-
     inline BOOL HasNonVirtualSlots()
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        return GetFlag(enum_flag_HasNonVirtualSlots);
+        return GetNumNonVirtualSlots() != 0;
     }
-
-    inline BOOL HasSingleNonVirtualSlot()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return GetFlag(enum_flag_HasSingleNonVirtualSlot);
-    }
-
-    inline BOOL HasNonVirtualSlotsArray()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return HasNonVirtualSlots() && !HasSingleNonVirtualSlot();
-    }
-
-    TADDR GetNonVirtualSlotsPtr();
-
-    inline PTR_PCODE GetNonVirtualSlotsArray()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        _ASSERTE(HasNonVirtualSlotsArray());
-        return RelativePointer<PTR_PCODE>::GetValueAtPtr(GetNonVirtualSlotsPtr());
-    }
-
-#ifndef DACCESS_COMPILE
-    inline void SetNonVirtualSlotsArray(PCODE *slots)
-    {
-        LIMITED_METHOD_CONTRACT;
-        _ASSERTE(HasNonVirtualSlotsArray());
-
-        RelativePointer<PCODE *> *pRelPtr = (RelativePointer<PCODE *> *)GetNonVirtualSlotsPtr();
-        pRelPtr->SetValue(slots);
-    }
-
-    inline void SetHasSingleNonVirtualSlot()
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetFlag(enum_flag_HasSingleNonVirtualSlot);
-    }
-#endif
 
     inline unsigned GetNonVirtualSlotsArraySize()
     {
@@ -1557,15 +1597,12 @@ public:
 
     inline WORD GetNumNonVirtualSlots();
 
+    inline BOOL HasVirtualStaticMethods() const;
+    inline void SetHasVirtualStaticMethods();
+
+    void VerifyThatAllVirtualStaticMethodsAreImplemented();
+
     inline WORD GetNumVirtuals()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-
-        g_IBCLogger.LogMethodTableAccess(this);
-        return GetNumVirtuals_NoLogging();
-    }
-
-    inline WORD GetNumVirtuals_NoLogging()
     {
         LIMITED_METHOD_DAC_CONTRACT;
 
@@ -1585,7 +1622,6 @@ public:
             return 0;
         }
         MethodTable *pMTParent = GetParentMethodTable();
-        g_IBCLogger.LogMethodTableAccess(this);
         return pMTParent == NULL ? 0 : pMTParent->GetNumVirtuals();
     }
 
@@ -1655,6 +1691,11 @@ public:
     inline BOOL IsManagedSequential();
 
     inline BOOL HasExplicitSize();
+
+    inline BOOL IsAutoLayoutOrHasAutoLayoutField();
+
+    // Only accurate on types which are not auto layout
+    inline BOOL IsInt128OrHasInt128Fields();
 
     UINT32 GetNativeSize();
 
@@ -1739,18 +1780,16 @@ public:
     //
     inline DWORD GetNumInstanceFieldBytes();
 
+    int GetFieldAlignmentRequirement();
+
     inline WORD GetNumIntroducedInstanceFields();
 
-    // <TODO> Does this always return the same (or related) size as GetBaseSize()? </TODO>
-    inline DWORD GetAlignedNumInstanceFieldBytes();
-
-
-    // Note: This flag MUST be available even from an unrestored MethodTable - see GcScanRoots in siginfo.cpp.
-    DWORD           ContainsPointers()
+    BOOL           ContainsPointers()
     {
         LIMITED_METHOD_CONTRACT;
-        return GetFlag(enum_flag_ContainsPointers);
+        return !!GetFlag(enum_flag_ContainsPointers);
     }
+
     BOOL            Collectible()
     {
         LIMITED_METHOD_CONTRACT;
@@ -1760,6 +1799,7 @@ public:
         return FALSE;
 #endif
     }
+
     BOOL            ContainsPointersOrCollectible()
     {
         LIMITED_METHOD_CONTRACT;
@@ -1770,6 +1810,8 @@ public:
     NOINLINE BYTE *GetLoaderAllocatorObjectForGC();
 
     BOOL            IsNotTightlyPacked();
+
+    BOOL            IsAllGCPointers();
 
     void SetContainsPointers()
     {
@@ -1811,18 +1853,6 @@ public:
     PTR_FieldDesc GetFieldDescByIndex(DWORD fieldIndex);
 
     DWORD GetIndexForFieldDesc(FieldDesc *pField);
-
-    inline bool RequiresFatDispatchTokens()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return !!GetFlag(enum_flag_RequiresDispatchTokenFat);
-    }
-
-    inline void SetRequiresFatDispatchTokens()
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetFlag(enum_flag_RequiresDispatchTokenFat);
-    }
 
     inline bool HasPreciseInitCctors()
     {
@@ -1905,7 +1935,7 @@ public:
     BOOL ArraySupportsBizarreInterface(MethodTable* pInterfaceMT, TypeHandlePairList* pVisited);
     BOOL ArrayIsInstanceOf(MethodTable* pTargetMT, TypeHandlePairList* pVisited);
 
-    BOOL CanCastByVarianceToInterfaceOrDelegate(MethodTable* pTargetMT, TypeHandlePairList* pVisited);
+    BOOL CanCastByVarianceToInterfaceOrDelegate(MethodTable* pTargetMT, TypeHandlePairList* pVisited, MethodTable* pMTInterfaceMapOwner = NULL);
 
     // The inline part of equivalence check.
 #ifndef DACCESS_COMPILE
@@ -1923,24 +1953,15 @@ public:
     //-------------------------------------------------------------------
     // THE METHOD TABLE PARENT (SUPERCLASS/BASE CLASS)
     //
-
-#if defined(FEATURE_NGEN_RELOCS_OPTIMIZATIONS)
-#define PARENT_MT_FIXUP_OFFSET (-FIXUP_POINTER_INDIRECTION)
-    typedef RelativeFixupPointer<PTR_MethodTable> ParentMT_t;
-#else
-#define PARENT_MT_FIXUP_OFFSET ((SSIZE_T)offsetof(MethodTable, m_pParentMethodTable))
-    typedef IndirectPointer<PTR_MethodTable> ParentMT_t;
-#endif
-
     BOOL HasApproxParent()
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        return (GetWriteableData()->m_dwFlags & MethodTableWriteableData::enum_flag_HasApproxParent) != 0;
+        return (GetAuxiliaryData()->m_dwFlags & MethodTableAuxiliaryData::enum_flag_HasApproxParent) != 0;
     }
     inline void SetHasExactParent()
     {
         WRAPPER_NO_CONTRACT;
-        FastInterlockAnd(&(GetWriteableDataForWrite()->m_dwFlags), ~MethodTableWriteableData::enum_flag_HasApproxParent);
+        InterlockedAnd((LONG*)&GetAuxiliaryDataForWrite()->m_dwFlags, ~MethodTableAuxiliaryData::enum_flag_HasApproxParent);
     }
 
 
@@ -1950,60 +1971,14 @@ public:
         LIMITED_METHOD_DAC_CONTRACT;
 
         PRECONDITION(IsParentMethodTablePointerValid());
-        return ReadPointerMaybeNull(this, &MethodTable::m_pParentMethodTable, GetFlagHasIndirectParent());
-    }
-
-    inline static PTR_VOID GetParentMethodTableOrIndirection(PTR_VOID pMT)
-    {
-        WRAPPER_NO_CONTRACT;
-#if defined(FEATURE_NGEN_RELOCS_OPTIMIZATIONS)
-        PTR_MethodTable pMethodTable = dac_cast<PTR_MethodTable>(pMT);
-        PTR_MethodTable pParentMT = ReadPointerMaybeNull((MethodTable*) pMethodTable, &MethodTable::m_pParentMethodTable);
-        return dac_cast<PTR_VOID>(pParentMT);
-#else
-        return PTR_VOID(*PTR_TADDR(dac_cast<TADDR>(pMT) + offsetof(MethodTable, m_pParentMethodTable)));
-#endif
-    }
-
-    inline static BOOL IsParentMethodTableTagged(PTR_MethodTable pMT)
-    {
-        LIMITED_METHOD_CONTRACT;
-        TADDR base = dac_cast<TADDR>(pMT) + offsetof(MethodTable, m_pParentMethodTable);
-        return pMT->m_pParentMethodTable.IsTaggedIndirect(base, pMT->GetFlagHasIndirectParent(), PARENT_MT_FIXUP_OFFSET);
-    }
-
-    bool GetFlagHasIndirectParent()
-    {
-#ifdef FEATURE_PREJIT
-        return !!GetFlag(enum_flag_HasIndirectParent);
-#else
-        return false;
-#endif
+        return m_pParentMethodTable;
     }
 
 #ifndef DACCESS_COMPILE
-    inline ParentMT_t * GetParentMethodTablePointerPtr()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return &m_pParentMethodTable;
-    }
-
-    inline bool IsParentMethodTableIndirectPointerMaybeNull()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_pParentMethodTable.IsIndirectPtrMaybeNullIndirect(GetFlagHasIndirectParent(), PARENT_MT_FIXUP_OFFSET);
-    }
-
-    inline bool IsParentMethodTableIndirectPointer()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_pParentMethodTable.IsIndirectPtrIndirect(GetFlagHasIndirectParent(), PARENT_MT_FIXUP_OFFSET);
-    }
-
     inline MethodTable ** GetParentMethodTableValuePtr()
     {
         LIMITED_METHOD_CONTRACT;
-        return m_pParentMethodTable.GetValuePtrIndirect(GetFlagHasIndirectParent(), PARENT_MT_FIXUP_OFFSET);
+        return &m_pParentMethodTable;
     }
 #endif // !DACCESS_COMPILE
 
@@ -2012,7 +1987,6 @@ public:
     {
         LIMITED_METHOD_DAC_CONTRACT;
         PRECONDITION(IsParentMethodTablePointerValid());
-        g_IBCLogger.LogMethodTableAccess(this);
         return GetParentMethodTable() == pMT;
     }
 
@@ -2024,10 +1998,9 @@ public:
     void SetParentMethodTable (MethodTable *pParentMethodTable)
     {
         LIMITED_METHOD_CONTRACT;
-        PRECONDITION(!IsParentMethodTableIndirectPointerMaybeNull());
-        m_pParentMethodTable.SetValueMaybeNull(pParentMethodTable);
+        m_pParentMethodTable = pParentMethodTable;
 #ifdef _DEBUG
-        GetWriteableDataForWrite_NoLogging()->SetParentMethodTablePointerValid();
+        GetAuxiliaryDataForWrite()->SetParentMethodTablePointerValid();
 #endif
     }
 #endif // !DACCESS_COMPILE
@@ -2040,8 +2013,6 @@ public:
     // Note that it is not generally the case that GetClass.GetMethodTable() == t.
 
     PTR_EEClass GetClass();
-
-    inline PTR_EEClass GetClass_NoLogging();
 
     PTR_EEClass GetClassWithPossibleAV();
 
@@ -2071,12 +2042,12 @@ public:
     inline void SetClass(EEClass *pClass)
     {
         LIMITED_METHOD_CONTRACT;
-        m_pEEClass.SetValue(pClass);
+        m_pEEClass = pClass;
     }
 
     inline void SetCanonicalMethodTable(MethodTable * pMT)
     {
-        m_pCanonMT.SetValue((TADDR)pMT | MethodTable::UNION_METHODTABLE);
+        m_pCanonMT = (TADDR)pMT | MethodTable::UNION_METHODTABLE;
     }
 #endif
 
@@ -2163,8 +2134,16 @@ public:
             return (m_i == m_count);
         }
 
-        // Get the interface at the current position
-        inline PTR_MethodTable GetInterface()
+#ifndef DACCESS_COMPILE
+        // Get the interface at the current position. This GetInterfaceMethod
+        // will ensure that the exact correct instantiation of the interface
+        // is found, even if the MethodTable in the interface map is the generic
+        // approximation
+        PTR_MethodTable GetInterface(MethodTable* pMTOwner, ClassLoadLevel loadLevel = CLASS_LOADED);
+#endif
+
+        // Get the interface at the current position, with whatever its normal load level is
+        inline PTR_MethodTable GetInterfaceApprox()
         {
             CONTRACT(PTR_MethodTable)
             {
@@ -2177,6 +2156,56 @@ public:
             CONTRACT_END;
 
             RETURN (m_pMap->GetMethodTable());
+        }
+
+        inline bool CurrentInterfaceMatches(MethodTable* pMTOwner, MethodTable* pMT)
+        {
+            CONTRACT(bool)
+            {
+                GC_NOTRIGGER;
+                NOTHROW;
+                SUPPORTS_DAC;
+                PRECONDITION(m_i != (DWORD) -1 && m_i < m_count);
+            }
+            CONTRACT_END;
+
+            MethodTable *pCurrentMethodTable = m_pMap->GetMethodTable();
+
+            bool exactMatch = pCurrentMethodTable == pMT;
+            if (!exactMatch)
+            {
+                if (pCurrentMethodTable->HasSameTypeDefAs(pMT) &&
+                    pMT->HasInstantiation() &&
+                    pCurrentMethodTable->IsSpecialMarkerTypeForGenericCasting() &&
+                    !pMTOwner->GetAuxiliaryData()->MayHaveOpenInterfacesInInterfaceMap() &&
+                    pMT->GetInstantiation().ContainsAllOneType(pMTOwner))
+                {
+                    exactMatch = true;
+#ifndef DACCESS_COMPILE
+                    // We match exactly, and have an actual pMT loaded. Insert
+                    // the searched for interface if it is fully loaded, so that
+                    // future checks are more efficient
+                    if (pMT->IsFullyLoaded())
+                        SetInterface(pMT);
+#endif
+                }
+            }
+
+            RETURN (exactMatch);
+        }
+
+        inline bool HasSameTypeDefAs(MethodTable* pMT)
+        {
+            CONTRACT(bool)
+            {
+                GC_NOTRIGGER;
+                NOTHROW;
+                SUPPORTS_DAC;
+                PRECONDITION(m_i != (DWORD) -1 && m_i < m_count);
+            }
+            CONTRACT_END;
+
+            RETURN (m_pMap->GetMethodTable()->HasSameTypeDefAs(pMT));
         }
 
 #ifndef DACCESS_COMPILE
@@ -2230,7 +2259,7 @@ public:
     // Count of interfaces that can have their extra info stored inline in the optional data structure itself
     // (once the interface count exceeds this limit the optional data slot will instead point to a buffer with
     // the information).
-    enum { kInlinedInterfaceInfoThreshhold = sizeof(TADDR) * 8 };
+    enum { kInlinedInterfaceInfoThreshold = sizeof(TADDR) * 8 };
 
     // Calculate how many bytes of storage will be required to track additional information for interfaces.
     // This will be zero if there are no interfaces, but can also be zero for small numbers of interfaces as
@@ -2241,12 +2270,6 @@ public:
     // track extra interface info. If there are a non-zero number of interfaces implemented on this class but
     // GetExtraInterfaceInfoSize() returned zero, this call must still be made (with a NULL argument).
     void InitializeExtraInterfaceInfo(PVOID pInfo);
-
-#ifdef FEATURE_PREJIT
-    // Ngen support.
-    void SaveExtraInterfaceInfo(DataImage *pImage);
-    void FixupExtraInterfaceInfo(DataImage *pImage);
-#endif // FEATURE_PREJIT
 
 #ifdef DACCESS_COMPILE
     void EnumMemoryRegionsForExtraInterfaceInfo();
@@ -2275,6 +2298,20 @@ public:
     MethodDesc *GetMethodDescForComInterfaceMethod(MethodDesc *pItfMD, bool fNullOk);
 #endif // FEATURE_COMINTEROP
 
+    // Resolve virtual static interface method pInterfaceMD on this type.
+    //
+    // Specify allowNullResult to return NULL instead of throwing if the there is no implementation
+    // Specify verifyImplemented to verify that there is a match, but do not actually return a final usable MethodDesc
+    // Specify allowVariantMatches to permit generic interface variance
+    // Specify uniqueResolution to store the flag saying whether the resolution was unambiguous;
+    // when NULL, throw an AmbiguousResolutionException upon hitting ambiguous SVM resolution.
+    // The 'level' parameter specifies the load level for the class containing the resolved MethodDesc.
+    MethodDesc *ResolveVirtualStaticMethod(
+        MethodTable* pInterfaceType,
+        MethodDesc* pInterfaceMD,
+        ResolveVirtualStaticMethodFlags resolveVirtualStaticMethodFlags,
+        BOOL *uniqueResolution = NULL,
+        ClassLoadLevel level = CLASS_LOADED);
 
     // Try a partial resolve of the constraint call, up to generic code sharing.
     //
@@ -2311,19 +2348,6 @@ public:
         return GetFlag(enum_flag_HasDispatchMapSlot);
     }
 
-#ifndef DACCESS_COMPILE
-    void SetDispatchMap(DispatchMap *pDispatchMap)
-    {
-        LIMITED_METHOD_CONTRACT;
-        _ASSERTE(HasDispatchMapSlot());
-
-        TADDR pSlot = GetMultipurposeSlotPtr(enum_flag_HasDispatchMapSlot, c_DispatchMapSlotOffsets);
-
-        RelativePointer<DispatchMap *> *pRelPtr = (RelativePointer<DispatchMap *> *)pSlot;
-        pRelPtr->SetValue(pDispatchMap);
-    }
-#endif // !DACCESS_COMPILE
-
 protected:
     BOOL FindEncodedMapDispatchEntry(UINT32 typeID,
                                      UINT32 slotNumber,
@@ -2354,8 +2378,8 @@ public:
         MethodDesc *pInterfaceMD,
         MethodTable *pObjectMT,
         MethodDesc **ppDefaultMethod,
-        BOOL allowVariance,
-        BOOL throwOnConflict);
+        FindDefaultInterfaceImplementationFlags findDefaultImplementationFlags,
+        ClassLoadLevel level = CLASS_LOADED);
 #endif // DACCESS_COMPILE
 
     DispatchSlot FindDispatchSlot(UINT32 typeID, UINT32 slotNumber, BOOL throwOnConflict);
@@ -2375,7 +2399,10 @@ public:
     UINT32 GetTypeID();
 
 
+    // Will return either the dispatch map type. May trigger type loader in order to get
+    // exact result.
     MethodTable *LookupDispatchMapType(DispatchMapTypeID typeID);
+    bool DispatchMapTypeMatchesMethodTable(DispatchMapTypeID typeID, MethodTable* pMT);
 
     MethodDesc *GetIntroducingMethodDesc(DWORD slotNumber);
 
@@ -2384,10 +2411,9 @@ public:
     // dispatch pItfMT methods on this class if one knows how to dispatch them on pParentMT.
     BOOL ImplementsInterfaceWithSameSlotsAsParent(MethodTable *pItfMT, MethodTable *pParentMT);
 
-    // Determines whether all methods in the given interface have their final implementation
-    // in a parent class. I.e. if this returns TRUE, this class behaves the same as pParentMT
-    // when it comes to dispatching pItfMT methods.
-    BOOL HasSameInterfaceImplementationAsParent(MethodTable *pItfMT, MethodTable *pParentMT);
+    // Try to resolve a given static virtual method override on this type. Return nullptr
+    // when not found.
+    MethodDesc *TryResolveVirtualStaticMethodOnThisType(MethodTable* pInterfaceType, MethodDesc* pInterfaceMD, ResolveVirtualStaticMethodFlags resolveVirtualStaticMethodFlags, ClassLoadLevel level);
 
 public:
     static MethodDesc *MapMethodDeclToMethodImpl(MethodDesc *pMDDecl);
@@ -2411,6 +2437,7 @@ public:
     void SetHasCriticalFinalizer()
     {
         LIMITED_METHOD_CONTRACT;
+        _ASSERTE(!HasComponentSize());
         SetFlag(enum_flag_HasCriticalFinalizer);
     }
     // Does this class have non-trivial finalization requirements?
@@ -2424,7 +2451,7 @@ public:
     DWORD HasCriticalFinalizer() const
     {
         LIMITED_METHOD_CONTRACT;
-        return GetFlag(enum_flag_HasCriticalFinalizer);
+        return !HasComponentSize() && GetFlag(enum_flag_HasCriticalFinalizer);
     }
 
     //-------------------------------------------------------------------
@@ -2434,31 +2461,38 @@ public:
     DWORD  GetOffsetOfFirstStaticHandle();
     DWORD  GetOffsetOfFirstStaticMT();
 
-#ifndef DACCESS_COMPILE
     inline PTR_BYTE GetNonGCStaticsBasePointer();
     inline PTR_BYTE GetGCStaticsBasePointer();
+#ifndef DACCESS_COMPILE
     inline PTR_BYTE GetNonGCThreadStaticsBasePointer();
     inline PTR_BYTE GetGCThreadStaticsBasePointer();
 #endif //!DACCESS_COMPILE
 
+    // Do not use except in DAC and profiler scenarios.
+    // These apis are difficult to use correctly. Users must
+    // 1. Be aware that a GC may make the address returned invalid
+    // 2. Be aware that a thread shutdown may make the address returned invalid
+    // 3. Be aware that a collectible assembly could be collected, thus rendering the address returned invalid
+    // This is particularly relevant as a problem for profiler developers, but they are given the tools (such as GC events) to be notified of situations where these invariants may not hold
     inline PTR_BYTE GetNonGCThreadStaticsBasePointer(PTR_Thread pThread);
     inline PTR_BYTE GetGCThreadStaticsBasePointer(PTR_Thread pThread);
 
     inline DWORD IsDynamicStatics()
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        return !TestFlagWithMask(enum_flag_StaticsMask, enum_flag_StaticsMask_NonDynamic);
+        return GetFlag(enum_flag_DynamicStatics);
     }
 
-    inline void SetDynamicStatics(BOOL fGeneric)
+    inline void SetDynamicStatics()
     {
         LIMITED_METHOD_CONTRACT;
-        SetFlag(fGeneric ? enum_flag_StaticsMask_Generics : enum_flag_StaticsMask_Dynamic);
+        SetFlag(enum_flag_DynamicStatics);
     }
 
     inline void SetHasBoxedRegularStatics()
     {
         LIMITED_METHOD_CONTRACT;
+        _ASSERTE(!HasComponentSize());
         SetFlag(enum_flag_HasBoxedRegularStatics);
     }
 
@@ -2466,6 +2500,19 @@ public:
     {
         LIMITED_METHOD_CONTRACT;
         return GetFlag(enum_flag_HasBoxedRegularStatics);
+    }
+
+    inline void SetHasBoxedThreadStatics()
+    {
+        LIMITED_METHOD_CONTRACT;
+        _ASSERTE(!HasComponentSize());
+        SetFlag(enum_flag_HasBoxedThreadStatics);
+    }
+
+    inline DWORD HasBoxedThreadStatics()
+    {
+        LIMITED_METHOD_CONTRACT;
+        return GetFlag(enum_flag_HasBoxedThreadStatics);
     }
 
     DWORD HasFixedAddressVTStatics();
@@ -2483,36 +2530,17 @@ public:
     BOOL HasGenericsStaticsInfo()
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        return GetFlag(enum_flag_StaticsMask_Generics);
+        return IsDynamicStatics() && HasInstantiation();
     }
 
     PTR_FieldDesc GetGenericsStaticFieldDescs()
     {
         WRAPPER_NO_CONTRACT;
         _ASSERTE(HasGenericsStaticsInfo());
-        return ReadPointerMaybeNull((GenericsStaticsInfo *)GetGenericsStaticsInfo(), &GenericsStaticsInfo::m_pFieldDescs);
+        return GetGenericsStaticsInfo()->m_pFieldDescs;
     }
-
-    BOOL HasCrossModuleGenericStaticsInfo()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return TestFlagWithMask(enum_flag_StaticsMask, enum_flag_StaticsMask_CrossModuleGenerics);
-    }
-
-    PTR_Module GetGenericsStaticsModuleAndID(DWORD * pID);
 
     WORD GetNumHandleRegularStatics();
-
-    WORD GetNumBoxedRegularStatics ();
-    WORD GetNumBoxedThreadStatics ();
-
-    //-------------------------------------------------------------------
-    // DYNAMIC ID
-    //
-
-    // Used for generics and reflection emit in memory
-    DWORD GetModuleDynamicEntryID();
-    Module* GetModuleForStatics();
 
     //-------------------------------------------------------------------
     // GENERICS DICT INFO
@@ -2549,7 +2577,7 @@ public:
     OBJECTREF Allocate();
 
     // This flavor of Allocate is more efficient, but can only be used
-    // if IsRestored(), CheckInstanceActivated(), IsClassInited() are known to be true.
+    // if CheckInstanceActivated(), IsClassInited() are known to be true.
     // A sufficient condition is that another instance of the exact same type already
     // exists in the same appdomain. It's currently called only from Delegate.Combine
     // via COMDelegate::InternalAllocLike.
@@ -2559,7 +2587,6 @@ public:
     OBJECTREF FastBox(void** data);
 #ifndef DACCESS_COMPILE
     BOOL UnBoxInto(void *dest, OBJECTREF src);
-    BOOL UnBoxIntoArg(ArgDestination *argDest, OBJECTREF src);
     void UnBoxIntoUnchecked(void *dest, OBJECTREF src);
 #endif
 
@@ -2588,7 +2615,7 @@ public:
     //
     // #KindsOfElementTypes
     // GetInternalCorElementType() retrieves the internal representation of the type. It's not always
-    // appropiate to use this. For example, we treat enums as their underlying type or some structs are
+    // appropriate to use this. For example, we treat enums as their underlying type or some structs are
     // optimized to be ints. To get the signature type or the verifier type (same as signature except for
     // enums are normalized to the primitive type that underlies them), use the APIs in Typehandle.h
     //
@@ -2640,14 +2667,6 @@ public:
 
     // Is this value type? Returns false for System.ValueType and System.Enum.
     inline BOOL IsValueType();
-
-    // Returns "TRUE" iff "this" is a struct type such that return buffers used for returning a value
-    // of this type must be stack-allocated.  This will generally be true only if the struct
-    // contains GC pointers, and does not exceed some size limit.  Maintaining this as an invariant allows
-    // an optimization: the JIT may assume that return buffer pointers for return types for which this predicate
-    // returns TRUE are always stack allocated, and thus, that stores to the GC-pointer fields of such return
-    // buffers do not require GC write barriers.
-    BOOL IsStructRequiringStackAllocRetBuf();
 
     // Is this enum? Returns false for System.Enum.
     inline BOOL IsEnum();
@@ -2714,8 +2733,11 @@ public:
 
 
     // Get the RID/token for the metadata for the corresponding type declaration
-    unsigned GetTypeDefRid();
-    unsigned GetTypeDefRid_NoLogging();
+    unsigned GetTypeDefRid()
+    {
+        LIMITED_METHOD_DAC_CONTRACT;
+        return m_dwFlags2 >> 8;
+    }
 
     inline mdTypeDef GetCl()
     {
@@ -2723,26 +2745,7 @@ public:
         return TokenFromRid(GetTypeDefRid(), mdtTypeDef);
     }
 
-    inline mdTypeDef GetCl_NoLogging()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return TokenFromRid(GetTypeDefRid_NoLogging(), mdtTypeDef);
-    }
-
     void SetCl(mdTypeDef token);
-
-#ifdef _DEBUG
-// Make this smaller in debug builds to exercise the overflow codepath
-#define METHODTABLE_TOKEN_OVERFLOW 0xFFF
-#else
-#define METHODTABLE_TOKEN_OVERFLOW 0xFFFF
-#endif
-
-    BOOL HasTokenOverflow()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_wToken == METHODTABLE_TOKEN_OVERFLOW;
-    }
 
     // Get the MD Import for the metadata for the corresponding type declaration
     IMDInternalImport* GetMDImport();
@@ -2806,32 +2809,27 @@ public:
     // must have a dictionary entry. On the other hand, for instantiations shared with Dict<string,double> the opposite holds.
     //
 
-#if defined(FEATURE_NGEN_RELOCS_OPTIMIZATIONS)
-    typedef RelativePointer<PTR_Dictionary> PerInstInfoElem_t;
-    typedef RelativePointer<DPTR(PerInstInfoElem_t)> PerInstInfo_t;
-#else
-    typedef PlainPointer<PTR_Dictionary> PerInstInfoElem_t;
-    typedef PlainPointer<DPTR(PerInstInfoElem_t)> PerInstInfo_t;
-#endif
+    typedef PTR_Dictionary PerInstInfoElem_t;
+    typedef DPTR(PerInstInfoElem_t) PerInstInfo_t;
 
     // Return a pointer to the per-instantiation information. See field itself for comments.
     DPTR(PerInstInfoElem_t) GetPerInstInfo()
     {
         LIMITED_METHOD_DAC_CONTRACT;
         _ASSERTE(HasPerInstInfo());
-        return ReadPointer(this, &MethodTable::m_pPerInstInfo);
+        return m_pPerInstInfo;
     }
     BOOL HasPerInstInfo()
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        return GetFlag(enum_flag_HasPerInstInfo) && !IsArray();
+        // Assert that either this is an array, or m_pPerInstInfo is non-NULL only if HasPerInstInfo is set
+        _ASSERTE(IsArray() || (m_pPerInstInfo == NULL) == !GetFlag(enum_flag_HasPerInstInfo));
+
+        // Assert that this if this is an Array, HasPerInstInfo is not set
+        _ASSERTE(!IsArray() || !GetFlag(enum_flag_HasPerInstInfo));
+        return GetFlag(enum_flag_HasPerInstInfo);
     }
 #ifndef DACCESS_COMPILE
-    static inline bool IsPerInstInfoRelative()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return decltype(m_pPerInstInfo)::isRelative;
-    }
     static inline DWORD GetOffsetOfPerInstInfo()
     {
         LIMITED_METHOD_CONTRACT;
@@ -2840,7 +2838,7 @@ public:
     void SetPerInstInfo(PerInstInfoElem_t *pPerInstInfo)
     {
         LIMITED_METHOD_CONTRACT;
-        m_pPerInstInfo.SetValue(pPerInstInfo);
+        m_pPerInstInfo = pPerInstInfo;
     }
     void SetDictInfo(WORD numDicts, WORD numTyPars)
     {
@@ -2861,21 +2859,6 @@ public:
     // (The instantiation is stored in the initial slots of the dictionary)
     // If not instantiated, return NULL
     PTR_Dictionary GetDictionary();
-
-#ifdef FEATURE_PREJIT
-    //
-    // After the zapper compiles all code in a module it may attempt
-    // to populate entries in all dictionaries
-    // associated with generic types.  This is an optional step - nothing will
-    // go wrong at runtime except we may get more one-off calls to JIT_GenericHandle.
-    // Although these are one-off we prefer to avoid them since they touch metadata
-    // pages.
-    //
-    // Fully populating a dictionary may in theory load more types. However
-    // for the moment only those entries that refer to types that
-    // are already loaded will be filled in.
-    void PrepopulateDictionary(DataImage * image, BOOL nonExpansive);
-#endif // FEATURE_PREJIT
 
     // Return a substitution suitbale for interpreting
     // the metadata in parent class, assuming we already have a subst.
@@ -2899,17 +2882,6 @@ public:
 
     inline BOOL HasFieldsWhichMustBeInited();
 
-    inline BOOL IsPreRestored() const
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-
-#ifdef FEATURE_PREJIT
-        return GetFlag(enum_flag_IsPreRestored);
-#else
-        return FALSE;
-#endif
-    }
-
     //-------------------------------------------------------------------
     // THE EXPOSED CLASS OBJECT
     //
@@ -2931,38 +2903,25 @@ public:
     // ------------------------------------------------------------------
 
 #ifndef DACCESS_COMPILE
-    inline void SetWriteableData(PTR_MethodTableWriteableData pMTWriteableData)
-    {
-        LIMITED_METHOD_CONTRACT;
-        _ASSERTE(pMTWriteableData);
-        m_pWriteableData.SetValue(pMTWriteableData);
-    }
+    void AllocateAuxiliaryData(LoaderAllocator *pAllocator, Module *pLoaderModule, AllocMemTracker *pamTracker, MethodTableStaticsFlags staticsFlags = MethodTableStaticsFlags::None, WORD nonVirtualSlots = 0, S_SIZE_T extraAllocation = S_SIZE_T(0));
 #endif
 
-    inline PTR_Const_MethodTableWriteableData GetWriteableData() const
+    inline PTR_Const_MethodTableAuxiliaryData GetAuxiliaryData() const
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        g_IBCLogger.LogMethodTableWriteableDataAccess(this);
-        return GetWriteableData_NoLogging();
+        return MethodTable::m_pAuxiliaryData;
     }
 
-    inline PTR_Const_MethodTableWriteableData GetWriteableData_NoLogging() const
+    inline PTR_MethodTableAuxiliaryData GetAuxiliaryDataForWrite()
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        return ReadPointer(this, &MethodTable::m_pWriteableData);
+        return MethodTable::m_pAuxiliaryData;
     }
 
-    inline PTR_MethodTableWriteableData GetWriteableDataForWrite()
+    DWORD* getIsClassInitedFlagAddress()
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        g_IBCLogger.LogMethodTableWriteableDataWriteAccess(this);
-        return GetWriteableDataForWrite_NoLogging();
-    }
-
-    inline PTR_MethodTableWriteableData GetWriteableDataForWrite_NoLogging()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return ReadPointer(this, &MethodTable::m_pWriteableData);
+        return GetAuxiliaryDataForWrite()->getIsClassInitedFlagAddress();
     }
 
     //-------------------------------------------------------------------
@@ -3011,12 +2970,12 @@ public :
     inline BOOL Debug_HasInjectedInterfaceDuplicates() const
     {
         LIMITED_METHOD_CONTRACT;
-        return (GetWriteableData()->m_dwFlags & MethodTableWriteableData::enum_flag_HasInjectedInterfaceDuplicates) != 0;
+        return (GetAuxiliaryData()->m_dwFlags & MethodTableAuxiliaryData::enum_flag_HasInjectedInterfaceDuplicates) != 0;
     }
     inline void Debug_SetHasInjectedInterfaceDuplicates()
     {
         LIMITED_METHOD_CONTRACT;
-        GetWriteableDataForWrite()->m_dwFlags |= MethodTableWriteableData::enum_flag_HasInjectedInterfaceDuplicates;
+        GetAuxiliaryDataForWrite()->m_dwFlags |= MethodTableAuxiliaryData::enum_flag_HasInjectedInterfaceDuplicates;
     }
 #endif // _DEBUG
 
@@ -3084,7 +3043,7 @@ public:
             MethodDesc      *m_pMD;             // The MethodDesc for this slot
 
           public:
-            inline MethodDataEntry() : m_slot(NULL)
+            inline MethodDataEntry() : m_slot((PCODE)NULL)
                 { WRAPPER_NO_CONTRACT; Init(); }
 
             inline void Init()
@@ -3092,7 +3051,7 @@ public:
                 LIMITED_METHOD_CONTRACT;
                 m_chainDeltaAndTableIndex = INVALID_CHAIN_AND_INDEX;
                 m_implSlotNum = INVALID_IMPL_SLOT_NUM;
-                m_slot = NULL;
+                m_slot = (PCODE)NULL;
                 m_pMD = NULL;
             }
 
@@ -3130,7 +3089,8 @@ public:
             UINT32                    cTypeIDs,
             MethodTable *             pMT,
             UINT32                    cCurrentChainDepth,
-            MethodDataEntry *         rgWorkingData);
+            MethodDataEntry *         rgWorkingData,
+            size_t                    cWorkingData);
     };  // class MethodData
 
     typedef ::Holder < MethodData *, MethodData::HolderAcquire, MethodData::HolderRelease > MethodDataHolder;
@@ -3138,18 +3098,24 @@ public:
 
 protected:
     //--------------------------------------------------------------------------------------
-    class MethodDataObject : public MethodData
+    class MethodDataObject final : public MethodData
     {
       public:
         // Static method that returns the amount of memory to allocate for a particular type.
-        static UINT32 GetObjectSize(MethodTable *pMT);
+        static UINT32 GetObjectSize(MethodTable *pMT, MethodDataComputeOptions computeOptions);
 
         // Constructor. Make sure you have allocated enough memory using GetObjectSize.
-        inline MethodDataObject(MethodTable *pMT) : MethodData(pMT, pMT)
-            { WRAPPER_NO_CONTRACT; Init(NULL); }
+        inline MethodDataObject(MethodTable *pMT, MethodDataComputeOptions computeOptions) :
+            MethodData(pMT, pMT),
+            m_numMethods(ComputeNumMethods(pMT, computeOptions)),
+            m_virtualsOnly(computeOptions == MethodDataComputeOptions::NoCacheVirtualsOnly)
+            { WRAPPER_NO_CONTRACT; _ASSERTE(computeOptions != MethodDataComputeOptions::CacheOnly); Init(NULL); }
 
-        inline MethodDataObject(MethodTable *pMT, MethodData *pParentData) : MethodData(pMT, pMT)
-            { WRAPPER_NO_CONTRACT; Init(pParentData); }
+        inline MethodDataObject(MethodTable *pMT, MethodData *pParentData, MethodDataComputeOptions computeOptions) :
+            MethodData(pMT, pMT),
+            m_numMethods(ComputeNumMethods(pMT, computeOptions)),
+            m_virtualsOnly(computeOptions == MethodDataComputeOptions::NoCacheVirtualsOnly)
+            { WRAPPER_NO_CONTRACT; _ASSERTE(computeOptions != MethodDataComputeOptions::CacheOnly); Init(pParentData); }
 
         virtual ~MethodDataObject() { LIMITED_METHOD_CONTRACT; }
 
@@ -3166,8 +3132,27 @@ protected:
 
         virtual UINT32 GetNumVirtuals()
             { LIMITED_METHOD_CONTRACT; return m_pDeclMT->GetNumVirtuals(); }
+
+        static UINT32 ComputeNumMethods(MethodTable *pMT, MethodDataComputeOptions computeOptions)
+        {
+            LIMITED_METHOD_DAC_CONTRACT;
+
+            // MethodDataComputeOptions::CacheOnly is used for asking for a MethodDataObject that already exists,
+            // so there should never be a reason to ask what the size of a new one might be.
+            _ASSERTE(computeOptions != MethodDataComputeOptions::CacheOnly);
+
+            if (computeOptions == MethodDataComputeOptions::NoCacheVirtualsOnly)
+            {
+                return pMT->GetCanonicalMethodTable()->GetNumVtableSlots();
+            }
+            else
+            {
+                return pMT->GetCanonicalMethodTable()->GetNumMethods();
+            }
+        }
+
         virtual UINT32 GetNumMethods()
-            { LIMITED_METHOD_CONTRACT; return m_pDeclMT->GetCanonicalMethodTable()->GetNumMethods(); }
+            { LIMITED_METHOD_CONTRACT; return m_numMethods; }
 
         virtual void UpdateImplMethodDesc(MethodDesc* pMD, UINT32 slotNumber);
 
@@ -3180,7 +3165,9 @@ protected:
         UINT32       m_iNextChainDepth;
         static const UINT32 MAX_CHAIN_DEPTH = UINT32_MAX;
 
-        BOOL m_containsMethodImpl;
+        UINT32       m_numMethods;
+        bool         m_virtualsOnly;
+        bool         m_containsMethodImpl;
 
         // NOTE: Use of these APIs are unlocked and may appear to be erroneous. However, since calls
         //       to ProcessMap will result in identical values being placed in the MethodDataObjectEntry
@@ -3218,19 +3205,33 @@ protected:
                 { LIMITED_METHOD_CONTRACT; return m_pMDImpl; }
         };
 
-        //
-        // At the end of this object is an array, so you cannot derive from this class.
-        //
 
         inline MethodDataObjectEntry *GetEntryData()
-            { LIMITED_METHOD_CONTRACT; return (MethodDataObjectEntry *)(this + 1); }
+            { LIMITED_METHOD_CONTRACT; return &m_rgEntries[0]; }
 
         inline MethodDataObjectEntry *GetEntry(UINT32 i)
             { LIMITED_METHOD_CONTRACT; CONSISTENCY_CHECK(i < GetNumMethods()); return GetEntryData() + i; }
 
         void FillEntryDataForAncestor(MethodTable *pMT);
 
-        // MethodDataObjectEntry m_rgEntries[...];
+        //
+        // At the end of this object is an array
+        //
+        MethodDataObjectEntry m_rgEntries[0];
+
+      public:
+        struct TargetMethodTable
+        {
+            MethodTable* pMT;
+        };
+
+        static void* operator new(size_t size, TargetMethodTable targetMT, MethodDataComputeOptions computeOptions)
+        {
+            _ASSERTE(computeOptions != MethodDataComputeOptions::CacheOnly);
+            _ASSERTE(size <= GetObjectSize(targetMT.pMT, computeOptions));
+            return ::operator new(GetObjectSize(targetMT.pMT, computeOptions));
+        }
+        static void* operator new(size_t size) = delete;
     };  // class MethodDataObject
 
     //--------------------------------------------------------------------------------------
@@ -3284,7 +3285,7 @@ protected:
     };  // class MethodDataInterface
 
     //--------------------------------------------------------------------------------------
-    class MethodDataInterfaceImpl : public MethodData
+    class MethodDataInterfaceImpl final : public MethodData
     {
       public:
         // Object construction-related methods
@@ -3358,51 +3359,60 @@ protected:
         //
 
         inline MethodDataEntry *GetEntryData()
-            { LIMITED_METHOD_CONTRACT; return (MethodDataEntry *)(this + 1); }
+            { LIMITED_METHOD_CONTRACT; return &m_rgEntries[0]; }
 
         inline MethodDataEntry *GetEntry(UINT32 i)
             { LIMITED_METHOD_CONTRACT; CONSISTENCY_CHECK(i < GetNumMethods()); return GetEntryData() + i; }
 
-        // MethodDataEntry m_rgEntries[...];
+        MethodDataEntry m_rgEntries[0];
+
+      public:
+        struct TargetMethodTable
+        {
+            MethodTable* pMT;
+        };
+
+        static void* operator new(size_t size, TargetMethodTable targetMT)
+        {
+            _ASSERTE(size <= GetObjectSize(targetMT.pMT));
+            return ::operator new(GetObjectSize(targetMT.pMT));
+        }
+        static void* operator new(size_t size) = delete;
     };  // class MethodDataInterfaceImpl
 
     //--------------------------------------------------------------------------------------
     static MethodDataCache *s_pMethodDataCache;
-    static BOOL             s_fUseParentMethodData;
-    static BOOL             s_fUseMethodDataCache;
 
 public:
-    static void AllowMethodDataCaching()
-        { WRAPPER_NO_CONTRACT; CheckInitMethodDataCache(); s_fUseMethodDataCache = TRUE; }
+    static void InitMethodDataCache();
     static void ClearMethodDataCache();
-    static void AllowParentMethodDataCopy()
-        { LIMITED_METHOD_CONTRACT; s_fUseParentMethodData = TRUE; }
-    // NOTE: The fCanCache argument determines if the resulting MethodData object can
+    // NOTE: The computeOption argument determines if the resulting MethodData object can
     //       be added to the global MethodDataCache. This is used when requesting a
     //       MethodData object for a type currently being built.
-    static MethodData *GetMethodData(MethodTable *pMT, BOOL fCanCache = TRUE);
-    static MethodData *GetMethodData(MethodTable *pMTDecl, MethodTable *pMTImpl, BOOL fCanCache = TRUE);
+    static MethodData *GetMethodData(MethodTable *pMT, MethodDataComputeOptions computeOption);
+    static MethodData *GetMethodData(MethodTable *pMTDecl, MethodTable *pMTImpl, MethodDataComputeOptions computeOption);
     // This method is used by BuildMethodTable because the exact interface has not yet been loaded.
     // NOTE: This method does not cache the resulting MethodData object in the global MethodDataCache.
     static MethodData * GetMethodData(
         const DispatchMapTypeID * rgDeclTypeIDs,
         UINT32                    cDeclTypeIDs,
         MethodTable *             pMTDecl,
-        MethodTable *             pMTImpl);
+        MethodTable *             pMTImpl,
+        MethodDataComputeOptions computeOption);
 
     void CopySlotFrom(UINT32 slotNumber, MethodDataWrapper &hSourceMTData, MethodTable *pSourceMT);
 
 protected:
-    static void CheckInitMethodDataCache();
     static MethodData *FindParentMethodDataHelper(MethodTable *pMT);
     static MethodData *FindMethodDataHelper(MethodTable *pMTDecl, MethodTable *pMTImpl);
-    static MethodData *GetMethodDataHelper(MethodTable *pMTDecl, MethodTable *pMTImpl, BOOL fCanCache);
+    static MethodData *GetMethodDataHelper(MethodTable *pMTDecl, MethodTable *pMTImpl, MethodDataComputeOptions computeOption);
     // NOTE: This method does not cache the resulting MethodData object in the global MethodDataCache.
     static MethodData * GetMethodDataHelper(
         const DispatchMapTypeID * rgDeclTypeIDs,
         UINT32                    cDeclTypeIDs,
         MethodTable *             pMTDecl,
-        MethodTable *             pMTImpl);
+        MethodTable *             pMTImpl,
+        MethodDataComputeOptions computeOption);
 
 public:
     //--------------------------------------------------------------------------------------
@@ -3494,15 +3504,9 @@ private:
         // apply to Strings / Arrays.
 
         enum_flag_UNUSED_ComponentSize_1    = 0x00000001,
+        // GC depends on this bit
+        enum_flag_HasCriticalFinalizer      = 0x00000002, // finalizer must be run on Appdomain Unload
 
-        enum_flag_StaticsMask               = 0x00000006,
-        enum_flag_StaticsMask_NonDynamic    = 0x00000000,
-        enum_flag_StaticsMask_Dynamic       = 0x00000002,   // dynamic statics (EnC, reflection.emit)
-        enum_flag_StaticsMask_Generics      = 0x00000004,   // generics statics
-        enum_flag_StaticsMask_CrossModuleGenerics       = 0x00000006, // cross module generics statics (NGen)
-        enum_flag_StaticsMask_IfGenericsThenCrossModule = 0x00000002, // helper constant to get rid of unnecessary check
-
-        enum_flag_NotInPZM                  = 0x00000008,   // True if this type is not in its PreferredZapModule
 
         enum_flag_GenericsMask              = 0x00000030,
         enum_flag_GenericsMask_NonGeneric   = 0x00000000,   // no instantiation
@@ -3519,7 +3523,7 @@ private:
 #if defined(UNIX_AMD64_ABI)
 #error "Can't define both FEATURE_HFA and UNIX_AMD64_ABI"
 #endif
-        enum_flag_IsHFA                     = 0x00000800,   // This type is an HFA (Homogenous Floating-point Aggregate)
+        enum_flag_IsHFA                     = 0x00000800,   // This type is an HFA (Homogeneous Floating-point Aggregate)
 #endif // FEATURE_HFA
 
 #if defined(UNIX_AMD64_ABI)
@@ -3531,10 +3535,11 @@ private:
 
         enum_flag_IsByRefLike               = 0x00001000,
 
+        enum_flag_HasBoxedRegularStatics    = 0x00002000,
+        enum_flag_HasBoxedThreadStatics     = 0x00004000,
+
         // In a perfect world we would fill these flags using other flags that we already have
         // which have a constant value for something which has a component size.
-        enum_flag_UNUSED_ComponentSize_5    = 0x00002000,
-        enum_flag_UNUSED_ComponentSize_6    = 0x00004000,
         enum_flag_UNUSED_ComponentSize_7    = 0x00008000,
 
 #define SET_FALSE(flag)     ((flag) & 0)
@@ -3545,8 +3550,9 @@ private:
         // As you change the flags in WFLAGS_LOW_ENUM you also need to change this
         // to be up to date to reflect the default values of those flags for the
         // case where this MethodTable is for a String or Array
-        enum_flag_StringArrayValues = SET_TRUE(enum_flag_StaticsMask_NonDynamic) |
-                                      SET_FALSE(enum_flag_NotInPZM) |
+        enum_flag_StringArrayValues = SET_FALSE(enum_flag_HasCriticalFinalizer) |
+                                      SET_FALSE(enum_flag_HasBoxedRegularStatics) |
+                                      SET_FALSE(enum_flag_HasBoxedThreadStatics) |
                                       SET_TRUE(enum_flag_GenericsMask_NonGeneric) |
                                       SET_FALSE(enum_flag_HasVariance) |
                                       SET_FALSE(enum_flag_HasDefaultCtor) |
@@ -3563,7 +3569,7 @@ private:
         // low WORD of flags is reserved for the component size.
 
         // The following bits describe mutually exclusive locations of the type
-        // in the type hiearchy.
+        // in the type hierarchy.
         enum_flag_Category_Mask             = 0x000F0000,
 
         enum_flag_Category_Class            = 0x00000000,
@@ -3589,35 +3595,31 @@ private:
 
         enum_flag_Category_ElementTypeMask  = 0x000E0000, // bits that matter for element type mask
 
-
-        enum_flag_HasFinalizer                = 0x00100000, // instances require finalization
-
-        enum_flag_IDynamicInterfaceCastable   = 0x00200000, // class implements IDynamicInterfaceCastable interface
-
+        enum_flag_HasFinalizer                = 0x00100000, // instances require finalization. GC depends on this bit.
+        enum_flag_Collectible                 = 0x00200000, // GC depends on this bit.
         enum_flag_ICastable                   = 0x00400000, // class implements ICastable interface
 
-        enum_flag_HasIndirectParent           = 0x00800000, // m_pParentMethodTable has double indirection
+#ifdef FEATURE_64BIT_ALIGNMENT
+        enum_flag_RequiresAlign8              = 0x00800000, // Type requires 8-byte alignment (only set on platforms that require this and don't get it implicitly)
+#endif
 
-        enum_flag_ContainsPointers            = 0x01000000,
-
+        enum_flag_ContainsPointers            = 0x01000000, // Contains object references
         enum_flag_HasTypeEquivalence          = 0x02000000, // can be equivalent to another type
+        enum_flag_IsTrackedReferenceWithFinalizer = 0x04000000,
+        // unused                             = 0x08000000,
 
-        // enum_flag_unused                   = 0x04000000,
-
-        enum_flag_HasCriticalFinalizer        = 0x08000000, // finalizer must be run on Appdomain Unload
-        enum_flag_Collectible                 = 0x10000000,
-        enum_flag_ContainsGenericVariables    = 0x20000000,   // we cache this flag to help detect these efficiently and
-                                                              // to detect this condition when restoring
-
+        enum_flag_IDynamicInterfaceCastable   = 0x10000000, // class implements IDynamicInterfaceCastable interface
+        enum_flag_ContainsGenericVariables    = 0x20000000, // we cache this flag to help detect these efficiently and
+                                                            // to detect this condition when restoring
         enum_flag_ComObject                   = 0x40000000, // class is a com object
-
-        enum_flag_HasComponentSize            = 0x80000000,   // This is set if component size is used for flags.
+        enum_flag_HasComponentSize            = 0x80000000, // This is set if component size is used for flags.
 
         // Types that require non-trivial interface cast have this bit set in the category
         enum_flag_NonTrivialInterfaceCast   =  enum_flag_Category_Array
                                              | enum_flag_ComObject
                                              | enum_flag_ICastable
                                              | enum_flag_IDynamicInterfaceCastable
+                                             | enum_flag_Category_ValueType
 
     };  // enum WFLAGS_HIGH_ENUM
 
@@ -3634,39 +3636,17 @@ private:
         // TO BE UPDATED IN ORDER TO ENSURE THAT METHODTABLES DUPLICATED FOR GENERIC INSTANTIATIONS
         // CARRY THE CORECT FLAGS.
 
-        // The following bits describe usage of optional slots. They have to stay
-        // together because of we index using them into offset arrays.
-        enum_flag_MultipurposeSlotsMask     = 0x001F,
         enum_flag_HasPerInstInfo            = 0x0001,
-        enum_flag_HasInterfaceMap           = 0x0002,
+        enum_flag_DynamicStatics            = 0x0002,
         enum_flag_HasDispatchMapSlot        = 0x0004,
-        enum_flag_HasNonVirtualSlots        = 0x0008,
-        enum_flag_HasModuleOverride         = 0x0010,
 
-        enum_flag_IsZapped                  = 0x0020, // This could be fetched from m_pLoaderModule if we run out of flags
+        enum_flag_wflags2_unused_2          = 0x0008,
+        enum_flag_HasModuleDependencies     = 0x0010,
+        enum_flag_IsIntrinsicType           = 0x0020,
+        enum_flag_HasCctor                  = 0x0040,
+        enum_flag_HasVirtualStaticMethods   = 0x0080,
 
-        enum_flag_IsPreRestored             = 0x0040, // Class does not need restore
-                                                      // This flag is set only for NGENed classes (IsZapped is true)
-
-        enum_flag_HasModuleDependencies     = 0x0080,
-
-        enum_flag_IsIntrinsicType           = 0x0100,
-
-        enum_flag_RequiresDispatchTokenFat  = 0x0200,
-
-        enum_flag_HasCctor                  = 0x0400,
-        // enum_flag_unused                 = 0x0800,
-
-#ifdef FEATURE_64BIT_ALIGNMENT
-        enum_flag_RequiresAlign8            = 0x1000, // Type requires 8-byte alignment (only set on platforms that require this and don't get it implicitly)
-#endif
-
-        enum_flag_HasBoxedRegularStatics    = 0x2000, // GetNumBoxedRegularStatics() != 0
-
-        enum_flag_HasSingleNonVirtualSlot   = 0x4000,
-
-        enum_flag_DependsOnEquivalentOrForwardedStructs= 0x8000, // Declares methods that have type equivalent or type forwarded structures in their signature
-
+        enum_flag_TokenMask                 = 0xFFFFFF00,
     };  // enum WFLAGS2_ENUM
 
     __forceinline void ClearFlag(WFLAGS_LOW_ENUM flag)
@@ -3712,41 +3692,32 @@ private:
 
     __forceinline void ClearFlag(WFLAGS2_ENUM flag)
     {
-        m_wFlags2 &= ~flag;
+        m_dwFlags2 &= ~flag;
     }
     __forceinline void SetFlag(WFLAGS2_ENUM flag)
     {
-        m_wFlags2 |= flag;
+        m_dwFlags2 |= flag;
     }
     __forceinline DWORD GetFlag(WFLAGS2_ENUM flag) const
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        return m_wFlags2 & flag;
+        return m_dwFlags2 & flag;
     }
     __forceinline BOOL TestFlagWithMask(WFLAGS2_ENUM mask, WFLAGS2_ENUM flag) const
     {
-        return (m_wFlags2 & (DWORD)mask) == (DWORD)flag;
+        return (m_dwFlags2 & (DWORD)mask) == (DWORD)flag;
     }
 
 private:
-    /*
-     * This stuff must be first in the struct and should fit on a cache line - don't move it. Used by the GC.
-     */
-    // struct
-    // {
-
     // Low WORD is component size for array and string types (HasComponentSize() returns true).
     // Used for flags otherwise.
     DWORD           m_dwFlags;
 
     // Base size of instance of this class when allocated on the heap
     DWORD           m_BaseSize;
-    // }
 
-    WORD            m_wFlags2;
-
-    // Class token if it fits into 16-bits. If this is (WORD)-1, the class token is stored in the TokenOverflow optional member.
-    WORD            m_wToken;
+    // See WFLAGS2_ENUM for values.
+    DWORD           m_dwFlags2;
 
     // <NICE> In the normal cases we shouldn't need a full word for each of these </NICE>
     WORD            m_wNumVirtuals;
@@ -3756,38 +3727,22 @@ private:
     LPCUTF8         debug_m_szClassName;
 #endif //_DEBUG
 
-    // On Linux ARM is a RelativeFixupPointer. Otherwise,
-    // Parent PTR_MethodTable if enum_flag_HasIndirectParent is not set. Pointer to indirection cell
-    // if enum_flag_enum_flag_HasIndirectParent is set. The indirection is offset by offsetof(MethodTable, m_pParentMethodTable).
-    // It allows casting helpers to go through parent chain natually. Casting helper do not need need the explicit check
-    // for enum_flag_HasIndirectParentMethodTable.
-    ParentMT_t m_pParentMethodTable;
+    PTR_MethodTable m_pParentMethodTable;
 
-    RelativePointer<PTR_Module> m_pLoaderModule;    // LoaderModule. It is equal to the ZapModule in ngened images
+    PTR_Module      m_pModule;
 
-#if defined(FEATURE_NGEN_RELOCS_OPTIMIZATIONS)
-    RelativePointer<PTR_MethodTableWriteableData> m_pWriteableData;
-#else
-    PlainPointer<PTR_MethodTableWriteableData> m_pWriteableData;
-#endif
+    PTR_MethodTableAuxiliaryData m_pAuxiliaryData;
 
     // The value of lowest two bits describe what the union contains
     enum LowBits {
         UNION_EECLASS      = 0,    //  0 - pointer to EEClass. This MethodTable is the canonical method table.
-        UNION_INVALID      = 1,    //  1 - not used
-        UNION_METHODTABLE  = 2,    //  2 - pointer to canonical MethodTable.
-        UNION_INDIRECTION  = 3     //  3 - pointer to indirection cell that points to canonical MethodTable.
-    };                             //      (used only if FEATURE_PREJIT is defined)
-    static const TADDR UNION_MASK = 3;
+        UNION_METHODTABLE  = 1,    //  1 - pointer to canonical MethodTable.
+    };
+    static const TADDR UNION_MASK = 1;
 
     union {
-#if defined(FEATURE_NGEN_RELOCS_OPTIMIZATIONS)
-        RelativePointer<DPTR(EEClass)> m_pEEClass;
-        RelativePointer<TADDR> m_pCanonMT;
-#else
-        PlainPointer<DPTR(EEClass)> m_pEEClass;
-        PlainPointer<TADDR> m_pCanonMT;
-#endif
+        DPTR(EEClass) m_pEEClass;
+        TADDR m_pCanonMT;
     };
 
     __forceinline static LowBits union_getLowBits(TADDR pCanonMT)
@@ -3802,31 +3757,18 @@ private:
     }
 
     // m_pPerInstInfo and m_pInterfaceMap have to be at fixed offsets because of performance sensitive
-    // JITed code and JIT helpers. However, they are frequently not present. The space is used by other
-    // multipurpose slots on first come first served basis if the fixed ones are not present. The other
-    // multipurpose are DispatchMapSlot, NonVirtualSlots, ModuleOverride (see enum_flag_MultipurposeSlotsMask).
-    // The multipurpose slots that do not fit are stored after vtable slots.
+    // JITed code and JIT helpers. The space used by m_pPerInstInfo is used to represent the array
+    // element type handle for array MethodTables.
 
     union
     {
         PerInstInfo_t m_pPerInstInfo;
         TADDR         m_ElementTypeHnd;
-        TADDR         m_pMultipurposeSlot1;
     };
     public:
-    union
-    {
-#if defined(FEATURE_NGEN_RELOCS_OPTIMIZATIONS)
-        RelativePointer<PTR_InterfaceInfo>   m_pInterfaceMap;
-#else
-        PlainPointer<PTR_InterfaceInfo>   m_pInterfaceMap;
-#endif
-        TADDR               m_pMultipurposeSlot2;
-    };
+    PTR_InterfaceInfo   m_pInterfaceMap;
 
-    // VTable and Non-Virtual slots go here
-
-    // Overflow multipurpose slots go here
+    // VTable slots go here
 
     // Optional Members go here
     //    See above for the list of optional members
@@ -3844,31 +3786,41 @@ private:
     void operator delete(void *pData);
     MethodTable();
 
+    PTR_GenericsStaticsInfo GetGenericsStaticsInfo()
+    {
+        PTR_MethodTableAuxiliaryData AuxiliaryData = GetAuxiliaryDataForWrite();
+        _ASSERTE(HasGenericsStaticsInfo());
+        return MethodTableAuxiliaryData::GetGenericStaticsInfo(AuxiliaryData);
+    }
+
+public:
+    PTR_DynamicStaticsInfo GetDynamicStaticsInfo()
+    {
+        PTR_MethodTableAuxiliaryData AuxiliaryData = GetAuxiliaryDataForWrite();
+        _ASSERTE(IsDynamicStatics());
+        return MethodTableAuxiliaryData::GetDynamicStaticsInfo(AuxiliaryData);
+    }
+
+    PTR_ThreadStaticsInfo GetThreadStaticsInfo()
+    {
+        PTR_MethodTableAuxiliaryData AuxiliaryData = GetAuxiliaryDataForWrite();
+        _ASSERTE(GetNumThreadStaticFields() > 0);
+        return MethodTableAuxiliaryData::GetThreadStaticsInfo(AuxiliaryData);
+    }
+private:
+
     // Optional members.  These are used for fields in the data structure where
     // the fields are (a) known when MT is created and (b) there is a default
     // value for the field in the common case.  That is, they are normally used
     // for data that is only relevant to a small number of method tables.
-
-    // Optional members and multipurpose slots have similar purpose, but they differ in details:
-    // - Multipurpose slots can only accomodate pointer sized structures right now. It is non-trivial
-    //   to add new ones, the access is faster.
-    // - Optional members can accomodate structures of any size. It is trivial to add new ones,
-    //   the access is slower.
+    // - Optional members can accommodate structures of any size. It is trivial to add new ones,
+    //   the access is somewhat slow.
 
     // The following macro will automatically create GetXXX accessors for the optional members.
 #define METHODTABLE_OPTIONAL_MEMBERS() \
     /*                          NAME                    TYPE                            GETTER                     */ \
-    /* Accessing this member efficiently is currently performance critical for static field accesses               */ \
-    /* in generic classes, so place it early in the list. */                                                          \
-    METHODTABLE_OPTIONAL_MEMBER(GenericsStaticsInfo,    GenericsStaticsInfo,            GetGenericsStaticsInfo      ) \
-    /* Accessed during x-domain transition only, so place it late in the list. */                                     \
-    METHODTABLE_REMOTING_OPTIONAL_MEMBERS()                                                                           \
     /* Accessed during certain generic type load operations only, so low priority */                                  \
     METHODTABLE_OPTIONAL_MEMBER(ExtraInterfaceInfo,     TADDR,                          GetExtraInterfaceInfoPtr    ) \
-    /* TypeDef token for assemblies with more than 64k types. Never happens in real world. */                         \
-    METHODTABLE_OPTIONAL_MEMBER(TokenOverflow,          TADDR,                          GetTokenOverflowPtr         ) \
-
-#define METHODTABLE_REMOTING_OPTIONAL_MEMBERS()
 
     enum OptionalMemberId
     {
@@ -3877,7 +3829,7 @@ private:
         METHODTABLE_OPTIONAL_MEMBERS()
         OptionalMember_Count,
 
-        OptionalMember_First = OptionalMember_GenericsStaticsInfo,
+        OptionalMember_First = OptionalMember_ExtraInterfaceInfo,
     };
 
     FORCEINLINE DWORD GetOffsetOfOptionalMember(OptionalMemberId id);
@@ -3912,10 +3864,7 @@ private:
         return GetOffsetOfOptionalMember(OptionalMember_Count);
     }
 
-    inline static DWORD GetOptionalMembersAllocationSize(
-                                                  DWORD dwMultipurposeSlotsMask,
-                                                  BOOL needsGenericsStaticsInfo,
-                                                  BOOL needsTokenOverflow);
+    inline static DWORD GetOptionalMembersAllocationSize(bool hasInterfaceMap);
     inline DWORD GetOptionalMembersSize();
 
     // The PerInstInfo is a (possibly empty) array of pointers to
@@ -3934,66 +3883,11 @@ private:
     // the optional back pointer used when expanding dictionaries).
     inline DWORD GetInstAndDictSize(DWORD *pSlotSize);
 
-private:
-    // Helper template to compute the offsets at compile time
-    template<int mask>
-    struct MultipurposeSlotOffset;
-
-    static const BYTE c_DispatchMapSlotOffsets[];
-    static const BYTE c_NonVirtualSlotsOffsets[];
-    static const BYTE c_ModuleOverrideOffsets[];
-
-    static const BYTE c_OptionalMembersStartOffsets[]; // total sizes of optional slots
-
-    TADDR GetMultipurposeSlotPtr(WFLAGS2_ENUM flag, const BYTE * offsets);
-
-    void SetMultipurposeSlotsMask(DWORD dwMask)
-    {
-        LIMITED_METHOD_CONTRACT;
-        _ASSERTE((m_wFlags2 & enum_flag_MultipurposeSlotsMask) == 0);
-        m_wFlags2 |= (WORD)dwMask;
-    }
-
-    BOOL HasModuleOverride()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return GetFlag(enum_flag_HasModuleOverride);
-    }
-
-    DPTR(RelativeFixupPointer<PTR_Module>) GetModuleOverridePtr()
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        return dac_cast<DPTR(RelativeFixupPointer<PTR_Module>)>(GetMultipurposeSlotPtr(enum_flag_HasModuleOverride, c_ModuleOverrideOffsets));
-    }
-
-    void SetModule(Module * pModule);
-
 public:
 
     BOOL Validate ();
 
-#ifdef FEATURE_READYTORUN_COMPILER
-    //
-    // Is field layout in this type within the current version bubble?
-    //
-    BOOL IsLayoutInCurrentVersionBubble();
-    //
-    // Is field layout in this type fixed within the current version bubble?
-    // This check does not take the inheritance chain into account.
-    //
-    BOOL IsLayoutFixedInCurrentVersionBubble();
-
-    //
-    // Is field layout of the inheritance chain fixed within the current version bubble?
-    //
-    BOOL IsInheritanceChainLayoutFixedInCurrentVersionBubble();
-
-    //
-    // Is the inheritance chain fixed within the current version bubble?
-    //
-    BOOL IsInheritanceChainFixedInCurrentVersionBubble();
-#endif
-
+    static void GetStaticsOffsets(StaticsOffsetType staticsOffsetType, bool fGenericsStatics, uint32_t *dwGCOffset, uint32_t *dwNonGCOffset);
 };  // class MethodTable
 
 #ifndef CROSSBITNESS_COMPILE
@@ -4004,7 +3898,7 @@ WORD GetEquivalentMethodSlot(MethodTable * pOldMT, MethodTable * pNewMT, WORD wM
 #endif // defined(FEATURE_TYPEEQUIVALENCE) && !defined(DACCESS_COMPILE)
 
 MethodTable* CreateMinimalMethodTable(Module* pContainingModule,
-                                      LoaderHeap* pCreationHeap,
+                                      LoaderAllocator* pLoaderAllocator,
                                       AllocMemTracker* pamTracker);
 
 #endif // !_METHODTABLE_H_

@@ -54,22 +54,6 @@
 //                              then it's ok for this function to as well.  If LIMITED_METHOD_CONTRACT is specified,
 //                              however, then CANNOT_TAKE_LOCK is assumed.
 //
-//      EE_THREAD_NOT_REQUIRED  the function does not assume an EE Thread object is available in TLS.
-//                              Either GetThread() is never called, or any code path that requires a Thread
-//                              has another code path that deals with the absence of a Thread.  Any call to
-//                              to GetThread() must be bracketed with BEGIN_GETTHREAD_ALLOWED /
-//                              END_GETTHREAD_ALLOWED to avoid bogus asserts (the short-form
-//                              GetThreadNULLOk() may be used as well).  However, this is only allowed if visual
-//                              inspection of the call site makes it patently obvious that the function deals
-//                              appropriately with the GetThread() == NULL case.
-//      -or- EE_THREAD_REQUIRED the function requires an EE Thread object in TLS (i.e., GetThread() != NULL)
-//                              If this contract is used, we will ASSERT on entry to the function that
-//                              GetThread() != NULL.
-//      -or-                    the default is DISABLED(EE_THREAD_REQUIRED).  i.e., we do not assert
-//                              GetThread() != NULL on entry to the function and do not assert on any
-//                              unprotected uses of GetThread().
-//                              See code:GetThreadGenericFullCheck for info on how these
-//                              contracts are enforced.
 //
 //      SUPPORTS_DAC            The function has been written to be callable from out-of-process using DAC.
 //                              In builds where DACCESS_COMPILE is defined, such functions can only call
@@ -156,7 +140,6 @@
 //              ModeViolation
 //              FaultViolation
 //              FaultNotFatal
-//              HostViolation
 //              LoadsTypeViolation
 //              TakesLockViolation
 //
@@ -190,7 +173,7 @@
 //        A do-nothing contract used by functions that trivially wrap another.
 //
 //
-// "LEGACY" stuff - these features have been mostly superceded by better solutions
+// "LEGACY" stuff - these features have been mostly superseded by better solutions
 //     so their use should be discouraged.
 //
 //
@@ -233,7 +216,7 @@
 
 
 // We only enable contracts in _DEBUG builds
-#if defined(_DEBUG) && !defined(DISABLE_CONTRACTS)
+#if defined(_DEBUG) && !defined(DISABLE_CONTRACTS) && !defined(JIT_BUILD)
 #define ENABLE_CONTRACTS_DATA
 #endif
 
@@ -242,14 +225,13 @@
 #define ENABLE_CONTRACTS
 #endif
 
-// Finally, only define the implementaiton parts of contracts if this isn't a DAC build.
+// Finally, only define the implementation parts of contracts if this isn't a DAC build.
 #if defined(_DEBUG_IMPL) && defined(ENABLE_CONTRACTS)
 #define ENABLE_CONTRACTS_IMPL
 #endif
 
 #include "specstrings.h"
 #include "clrtypes.h"
-#include "malloc.h"
 #include "check.h"
 #include "debugreturn.h"
 #include "staticcontract.h"
@@ -362,8 +344,8 @@ struct DbgStateLockData
     void LockTaken(DbgStateLockType dbgStateLockType,
                      UINT cEntrances,
                      void * pvLock,
-                     __in_z const char * szFunction,
-                     __in_z const char * szFile,
+                     _In_z_ const char * szFunction,
+                     _In_z_ const char * szFile,
                      int lineNum);
     void LockReleased(DbgStateLockType dbgStateLockType, UINT cExits, void * pvLock);
     UINT GetLockCount(DbgStateLockType dbgStateLockType);
@@ -394,13 +376,12 @@ public:
 
 #define CONTRACT_BITMASK_OK_TO_THROW          0x1 << 0
 #define CONTRACT_BITMASK_FAULT_FORBID         0x1 << 1
-#define CONTRACT_BITMASK_HOSTCALLS            0x1 << 2
+// Unused                                     0x1 << 2
 #define CONTRACT_BITMASK_SOTOLERANT           0x1 << 3
 #define CONTRACT_BITMASK_DEBUGONLY            0x1 << 4
 #define CONTRACT_BITMASK_SONOTMAINLINE        0x1 << 5
-#define CONTRACT_BITMASK_ALLOWGETTHREAD       0x1 << 6
-#define CONTRACT_BITMASK_OK_TO_LOCK           0x1 << 7
-#define CONTRACT_BITMASK_OK_TO_RETAKE_LOCK    0x1 << 8
+#define CONTRACT_BITMASK_OK_TO_LOCK           0x1 << 6
+#define CONTRACT_BITMASK_OK_TO_RETAKE_LOCK    0x1 << 7
 
 
 #define CONTRACT_BITMASK_IS_SET(whichbit)    ((m_flags & (whichbit)) != 0)
@@ -435,13 +416,11 @@ public:
         // We start out in SO-tolerant mode and must probe before entering SO-intolerant
         //   any global state updates.
         // Initial mode is non-debug until we say otherwise
-        // Everthing defaults to mainline
+        // Everything defaults to mainline
         // By default, GetThread() is perfectly fine to call
         // By default, it's ok to take a lock (or call someone who does)
         m_flags             = CONTRACT_BITMASK_OK_TO_THROW|
-                              CONTRACT_BITMASK_HOSTCALLS|
                               CONTRACT_BITMASK_SOTOLERANT|
-                              CONTRACT_BITMASK_ALLOWGETTHREAD|
                               CONTRACT_BITMASK_OK_TO_LOCK|
                               CONTRACT_BITMASK_OK_TO_RETAKE_LOCK;
 
@@ -457,7 +436,7 @@ public:
         m_LockState.SetStartingValues();
     }
 
-    void CheckOkayToThrow(__in_z const char *szFunction, __in_z const char *szFile, int lineNum); // Asserts if its not okay to throw.
+    void CheckOkayToThrow(_In_z_ const char *szFunction, _In_z_ const char *szFile, int lineNum); // Asserts if its not okay to throw.
     BOOL CheckOkayToThrowNoAssert(); // Returns if OK to throw
 
     //--//
@@ -531,30 +510,6 @@ public:
     }
 
     //--//
-    BOOL IsHostCaller()
-    {
-        return CONTRACT_BITMASK_IS_SET(CONTRACT_BITMASK_HOSTCALLS);
-    }
-
-    void SetHostCaller()
-    {
-        CONTRACT_BITMASK_SET(CONTRACT_BITMASK_HOSTCALLS);
-    }
-
-
-    BOOL SetHostCaller(BOOL value)
-    {
-        BOOL prevState = CONTRACT_BITMASK_IS_SET(CONTRACT_BITMASK_HOSTCALLS);
-        CONTRACT_BITMASK_UPDATE(CONTRACT_BITMASK_HOSTCALLS,value);
-        return prevState;
-    }
-
-    void ResetHostCaller()
-    {
-        CONTRACT_BITMASK_RESET(CONTRACT_BITMASK_HOSTCALLS);
-    }
-
-    //--//
     BOOL IsDebugOnly()
     {
         STATIC_CONTRACT_WRAPPER;
@@ -579,30 +534,6 @@ public:
     {
         STATIC_CONTRACT_LIMITED_METHOD;
         CONTRACT_BITMASK_RESET(CONTRACT_BITMASK_DEBUGONLY);
-    }
-
-    //--//
-    BOOL IsGetThreadAllowed()
-    {
-        return CONTRACT_BITMASK_IS_SET(CONTRACT_BITMASK_ALLOWGETTHREAD);
-
-    }
-    void SetGetThreadAllowed()
-    {
-        CONTRACT_BITMASK_SET(CONTRACT_BITMASK_ALLOWGETTHREAD);
-    }
-
-
-     BOOL SetGetThreadAllowed(BOOL value)
-    {
-        BOOL prevState = CONTRACT_BITMASK_IS_SET(CONTRACT_BITMASK_ALLOWGETTHREAD);
-        CONTRACT_BITMASK_UPDATE(CONTRACT_BITMASK_ALLOWGETTHREAD,value);
-        return prevState;
-    }
-
-    void ResetGetThreadAllowed()
-    {
-        CONTRACT_BITMASK_RESET(CONTRACT_BITMASK_ALLOWGETTHREAD);
     }
 
     //--//
@@ -718,13 +649,13 @@ public:
         m_LockState.OnEnterCannotRetakeLockFunction();
     }
 
-    void CheckOkayToLock(__in_z const char *szFunction, __in_z const char *szFile, int lineNum); // Asserts if its not okay to lock
+    void CheckOkayToLock(_In_z_ const char *szFunction, _In_z_ const char *szFile, int lineNum); // Asserts if its not okay to lock
     BOOL CheckOkayToLockNoAssert(); // Returns if OK to lock
     void LockTaken(DbgStateLockType dbgStateLockType,
                      UINT cEntrances,
                      void * pvLock,
-                     __in_z const char * szFunction,
-                     __in_z const char * szFile,
+                     _In_z_ const char * szFunction,
+                     _In_z_ const char * szFile,
                      int lineNum);
     void LockReleased(DbgStateLockType dbgStateLockType, UINT cExits, void * pvLock);
     UINT GetLockCount(DbgStateLockType dbgStateLockType);
@@ -938,22 +869,8 @@ class BaseContract
 
         SO_MAINLINE_No          = 0x00000800,  // code is not part of our mainline SO scenario
 
-        // Any place where we can't safely call into the host should have a HOST_NoCalls contract
-        HOST_Mask               = 0x00003000,
-        HOST_Calls              = 0x00002000,
-        HOST_NoCalls            = 0x00001000,
-        HOST_Disabled           = 0x00000000,   // the default
-
-        // This enforces the EE_THREAD_NOT_REQUIRED contract by clearing
-        // ClrDebugState::m_allowGetThread in its scope.  That causes raw calls
-        // to GetThread() to assert, unless inside a temporary "don't worry it's ok" scope
-        // via BEGIN/END_GETTHREAD_ALLOWED.  Useful for enforcing our docs that
-        // state certain unmanaged API entrypoints (e.g., some from profiling API)
-        // are callable without an EE Thread in TLS.
-        EE_THREAD_Mask          = 0x0000C000,
-        EE_THREAD_Disabled      = 0x00000000,   // the default
-        EE_THREAD_Required      = 0x00004000,
-        EE_THREAD_Not_Required  = 0x00008000,
+        // Unused               = 0x00002000,
+        // Unused               = 0x00001000,
 
         // These enforce the CAN_TAKE_LOCK / CANNOT_TAKE_LOCK contracts
         CAN_TAKE_LOCK_Mask      = 0x00060000,
@@ -973,7 +890,7 @@ class BaseContract
         LOADS_TYPE_Disabled     = 0x00000000,   // the default
 
         ALL_Disabled            = THROWS_Disabled|GC_Disabled|FAULT_Disabled|MODE_Disabled|LOADS_TYPE_Disabled|
-                                  HOST_Disabled|EE_THREAD_Disabled|CAN_TAKE_LOCK_Disabled|CAN_RETAKE_LOCK_No_Disabled
+                                  CAN_TAKE_LOCK_Disabled|CAN_RETAKE_LOCK_No_Disabled
 
     };
 
@@ -1002,7 +919,7 @@ class BaseContract
         }
     }
 
-    void DoChecks(UINT testmask, __in_z const char *szFunction, __in_z const char *szFile, int lineNum);
+    void DoChecks(UINT testmask, _In_z_ const char *szFunction, _In_z_ const char *szFile, int lineNum);
     void Disable()
     {
     }
@@ -1051,7 +968,7 @@ class BaseContract
           }
     };
 
-    // PseudoTemplate is a class which can be instantated with a template-like syntax, resulting
+    // PseudoTemplate is a class which can be instantiated with a template-like syntax, resulting
     // in an expression which simply boxes a following value in a Box
 
     template <typename T>
@@ -1177,8 +1094,6 @@ enum ContractViolationBits
     FaultNotFatal   = 0x00000010,  // suppress INJECT_FAULT but not fault injection by harness
     LoadsTypeViolation      = 0x00000040,  // suppress LOADS_TYPE tags in this scope
     TakesLockViolation      = 0x00000080,  // suppress CAN_TAKE_LOCK tags in this scope
-    HostViolation           = 0x00000100,  // suppress HOST_CALLS tags in this scope
-    EEThreadViolation       = 0x00000200,  // suppress EE_THREAD_REQUIRED tags in this scope
 
     //These are not violation bits. We steal some bits out of the violation mask to serve as
     // general flag bits.
@@ -1721,7 +1636,7 @@ protected:
     FORCEINLINE void EnterInternal(UINT_PTR violationMask)
     {
         _ASSERTE(0 == (violationMask & ~(ThrowsViolation | GCViolation | ModeViolation | FaultViolation |
-            FaultNotFatal | HostViolation |
+            FaultNotFatal |
             TakesLockViolation | LoadsTypeViolation)) ||
             violationMask == AllViolation);
 
@@ -1792,9 +1707,6 @@ enum PermanentContractViolationReason
     ReasonIBC,                           // Code runs in IBC scenarios only and the violation is safe.
     ReasonNGEN,                          // Code runs in NGEN scenarios only and the violation is safe.
     ReasonProfilerCallout,               // Profiler implementers are guaranteed not to throw.
-    ReasonUnsupportedForSQLF1Profiling,  // This code path violates HOST_NOCALLS, but that's ok b/c SQL will never
-                                         // invoke it, and thus SQL/F1 profiling (the primary reason to enforce
-                                         // HOST_NOCALLS) is not in danger.
     ReasonRuntimeReentrancy,             // e.g. SafeQueryInterface
     ReasonShutdownOnly,                  // Code path only runs as part of Shutdown and the violation is safe.
     ReasonSOTolerance,                   // We would like to redesign SO contracts anyways
@@ -2060,116 +1972,6 @@ inline ClrDebugState *GetClrDebugState(BOOL fAlloc)
 
     return NULL;
 }
-#endif // ENABLE_CONTRACTS_IMPL
-
-#ifdef ENABLE_CONTRACTS_IMPL
-
-class HostNoCallHolder
-{
-    public:
-    DEBUG_NOINLINE HostNoCallHolder()
-        {
-        SCAN_SCOPE_BEGIN;
-        STATIC_CONTRACT_HOST_NOCALLS;
-
-            m_clrDebugState = GetClrDebugState();
-            m_previousState = m_clrDebugState->SetHostCaller(FALSE);
-        }
-
-    DEBUG_NOINLINE ~HostNoCallHolder()
-        {
-        SCAN_SCOPE_END;
-
-            m_clrDebugState->SetHostCaller(m_previousState);
-        }
-
-     private:
-        BOOL m_previousState;
-        ClrDebugState* m_clrDebugState;
-
-};
-
-#define BEGIN_HOST_NOCALL_CODE \
-    {                             \
-        HostNoCallHolder __hostNoCallHolder;        \
-        CantAllocHolder __cantAlloc;
-
-#define END_HOST_NOCALL_CODE   \
-    }
-
-#else // ENABLE_CONTRACTS_IMPL
-#define BEGIN_HOST_NOCALL_CODE                      \
-    {                                               \
-        CantAllocHolder __cantAlloc;                \
-
-#define END_HOST_NOCALL_CODE                        \
-    }
-#endif
-
-#ifdef ENABLE_CONTRACTS_IMPL
-
-class GetThreadAllowedHolder
-{
-    public:
-    GetThreadAllowedHolder(BOOL newState)
-        {
-        m_clrDebugState = ::GetClrDebugState();
-        m_previousState = m_clrDebugState->SetGetThreadAllowed(newState);
-        }
-
-    ~GetThreadAllowedHolder()
-        {
-        m_clrDebugState->SetGetThreadAllowed(m_previousState);
-        }
-
-private:
-    BOOL m_previousState;
-    ClrDebugState* m_clrDebugState;
-};
-
-// When in an EE_THREAD_NOT_REQUIRED contracted scope, it's expected that the
-// function does not assume an EE Thread object is available in TLS.  Either
-// GetThread() is never called, or any code path that requires a Thread
-// has another code path that deals with the absence of a Thread.  Any call to
-// to GetThread() must be bracketed with BEGIN_GETTHREAD_ALLOWED /
-// END_GETTHREAD_ALLOWED to avoid bogus asserts (the short-form
-// GetThreadNULLOk() may be used as well).  However, this is only allowed if visual
-// inspection of the call site makes it patently obvious that the function deals
-// appropriately with the GetThread() == NULL case (or that case has already been
-// dealt with and control has exited before the BEGIN_GETTHREAD_ALLOWED /
-// END_GETTHREAD_ALLOWED block.
-//
-// These use holder objects, which causes the compiler to generate EH code and prevent
-// inlining.  So try to avoid these in small, downstream functions (like inline
-// EE Thread member functions).  Use the _IN_NO_THROW_REGION variants below instead.
-
-#define BEGIN_GETTHREAD_ALLOWED                                                 \
-    {                                                                           \
-        GetThreadAllowedHolder __getThreadAllowedHolder(TRUE);                  \
-
-#define END_GETTHREAD_ALLOWED                                                   \
-    }
-
-// These are lighter-weight versions of BEGIN_GETTHREAD_ALLOWED /
-// END_GETTHREAD_ALLOWED.  These don't use holders, so be sure only to
-// use these to bracket code that won't throw exceptions
-#define BEGIN_GETTHREAD_ALLOWED_IN_NO_THROW_REGION                                       \
-    {                                                                                       \
-        ClrDebugState * __clrDebugState = ::GetClrDebugState();                   \
-        BOOL __previousState = __clrDebugState->SetGetThreadAllowed(TRUE);      \
-
-#define END_GETTHREAD_ALLOWED_IN_NO_THROW_REGION                                         \
-        __clrDebugState->SetGetThreadAllowed(__previousState);                  \
-    }
-
-#else // ENABLE_CONTRACTS_IMPL
-#define BEGIN_GETTHREAD_ALLOWED
-#define END_GETTHREAD_ALLOWED
-#define BEGIN_GETTHREAD_ALLOWED_IN_NO_THROW_REGION
-#define END_GETTHREAD_ALLOWED_IN_NO_THROW_REGION
-#endif
-
-#if defined(ENABLE_CONTRACTS_IMPL)
 
 // Macros to indicate we're taking or releasing locks
 
@@ -2258,7 +2060,7 @@ private:
 // Eventually, all those bugs should be fixed this holder can be completely removed.
 //
 // It is also the case that we disallow allocations when any thread is OS suspended
-// This happens for a short time when we are suspending the EE.   We supress both
+// This happens for a short time when we are suspending the EE.   We suppress both
 // of these.
 //
 // @todo- ideally this would be rolled into the ContractViolation.

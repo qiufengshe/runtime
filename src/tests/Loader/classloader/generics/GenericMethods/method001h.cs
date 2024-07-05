@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using Xunit;
 
 public class Base<U>
 {
@@ -38,7 +39,7 @@ public class FooString : Base<string>
 		
 }
 
-public class Test
+public class Test_method001h
 {
 	public static int counter = 0;
 	public static bool result = true;
@@ -53,7 +54,8 @@ public class Test
 	
 	}
 	
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		Base<int> fInt = new FooInt();
 		Eval(fInt.Function<int>(1).Equals(1));

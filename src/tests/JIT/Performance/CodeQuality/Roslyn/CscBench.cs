@@ -5,13 +5,11 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
-using Microsoft.Xunit.Performance;
 using System;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
-
-[assembly: OptimizeForBenchmarks]
+using Xunit;
 
 public static class CscBench
 {
@@ -66,23 +64,6 @@ public static class CscBench
         return result;
     }
 
-    [Benchmark]
-    public static void CompileTest()
-    {
-        if (!FindMscorlib())
-        {
-            throw new Exception("This test requires CORE_ROOT to be set");
-        }
-
-        foreach (var iteration in Benchmark.Iterations)
-        {
-            using (iteration.StartMeasurement())
-            {
-                CompileBench();
-            }
-        }
-    }
-
     public static TextSpan GetSpanBetweenMarkers(SyntaxTree tree)
     {
         SyntaxTrivia startComment = tree
@@ -118,7 +99,7 @@ public static class CscBench
     public static bool DataflowBench()
     {
         var text = @"
-class C {
+public class C {
     public void F(int x)
     {
         int a;
@@ -154,22 +135,6 @@ class C {
         return result;
     }
 
-    [Benchmark]
-    public static void DatflowTest()
-    {
-        if (!FindMscorlib())
-        {
-            throw new Exception("This test requires CORE_ROOT to be set");
-        }
-        foreach (var iteration in Benchmark.Iterations)
-        {
-            using (iteration.StartMeasurement())
-            {
-                DataflowBench();
-            }
-        }
-    }
-
     static bool Bench()
     {
         bool result = true;
@@ -178,7 +143,8 @@ class C {
         return result;
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         bool result = true;
         if (!FindMscorlib())

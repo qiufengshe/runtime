@@ -3,6 +3,7 @@
 
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -17,7 +18,7 @@ namespace System.Linq.Tests
         {
             MethodInfo enumerableNotInQueryable = GetMissingExtensionMethod(typeof(Enumerable), typeof(Queryable), GetExcludedMethods());
 
-            Assert.True(enumerableNotInQueryable == null, string.Format("Enumerable method {0} not defined by Queryable", enumerableNotInQueryable));
+            Assert.True(enumerableNotInQueryable is null, string.Format("Enumerable method {0} not defined by Queryable", enumerableNotInQueryable));
 
             MethodInfo queryableNotInEnumerable = GetMissingExtensionMethod(
                 typeof(Queryable),
@@ -27,7 +28,7 @@ namespace System.Linq.Tests
                  }
                 );
 
-            Assert.True(queryableNotInEnumerable == null, string.Format("Queryable method {0} not defined by Enumerable", queryableNotInEnumerable));
+            Assert.True(queryableNotInEnumerable is null, string.Format("Queryable method {0} not defined by Enumerable", queryableNotInEnumerable));
         }
 
         // If a change to Enumerable has required a change to the exception list in this test
@@ -41,15 +42,19 @@ namespace System.Linq.Tests
                 nameof(Enumerable.ToArray),
                 nameof(Enumerable.AsEnumerable),
                 nameof(Enumerable.ToList),
+                nameof(Enumerable.ToHashSet),
+                nameof(Enumerable.TryGetNonEnumeratedCount),
                 "Fold",
                 "LeftJoin",
-                "ToHashSet"
             };
 
             return result;
         }
 
-        private static MethodInfo GetMissingExtensionMethod(Type a, Type b, IEnumerable<string> excludedMethods)
+        private static MethodInfo GetMissingExtensionMethod(
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods)] Type a,
+            [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods)] Type b,
+            IEnumerable<string> excludedMethods)
         {
             var dex = new HashSet<string>(excludedMethods);
 

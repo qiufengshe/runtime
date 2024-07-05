@@ -3,8 +3,9 @@
 
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.CompilerServices;
-
+using System.Text;
 using Xunit;
 
 namespace System.Numerics.Tests
@@ -224,7 +225,7 @@ namespace System.Numerics.Tests
                 foreach (double invalidImaginary in s_invalidDoubleValues)
                 {
                     yield return new object[] { RandomPositiveDouble(), invalidImaginary, Math.Abs(invalidImaginary) }; // Invalid imaginary
-                    yield return new object[] { invalidReal, invalidImaginary, (double.IsNaN(invalidReal) || double.IsNaN(invalidImaginary)) ? double.NaN : double.PositiveInfinity }; // Invalid real, invalid imaginary
+                    yield return new object[] { invalidReal, invalidImaginary, (double.IsNaN(invalidReal) && double.IsNaN(invalidImaginary)) ? double.NaN : double.PositiveInfinity }; // Invalid real, invalid imaginary
                 }
             }
 
@@ -244,11 +245,16 @@ namespace System.Numerics.Tests
             yield return new object[] { double.MaxValue, double.NegativeInfinity, double.PositiveInfinity };
             yield return new object[] { double.PositiveInfinity, double.NegativeInfinity, double.PositiveInfinity };
 
-            // NaN in any slot returns NaN.
+            // NaN and +-inf returns inf
+            yield return new object[] { double.NaN, double.NegativeInfinity, double.PositiveInfinity };
+            yield return new object[] { double.NaN, double.PositiveInfinity, double.PositiveInfinity };
+            yield return new object[] { double.PositiveInfinity, double.NaN, double.PositiveInfinity };
+            yield return new object[] { double.NegativeInfinity, double.NaN, double.PositiveInfinity };
+
+            // Otherwise, NaN in any slot returns NaN.
             yield return new object[] { double.NaN, 0, double.NaN };  // Regression test: Complex.Abs() is inconsistent on NaN / Complex
             yield return new object[] { 0.0, double.NaN, double.NaN };
             yield return new object[] { double.MaxValue, double.NaN, double.NaN };
-            yield return new object[] { double.NaN, double.NegativeInfinity, double.NaN };
             yield return new object[] { double.NaN, double.NaN, double.NaN };
         }
 
@@ -1022,7 +1028,6 @@ namespace System.Numerics.Tests
             VerifyMagnitudePhaseProperties(complex, magnitude, phase);
         }
 
-        [Fact]
         public static IEnumerable<object[]> Log_TestData()
         {
             yield return new object[] { 1, 0, 0, 0 };
@@ -1560,12 +1565,20 @@ namespace System.Numerics.Tests
             yield return new object[] { RandomPositiveDouble(), double.NegativeInfinity, double.PositiveInfinity, double.NegativeInfinity };
             yield return new object[] { RandomNegativeDouble(), double.NegativeInfinity, double.PositiveInfinity, double.NegativeInfinity };
 
-            // NaN in any component produces NaNs in both components (except arguably on real line).
+            // (Nan, +-inf) returns (inf, +-inf)
+            yield return new object[] { double.NaN, double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity };
+            yield return new object[] { double.NaN, double.NegativeInfinity, double.PositiveInfinity, double.NegativeInfinity };
+
+            // (inf, NaN) returns (inf, NaN)
+            yield return new object[] { double.PositiveInfinity, double.NaN, double.NaN, double.PositiveInfinity };
+
+            // (-inf, NaN) returns (NaN, inf)
+            yield return new object[] { double.NegativeInfinity, double.NaN, double.PositiveInfinity, double.NaN };
+
+            // Otherwise, NaN in any component produces NaNs in both components.
             yield return new object[] { 0.0, double.NaN, double.NaN, double.NaN };
             yield return new object[] { double.MaxValue, double.NaN, double.NaN, double.NaN };
-            yield return new object[] { double.NegativeInfinity, double.NaN, double.NaN, double.NaN };
             yield return new object[] { double.NaN, -double.MaxValue, double.NaN, double.NaN };
-            yield return new object[] { double.NaN, double.PositiveInfinity, double.NaN, double.NaN };
             yield return new object[] { double.NaN, double.NaN, double.NaN, double.NaN };
 
         }
@@ -1730,25 +1743,79 @@ namespace System.Numerics.Tests
         public static void ToStringTest(double real, double imaginary)
         {
             var complex = new Complex(real, imaginary);
-
-            string expected = "(" + real.ToString() + ", " + imaginary.ToString() + ")";
-            string actual = complex.ToString();
-            Assert.Equal(expected, actual);
-
             NumberFormatInfo numberFormatInfo = CultureInfo.CurrentCulture.NumberFormat;
-            expected = "(" + real.ToString(numberFormatInfo) + ", " + imaginary.ToString(numberFormatInfo) + ")";
-            actual = complex.ToString(numberFormatInfo);
-            Assert.Equal(expected, complex.ToString(numberFormatInfo));
+
+            Assert.Equal($"<{real}; {imaginary}>", complex.ToString());
+
+            Assert.Equal($"<{real.ToString(numberFormatInfo)}; {imaginary.ToString(numberFormatInfo)}>", complex.ToString(numberFormatInfo));
+            Assert.Equal($"<{real.ToString((string)null)}; {imaginary.ToString((string)null)}>", complex.ToString((string)null));
+            Assert.Equal($"<{real.ToString((string)null, numberFormatInfo)}; {imaginary.ToString((string)null, numberFormatInfo)}>", complex.ToString((string)null, numberFormatInfo));
 
             foreach (string format in s_supportedStandardNumericFormats)
             {
-                expected = "(" + real.ToString(format) + ", " + imaginary.ToString(format) + ")";
-                actual = complex.ToString(format);
-                Assert.Equal(expected, actual);
+                Assert.Equal($"<{real.ToString(format)}; {imaginary.ToString(format)}>", complex.ToString(format));
+                Assert.Equal($"<{real.ToString(format, numberFormatInfo)}; {imaginary.ToString(format, numberFormatInfo)}>", complex.ToString(format, numberFormatInfo));
+            }
+        }
 
-                expected = "(" + real.ToString(format, numberFormatInfo) + ", " + imaginary.ToString(format, numberFormatInfo) + ")";
-                actual = complex.ToString(format, numberFormatInfo);
-                Assert.Equal(expected, actual);
+        [Theory]
+        [MemberData(nameof(Boundaries_2_TestData))]
+        [MemberData(nameof(Primitives_2_TestData))]
+        [MemberData(nameof(Random_2_TestData))]
+        [MemberData(nameof(SmallRandom_2_TestData))]
+        [MemberData(nameof(Invalid_2_TestData))]
+        public static void TryFormatTest(double real, double imaginary)
+        {
+            var complex = new Complex(real, imaginary);
+
+            // UTF16
+            {
+                foreach (NumberFormatInfo numberFormatInfo in new[] { CultureInfo.CurrentCulture.NumberFormat, null })
+                {
+                    foreach (string format in s_supportedStandardNumericFormats.Append(null))
+                    {
+                        string expected = $"<{real.ToString(format, numberFormatInfo)}; {imaginary.ToString(format, numberFormatInfo)}>";
+                        int charsWritten;
+
+                        // Just right or larger than required storage
+                        for (int additional = 0; additional < 2; additional++)
+                        {
+                            char[] chars = new char[expected.Length + additional];
+                            Assert.True(complex.TryFormat(chars, out charsWritten, format, numberFormatInfo));
+                            Assert.Equal(expected.Length, charsWritten);
+                            Assert.Equal(expected, new string(expected.AsSpan(0, expected.Length)));
+                        }
+
+                        // Too small storage
+                        Assert.False(complex.TryFormat(new char[expected.Length - 1], out charsWritten, format, numberFormatInfo));
+                        Assert.Equal(0, charsWritten);
+                    }
+                }
+            }
+
+            // UTF8
+            {
+                foreach (NumberFormatInfo numberFormatInfo in new[] { CultureInfo.CurrentCulture.NumberFormat, null })
+                {
+                    foreach (string format in s_supportedStandardNumericFormats.Append(null))
+                    {
+                        byte[] expected = Encoding.UTF8.GetBytes($"<{real.ToString(format, numberFormatInfo)}; {imaginary.ToString(format, numberFormatInfo)}>");
+                        int bytesWritten;
+
+                        // Just right or larger than required storage
+                        for (int additional = 0; additional < 2; additional++)
+                        {
+                            byte[] bytes = new byte[expected.Length + additional];
+                            Assert.True(complex.TryFormat(bytes, out bytesWritten, format, numberFormatInfo));
+                            Assert.Equal(expected.Length, bytesWritten);
+                            Assert.Equal(expected, bytes.AsSpan(0, expected.Length).ToArray());
+                        }
+
+                        // Too small storage
+                        Assert.False(complex.TryFormat(new byte[expected.Length - 1], out bytesWritten, format, numberFormatInfo));
+                        Assert.Equal(0, bytesWritten);
+                    }
+                }
             }
         }
 

@@ -3,6 +3,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Security;
+using Xunit;
 
 
 [SecuritySafeCritical]
@@ -226,7 +227,7 @@ public class MarshalSizeOf1
             obj.TestDouble = TestLibrary.Generator.GetDouble(-55);
             int expectedSize;
 
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || (RuntimeInformation.ProcessArchitecture != Architecture.X86))
+            if (OperatingSystem.IsWindows() || (RuntimeInformation.ProcessArchitecture != Architecture.X86))
             {
                 expectedSize = 16; // sizeof(double) + sizeof(int) + padding
             }
@@ -499,7 +500,8 @@ public class MarshalSizeOf1
     #endregion
     #endregion
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         MarshalSizeOf1 test = new MarshalSizeOf1();
 

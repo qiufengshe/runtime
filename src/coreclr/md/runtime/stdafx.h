@@ -13,12 +13,12 @@
 
 #include <crtwrap.h>
 #include <winwrap.h>
+#include <algorithm>
 #include <utilcode.h>
 
 #include <cor.h>
 #include <corpriv.h>
 
-#include "../hotdata/hotheap.h"
 #include <metamodelro.h>
 #include <liteweightstgdb.h>
 

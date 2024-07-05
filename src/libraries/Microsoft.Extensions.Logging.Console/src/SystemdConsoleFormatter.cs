@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -9,9 +10,9 @@ using Microsoft.Extensions.Options;
 
 namespace Microsoft.Extensions.Logging.Console
 {
-    internal class SystemdConsoleFormatter : ConsoleFormatter, IDisposable
+    internal sealed class SystemdConsoleFormatter : ConsoleFormatter, IDisposable
     {
-        private IDisposable _optionsReloadToken;
+        private readonly IDisposable? _optionsReloadToken;
 
         public SystemdConsoleFormatter(IOptionsMonitor<ConsoleFormatterOptions> options)
             : base(ConsoleFormatterNames.Systemd)
@@ -20,6 +21,7 @@ namespace Microsoft.Extensions.Logging.Console
             _optionsReloadToken = options.OnChange(ReloadLoggerOptions);
         }
 
+        [MemberNotNull(nameof(FormatterOptions))]
         private void ReloadLoggerOptions(ConsoleFormatterOptions options)
         {
             FormatterOptions = options;
@@ -32,17 +34,22 @@ namespace Microsoft.Extensions.Logging.Console
 
         internal ConsoleFormatterOptions FormatterOptions { get; set; }
 
-        public override void Write<TState>(in LogEntry<TState> logEntry, IExternalScopeProvider scopeProvider, TextWriter textWriter)
+        public override void Write<TState>(in LogEntry<TState> logEntry, IExternalScopeProvider? scopeProvider, TextWriter textWriter)
         {
             string message = logEntry.Formatter(logEntry.State, logEntry.Exception);
             if (logEntry.Exception == null && message == null)
             {
                 return;
             }
-            LogLevel logLevel = logEntry.LogLevel;
-            string category = logEntry.Category;
-            int eventId = logEntry.EventId.Id;
-            Exception exception = logEntry.Exception;
+
+            // We extract most of the work into a non-generic method to save code size. If this was left in the generic
+            // method, we'd get generic specialization for all TState parameters, but that's unnecessary.
+            WriteInternal(scopeProvider, textWriter, message, logEntry.LogLevel, logEntry.Category, logEntry.EventId.Id, logEntry.Exception);
+        }
+
+        private void WriteInternal(IExternalScopeProvider? scopeProvider, TextWriter textWriter, string message, LogLevel logLevel, string category,
+            int eventId, Exception? exception)
+        {
             // systemd reads messages from standard out line-by-line in a '<pri>message' format.
             // newline characters are treated as message delimiters, so we must replace them.
             // Messages longer than the journal LineMax setting (default: 48KB) are cropped.
@@ -54,7 +61,7 @@ namespace Microsoft.Extensions.Logging.Console
             textWriter.Write(logLevelString);
 
             // timestamp
-            string timestampFormat = FormatterOptions.TimestampFormat;
+            string? timestampFormat = FormatterOptions.TimestampFormat;
             if (timestampFormat != null)
             {
                 DateTimeOffset dateTimeOffset = GetCurrentDateTime();
@@ -116,7 +123,7 @@ namespace Microsoft.Extensions.Logging.Console
             };
         }
 
-        private void WriteScopeInformation(TextWriter textWriter, IExternalScopeProvider scopeProvider)
+        private void WriteScopeInformation(TextWriter textWriter, IExternalScopeProvider? scopeProvider)
         {
             if (FormatterOptions.IncludeScopes && scopeProvider != null)
             {

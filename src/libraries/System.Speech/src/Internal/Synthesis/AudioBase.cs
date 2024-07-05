@@ -121,7 +121,22 @@ namespace System.Speech.Internal.Synthesis
                     try
                     {
                         byte[] data = new byte[(int)audio._stream.Length];
-                        audio._stream.Read(data, 0, data.Length);
+
+#if NET
+                        audio._stream.ReadExactly(data);
+#else
+                        int totalRead = 0;
+                        while (totalRead < data.Length)
+                        {
+                            int bytesRead = audio._stream.Read(data, totalRead, data.Length - totalRead);
+                            if (bytesRead <= 0)
+                            {
+                                throw new EndOfStreamException();
+                            }
+                            totalRead += bytesRead;
+                        }
+#endif
+
                         Play(data);
                     }
                     finally
@@ -201,7 +216,7 @@ namespace System.Speech.Internal.Synthesis
 
             if (riff._id != RIFF_MARKER && riff._type != WAVE_MARKER)
             {
-                return null; ;
+                return null;
             }
 
             BLOCKHDR block = new();
@@ -210,7 +225,7 @@ namespace System.Speech.Internal.Synthesis
 
             if (block._id != FMT_MARKER)
             {
-                return null; ;
+                return null;
             }
 
             // If the format is of type WAVEFORMAT then fake a cbByte with a length of zero
@@ -234,10 +249,10 @@ namespace System.Speech.Internal.Synthesis
             BLOCKHDR block = new(0);
             DATAHDR dataHdr = new(0);
 
-            int cRiff = Marshal.SizeOf(riff);
-            int cBlock = Marshal.SizeOf(block);
+            int cRiff = Marshal.SizeOf<RIFFHDR>();
+            int cBlock = Marshal.SizeOf<BLOCKHDR>();
             int cWaveEx = waveEx.Length;// Marshal.SizeOf (waveEx); // The CLR automatically pad the waveEx structure to dword boundary. Force 16.
-            int cDataHdr = Marshal.SizeOf(dataHdr);
+            int cDataHdr = Marshal.SizeOf<DATAHDR>();
 
             int total = cRiff + cBlock + cWaveEx + cDataHdr;
 

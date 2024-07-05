@@ -8,8 +8,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Text;
-using System.Text.Unicode;
-using Internal.Runtime.CompilerServices;
 
 namespace System.Globalization
 {
@@ -64,11 +62,9 @@ namespace System.Globalization
         /// </summary>
         public static CompareInfo GetCompareInfo(int culture, Assembly assembly)
         {
+            ArgumentNullException.ThrowIfNull(assembly);
+
             // Parameter checking.
-            if (assembly == null)
-            {
-                throw new ArgumentNullException(nameof(assembly));
-            }
             if (assembly != typeof(object).Module.Assembly)
             {
                 throw new ArgumentException(SR.Argument_OnlyMscorlib, nameof(assembly));
@@ -84,14 +80,9 @@ namespace System.Globalization
         /// </summary>
         public static CompareInfo GetCompareInfo(string name, Assembly assembly)
         {
-            if (name == null)
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
-            if (assembly == null)
-            {
-                throw new ArgumentNullException(nameof(assembly));
-            }
+            ArgumentNullException.ThrowIfNull(name);
+            ArgumentNullException.ThrowIfNull(assembly);
+
             if (assembly != typeof(object).Module.Assembly)
             {
                 throw new ArgumentException(SR.Argument_OnlyMscorlib, nameof(assembly));
@@ -119,25 +110,19 @@ namespace System.Globalization
         /// </summary>
         public static CompareInfo GetCompareInfo(string name)
         {
-            if (name == null)
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
+            ArgumentNullException.ThrowIfNull(name);
 
             return CultureInfo.GetCultureInfo(name).CompareInfo;
         }
 
         public static bool IsSortable(char ch)
         {
-            return IsSortable(MemoryMarshal.CreateReadOnlySpan(ref ch, 1));
+            return IsSortable(new ReadOnlySpan<char>(in ch));
         }
 
         public static bool IsSortable(string text)
         {
-            if (text == null)
-            {
-                throw new ArgumentNullException(nameof(text));
-            }
+            ArgumentNullException.ThrowIfNull(text);
 
             return IsSortable(text.AsSpan());
         }
@@ -191,7 +176,7 @@ namespace System.Globalization
             }
             else
             {
-                IcuInitSortHandle();
+                IcuInitSortHandle(culture.InteropName!);
             }
         }
 
@@ -300,12 +285,10 @@ namespace System.Globalization
             return retVal;
         }
 
-        internal int CompareOptionIgnoreCase(ReadOnlySpan<char> string1, ReadOnlySpan<char> string2)
-        {
-            return GlobalizationMode.Invariant ?
-                Ordinal.CompareIgnoreCaseInvariantMode(ref MemoryMarshal.GetReference(string1), string1.Length, ref MemoryMarshal.GetReference(string2), string2.Length) :
+        internal int CompareOptionIgnoreCase(ReadOnlySpan<char> string1, ReadOnlySpan<char> string2) =>
+             GlobalizationMode.Invariant ?
+                InvariantModeCasing.CompareStringIgnoreCase(ref MemoryMarshal.GetReference(string1), string1.Length, ref MemoryMarshal.GetReference(string2), string2.Length) :
                 CompareStringCore(string1, string2, CompareOptions.IgnoreCase);
-        }
 
         /// <summary>
         /// Compares the specified regions of the two strings with the given
@@ -398,15 +381,11 @@ namespace System.Globalization
             // We know a bounds check error occurred. Now we just need to figure
             // out the correct error message to surface.
 
-            if (length1 < 0 || length2 < 0)
-            {
-                throw new ArgumentOutOfRangeException((length1 < 0) ? nameof(length1) : nameof(length2), SR.ArgumentOutOfRange_NeedPosNum);
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(length1);
+            ArgumentOutOfRangeException.ThrowIfNegative(length2);
 
-            if (offset1 < 0 || offset2 < 0)
-            {
-                throw new ArgumentOutOfRangeException((offset1 < 0) ? nameof(offset1) : nameof(offset2), SR.ArgumentOutOfRange_NeedPosNum);
-            }
+            ArgumentOutOfRangeException.ThrowIfNegative(offset1);
+            ArgumentOutOfRangeException.ThrowIfNegative(offset2);
 
             if (offset1 > (string1 == null ? 0 : string1.Length) - length1)
             {
@@ -508,6 +487,13 @@ namespace System.Globalization
         private unsafe int CompareStringCore(ReadOnlySpan<char> string1, ReadOnlySpan<char> string2, CompareOptions options) =>
             GlobalizationMode.UseNls ?
                 NlsCompareString(string1, string2, options) :
+#if TARGET_BROWSER
+            GlobalizationMode.Hybrid ?
+                JsCompareString(string1, string2, options) :
+#elif TARGET_MACCATALYST || TARGET_IOS || TARGET_TVOS
+            GlobalizationMode.Hybrid ?
+                CompareStringNative(string1, string2, options) :
+#endif
                 IcuCompareString(string1, string2, options);
 
         /// <summary>
@@ -629,7 +615,12 @@ namespace System.Globalization
             else
             {
                 // Linguistic comparison requested and we don't need to special-case any args.
-
+#if TARGET_BROWSER || TARGET_MACCATALYST || TARGET_IOS || TARGET_TVOS
+                if (GlobalizationMode.Hybrid)
+                {
+                    throw new PlatformNotSupportedException(SR.PlatformNotSupported_HybridGlobalizationWithMatchLength);
+                }
+#endif
                 int tempMatchLength = 0;
                 matched = StartsWithCore(source, prefix, options, &tempMatchLength);
                 matchLength = tempMatchLength;
@@ -641,6 +632,10 @@ namespace System.Globalization
         private unsafe bool StartsWithCore(ReadOnlySpan<char> source, ReadOnlySpan<char> prefix, CompareOptions options, int* matchLengthPtr) =>
             GlobalizationMode.UseNls ?
                 NlsStartsWith(source, prefix, options, matchLengthPtr) :
+#if TARGET_BROWSER
+            GlobalizationMode.Hybrid ?
+                JsStartsWith(source, prefix, options) :
+#endif
                 IcuStartsWith(source, prefix, options, matchLengthPtr);
 
         public bool IsPrefix(string source, string prefix)
@@ -767,7 +762,12 @@ namespace System.Globalization
             else
             {
                 // Linguistic comparison requested and we don't need to special-case any args.
-
+#if TARGET_BROWSER || TARGET_MACCATALYST || TARGET_IOS || TARGET_TVOS
+                if (GlobalizationMode.Hybrid)
+                {
+                    throw new PlatformNotSupportedException(SR.PlatformNotSupported_HybridGlobalizationWithMatchLength);
+                }
+#endif
                 int tempMatchLength = 0;
                 matched = EndsWithCore(source, suffix, options, &tempMatchLength);
                 matchLength = tempMatchLength;
@@ -784,6 +784,10 @@ namespace System.Globalization
         private unsafe bool EndsWithCore(ReadOnlySpan<char> source, ReadOnlySpan<char> suffix, CompareOptions options, int* matchLengthPtr) =>
             GlobalizationMode.UseNls ?
                 NlsEndsWith(source, suffix, options, matchLengthPtr) :
+#if TARGET_BROWSER
+            GlobalizationMode.Hybrid ?
+                JsEndsWith(source, suffix, options) :
+#endif
                 IcuEndsWith(source, suffix, options, matchLengthPtr);
 
         /// <summary>
@@ -811,7 +815,7 @@ namespace System.Globalization
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            return IndexOf(source, MemoryMarshal.CreateReadOnlySpan(ref value, 1), options);
+            return IndexOf(source, new ReadOnlySpan<char>(in value), options);
         }
 
         public int IndexOf(string source, string value, CompareOptions options)
@@ -883,7 +887,7 @@ namespace System.Globalization
 
                 if ((uint)startIndex > (uint)source.Length)
                 {
-                    ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.startIndex, ExceptionResource.ArgumentOutOfRange_Index);
+                    ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.startIndex, ExceptionResource.ArgumentOutOfRange_IndexMustBeLessOrEqual);
                 }
                 else
                 {
@@ -891,7 +895,7 @@ namespace System.Globalization
                 }
             }
 
-            int result = IndexOf(sourceSpan, MemoryMarshal.CreateReadOnlySpan(ref value, 1), options);
+            int result = IndexOf(sourceSpan, new ReadOnlySpan<char>(in value), options);
             if (result >= 0)
             {
                 result += startIndex;
@@ -917,7 +921,7 @@ namespace System.Globalization
 
                 if ((uint)startIndex > (uint)source.Length)
                 {
-                    ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.startIndex, ExceptionResource.ArgumentOutOfRange_Index);
+                    ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.startIndex, ExceptionResource.ArgumentOutOfRange_IndexMustBeLessOrEqual);
                 }
                 else
                 {
@@ -1117,6 +1121,10 @@ namespace System.Globalization
         private unsafe int IndexOfCore(ReadOnlySpan<char> source, ReadOnlySpan<char> target, CompareOptions options, int* matchLengthPtr, bool fromBeginning) =>
             GlobalizationMode.UseNls ?
                 NlsIndexOfCore(source, target, options, matchLengthPtr, fromBeginning) :
+#if TARGET_BROWSER
+            GlobalizationMode.Hybrid ?
+                JsIndexOfCore(source, target, options, matchLengthPtr, fromBeginning) :
+#endif
                 IcuIndexOfCore(source, target, options, matchLengthPtr, fromBeginning);
 
         /// <summary>
@@ -1144,7 +1152,7 @@ namespace System.Globalization
                 ThrowHelper.ThrowArgumentNullException(ExceptionArgument.source);
             }
 
-            return LastIndexOf(source, MemoryMarshal.CreateReadOnlySpan(ref value, 1), options);
+            return LastIndexOf(source, new ReadOnlySpan<char>(in value), options);
         }
 
         public int LastIndexOf(string source, string value, CompareOptions options)
@@ -1228,7 +1236,7 @@ namespace System.Globalization
                 }
                 else
                 {
-                    ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.startIndex, ExceptionResource.ArgumentOutOfRange_Index);
+                    ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.startIndex, ExceptionResource.ArgumentOutOfRange_IndexMustBeLess);
                 }
             }
 
@@ -1239,7 +1247,7 @@ namespace System.Globalization
                 ThrowHelper.ThrowCountArgumentOutOfRange_ArgumentOutOfRange_Count();
             }
 
-            int retVal = LastIndexOf(sourceSpan, MemoryMarshal.CreateReadOnlySpan(ref value, 1), options);
+            int retVal = LastIndexOf(sourceSpan, new ReadOnlySpan<char>(in value), options);
             if (retVal >= 0)
             {
                 retVal += startIndex;
@@ -1288,7 +1296,7 @@ namespace System.Globalization
                 }
                 else
                 {
-                    ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.startIndex, ExceptionResource.ArgumentOutOfRange_Index);
+                    ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.startIndex, ExceptionResource.ArgumentOutOfRange_IndexMustBeLess);
                 }
             }
 
@@ -1479,9 +1487,9 @@ namespace System.Globalization
         }
 
         private int GetSortKeyCore(ReadOnlySpan<char> source, Span<byte> destination, CompareOptions options) =>
-           GlobalizationMode.UseNls ?
-               NlsGetSortKey(source, destination, options) :
-               IcuGetSortKey(source, destination, options);
+            GlobalizationMode.UseNls ?
+                NlsGetSortKey(source, destination, options) :
+                IcuGetSortKey(source, destination, options);
 
         /// <summary>
         /// Returns the length (in bytes) of the sort key that would be produced from the specified input.
@@ -1512,11 +1520,11 @@ namespace System.Globalization
         }
 
         private int GetSortKeyLengthCore(ReadOnlySpan<char> source, CompareOptions options) =>
-          GlobalizationMode.UseNls ?
+            GlobalizationMode.UseNls ?
               NlsGetSortKeyLength(source, options) :
               IcuGetSortKeyLength(source, options);
 
-        public override bool Equals(object? value)
+        public override bool Equals([NotNullWhen(true)] object? value)
         {
             return value is CompareInfo otherCompareInfo
                 && Name == otherCompareInfo.Name;
@@ -1556,12 +1564,7 @@ namespace System.Globalization
                     return GetHashCodeOfStringCore(source, options);
                 }
 
-                if ((options & CompareOptions.IgnoreCase) == 0)
-                {
-                    return string.GetHashCode(source);
-                }
-
-                return string.GetHashCodeOrdinalIgnoreCase(source);
+                return InvariantGetHashCode(source, options);
             }
             else
             {
@@ -1607,6 +1610,12 @@ namespace System.Globalization
                     }
                     else
                     {
+#if TARGET_BROWSER || TARGET_MACCATALYST || TARGET_IOS || TARGET_TVOS
+                if (GlobalizationMode.Hybrid)
+                {
+                    throw new PlatformNotSupportedException(GetPNSEText("SortVersion"));
+                }
+#endif
                         m_SortVersion = GlobalizationMode.UseNls ? NlsGetSortVersion() : IcuGetSortVersion();
                     }
                 }
@@ -1616,5 +1625,10 @@ namespace System.Globalization
         }
 
         public int LCID => CultureInfo.GetCultureInfo(Name).LCID;
+
+#if TARGET_BROWSER || TARGET_MACCATALYST || TARGET_IOS || TARGET_TVOS
+        private static string GetPNSEText(string funcName) => SR.Format(SR.PlatformNotSupported_HybridGlobalization, funcName);
+        private static string GetPNSEWithReason(string funcName, string reason) => SR.Format(SR.PlatformNotSupportedWithReason_HybridGlobalization, funcName, reason);
+#endif
     }
 }

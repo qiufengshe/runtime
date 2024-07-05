@@ -80,6 +80,7 @@ namespace Microsoft.Extensions.DependencyInjection
         }
 
         [Fact] // Verifies that AddHttpClient does not override any existing registration
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/50873", TestPlatforms.Android)]
         public void AddHttpClient_DoesNotRegisterDefaultClientIfAlreadyRegistered()
         {
             // Arrange
@@ -130,6 +131,30 @@ namespace Microsoft.Extensions.DependencyInjection
 
             // Act1
             serviceCollection.AddHttpClient("example.com", c => c.BaseAddress = new Uri("http://example.com/"));
+
+            var services = serviceCollection.BuildServiceProvider();
+            var factory = services.GetRequiredService<IHttpClientFactory>();
+
+            // Act2
+            var client = factory.CreateClient("example.com");
+
+            // Assert
+            Assert.NotNull(client);
+            Assert.Equal("http://example.com/", client.BaseAddress.AbsoluteUri);
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        public void AddHttpClient_WithDefaults_ConfiguresClient()
+        {
+            // Arrange
+            var serviceCollection = new ServiceCollection();
+
+            // Act1
+            serviceCollection.AddHttpClient("example.com", c => c.BaseAddress = new Uri("http://example.com/"));
+            serviceCollection.ConfigureHttpClientDefaults(builder =>
+            {
+                builder.ConfigureHttpClient(c => c.BaseAddress = new Uri("http://default.com/"));
+            });
 
             var services = serviceCollection.BuildServiceProvider();
             var factory = services.GetRequiredService<IHttpClientFactory>();
@@ -735,20 +760,20 @@ namespace Microsoft.Extensions.DependencyInjection
             Assert.Equal("http://example2.com/", client.HttpClient.BaseAddress.AbsoluteUri);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public void AddHttpMessageHandler_WithName_NewHandlerIsSurroundedByLogging_ForHttpClient()
         {
             // Arrange
             var serviceCollection = new ServiceCollection();
 
-            HttpMessageHandlerBuilder builder = null;
+            IList<DelegatingHandler> additionalHandlers = null;
 
             // Act1
-            serviceCollection.AddHttpClient("example.com").ConfigureHttpMessageHandlerBuilder(b =>
+            serviceCollection.AddHttpClient("example.com").ConfigureAdditionalHttpMessageHandlers((handlers, _) =>
             {
-                builder = b;
+                additionalHandlers = handlers;
 
-                b.AdditionalHandlers.Add(Mock.Of<DelegatingHandler>());
+                handlers.Add(Mock.Of<DelegatingHandler>());
             });
 
             var services = serviceCollection.BuildServiceProvider();
@@ -763,7 +788,7 @@ namespace Microsoft.Extensions.DependencyInjection
             Assert.NotNull(client);
 
             Assert.Collection(
-                builder.AdditionalHandlers,
+                additionalHandlers,
                 h => Assert.IsType<LoggingScopeHttpMessageHandler>(h),
                 h => Assert.NotNull(h),
                 h => Assert.IsType<LoggingHttpMessageHandler>(h));
@@ -877,19 +902,19 @@ namespace Microsoft.Extensions.DependencyInjection
             Assert.Equal("http://example.com/", client.HttpClient.BaseAddress.AbsoluteUri);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public void AddHttpMessageHandler_WithName_NewHandlerIsSurroundedByLogging_ForHttpMessageHandler()
         {
             var serviceCollection = new ServiceCollection();
 
-            HttpMessageHandlerBuilder builder = null;
+            IList<DelegatingHandler> additionalHandlers = null;
 
             // Act1
-            serviceCollection.AddHttpClient("example.com").ConfigureHttpMessageHandlerBuilder(b =>
+            serviceCollection.AddHttpClient("example.com").ConfigureAdditionalHttpMessageHandlers((handlers, _) =>
             {
-                builder = b;
+                additionalHandlers = handlers;
 
-                b.AdditionalHandlers.Add(Mock.Of<DelegatingHandler>());
+                handlers.Add(Mock.Of<DelegatingHandler>());
             });
 
             var services = serviceCollection.BuildServiceProvider();
@@ -904,7 +929,7 @@ namespace Microsoft.Extensions.DependencyInjection
             Assert.IsNotType<LoggingScopeHttpMessageHandler>(handler);
 
             Assert.Collection(
-                builder.AdditionalHandlers,
+                additionalHandlers,
                 h => Assert.IsType<LoggingScopeHttpMessageHandler>(h),
                 h => Assert.NotNull(h),
                 h => Assert.IsType<LoggingHttpMessageHandler>(h));
@@ -957,9 +982,8 @@ namespace Microsoft.Extensions.DependencyInjection
                 client.Service,
                 request.Properties[nameof(SingletonService)]);
 #else
-#nullable enable
             request.Options.TryGetValue(new HttpRequestOptionsKey<SingletonService>(nameof(SingletonService)), out SingletonService? optService);
-#nullable disable
+
             Assert.Same(
                 services.GetRequiredService<SingletonService>(),
                 optService);
@@ -1005,9 +1029,7 @@ namespace Microsoft.Extensions.DependencyInjection
                     client.Service,
                     request.Properties[nameof(SingletonService)]);
 #else
-#nullable enable
                 request.Options.TryGetValue(new HttpRequestOptionsKey<SingletonService>(nameof(SingletonService)), out SingletonService? optService);
-#nullable disable
 
                 Assert.Same(
                     services.GetRequiredService<SingletonService>(),
@@ -1079,9 +1101,8 @@ namespace Microsoft.Extensions.DependencyInjection
                     client.Service,
                     request.Properties[nameof(ScopedService)]);
 #else
-#nullable enable
                 request.Options.TryGetValue(new HttpRequestOptionsKey<ScopedService>(nameof(ScopedService)), out ScopedService? optService);
-#nullable disable
+
                 Assert.NotSame(
                     scope.ServiceProvider.GetRequiredService<ScopedService>(),
                     optService);
@@ -1126,9 +1147,8 @@ namespace Microsoft.Extensions.DependencyInjection
                 client.Service,
                 request.Properties[nameof(TransientService)]);
 #else
-#nullable enable
             request.Options.TryGetValue(new HttpRequestOptionsKey<TransientService>(nameof(TransientService)), out TransientService? optService);
-#nullable disable
+
             Assert.NotSame(
                 services.GetRequiredService<TransientService>(),
                 optService);
@@ -1170,9 +1190,8 @@ namespace Microsoft.Extensions.DependencyInjection
                     client.Service,
                     request.Properties[nameof(TransientService)]);
 #else
-#nullable enable
-            request.Options.TryGetValue(new HttpRequestOptionsKey<TransientService>(nameof(TransientService)), out TransientService? optService);
-#nullable disable
+                request.Options.TryGetValue(new HttpRequestOptionsKey<TransientService>(nameof(TransientService)), out TransientService? optService);
+
                 Assert.NotSame(
                     services.GetRequiredService<TransientService>(),
                     optService);
@@ -1184,7 +1203,7 @@ namespace Microsoft.Extensions.DependencyInjection
             }
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public void AddHttpClient_GetAwaiterAndResult_InSingleThreadedSynchronizationContext_ShouldNotHangs()
         {
             // Arrange
@@ -1228,7 +1247,7 @@ namespace Microsoft.Extensions.DependencyInjection
             }
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public void SuppressScope_False_CreatesNewScope()
         {
             // Arrange
@@ -1256,7 +1275,7 @@ namespace Microsoft.Extensions.DependencyInjection
             Assert.NotSame(services, capturedServices);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public void SuppressScope_False_InScope_CreatesNewScope()
         {
             // Arrange
@@ -1288,7 +1307,7 @@ namespace Microsoft.Extensions.DependencyInjection
             }
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public void SuppressScope_True_DoesNotCreateScope()
         {
             // Arrange
@@ -1316,7 +1335,7 @@ namespace Microsoft.Extensions.DependencyInjection
             Assert.NotSame(services, capturedServices);
         }
 
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported), nameof(PlatformDetection.IsReflectionEmitSupported))]
         public void SuppressScope_True_InScope_DoesNotCreateScope()
         {
             // Arrange
@@ -1345,6 +1364,95 @@ namespace Microsoft.Extensions.DependencyInjection
 
                 Assert.NotSame(scope.ServiceProvider, capturedServices);
             }
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [SkipOnPlatform(TestPlatforms.Browser, "Credentials is not supported on Browser")]
+        public void AddHttpClient_ConfigurePrimaryHttpMessageHandler_ApplyChangesPrimaryHandler()
+        {
+            // Arrange
+            var testCredentials = new TestCredentials();
+            var testBuilder = new TestHttpMessageHandlerBuilder();
+
+            var serviceCollection = new ServiceCollection();
+            serviceCollection.AddSingleton<HttpMessageHandlerBuilder>(testBuilder);
+            serviceCollection
+                .AddHttpClient<TestTypedClient>("test")
+                .ConfigurePrimaryHttpMessageHandler((primaryHandler, _) =>
+                {
+                    ((HttpClientHandler)primaryHandler).Credentials = testCredentials;
+                });
+
+            var services = serviceCollection.BuildServiceProvider();
+
+            // Act & Assert
+            _ = services.GetRequiredService<TestTypedClient>();
+
+            Assert.Same(testCredentials, ((HttpClientHandler)testBuilder.PrimaryHandler).Credentials);
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported), nameof(PlatformDetection.IsReflectionEmitSupported))]
+        public void AddHttpClient_ConfigureAdditionalHttpMessageHandlers_ModifyAdditionalHandlers()
+        {
+            // Arrange
+            var testCredentials = new TestCredentials();
+            var testBuilder = new TestHttpMessageHandlerBuilder();
+
+            var serviceCollection = new ServiceCollection();
+            serviceCollection.AddSingleton<HttpMessageHandlerBuilder>(testBuilder);
+            serviceCollection
+                .AddHttpClient<TestTypedClient>("test")
+                .AddHttpMessageHandler(() => Mock.Of<DelegatingHandler>())
+                .ConfigureAdditionalHttpMessageHandlers((additionalHandlers, _) =>
+                {
+                    additionalHandlers.Clear();
+                });
+
+            var services = serviceCollection.BuildServiceProvider();
+
+            // Act & Assert
+            _ = services.GetRequiredService<TestTypedClient>();
+
+            // Contains two logging handlers added by the filter.
+            Assert.Equal(2, testBuilder.AdditionalHandlers.Count);
+        }
+
+        private sealed class TestHttpMessageHandlerBuilder : HttpMessageHandlerBuilder
+        {
+            public override string? Name { get; set; }
+            public override HttpMessageHandler PrimaryHandler { get; set; } = new HttpClientHandler();
+            public override IList<DelegatingHandler> AdditionalHandlers { get; } = new List<DelegatingHandler>();
+
+            public override HttpMessageHandler Build() => PrimaryHandler;
+        }
+
+        private sealed class TestCredentials : ICredentials
+        {
+            public NetworkCredential GetCredential(Uri uri, string authType) => throw new NotImplementedException();
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        public void AddHttpClientDefaults_MultipleConfigInOneDefault_LastWins()
+        {
+            // Arrange
+            var serviceCollection = new ServiceCollection();
+
+            // Act1
+            serviceCollection.ConfigureHttpClientDefaults(builder =>
+            {
+                builder.ConfigureHttpClient(c => c.BaseAddress = new Uri("http://default1.com/"));
+                builder.ConfigureHttpClient(c => c.BaseAddress = new Uri("http://default2.com/"));
+            });
+
+            var services = serviceCollection.BuildServiceProvider();
+            var factory = services.GetRequiredService<IHttpClientFactory>();
+
+            // Act2
+            var client = factory.CreateClient();
+
+            // Assert
+            Assert.NotNull(client);
+            Assert.Equal("http://default2.com/", client.BaseAddress.AbsoluteUri);
         }
 
         private class TestGenericTypedClient<T> : TestTypedClient
@@ -1400,7 +1508,7 @@ namespace Microsoft.Extensions.DependencyInjection
             {
 #if NETFRAMEWORK
                 request.Properties[nameof(ScopedService)] = Service;
-#else                
+#else
                 request.Options.Set(new HttpRequestOptionsKey<ScopedService>(nameof(ScopedService)), Service);
 #endif
                 return Task.FromResult(new HttpResponseMessage());

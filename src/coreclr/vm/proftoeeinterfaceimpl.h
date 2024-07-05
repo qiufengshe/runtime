@@ -56,9 +56,27 @@ class ProfileArgIterator
 private:
     void        *m_handle;
     ArgIterator  m_argIterator;
-#if defined(UNIX_AMD64_ABI) || defined(TARGET_ARM64)
+#if defined(UNIX_AMD64_ABI) || defined(TARGET_ARM64) || defined(TARGET_RISCV64) || defined(TARGET_LOONGARCH64)
     UINT64       m_bufferPos;
-#endif // defined(UNIX_AMD64_ABI) || defined(TARGET_ARM64)
+
+#if defined(UNIX_AMD64_ABI) || defined(TARGET_RISCV64)
+    // On certain architectures we can pass args in non-sequential registers,
+    // this function will copy the struct so it is laid out as it would be in memory
+    // so it can be passed to the profiler
+    LPVOID CopyStructFromRegisters(
+#ifdef TARGET_RISCV64
+        const ArgLocDesc* argLocDesc
+#endif
+    );
+#endif
+
+#if defined(TARGET_ARM64)
+    // On Arm64 the fields an HFA or an HVA argument will need to be copied
+    // to a temporary buffer in memory, so they are laid out contiguously in memory.
+    LPVOID CopyStructFromFPRegs(int idxFPReg, int cntFPRegs, int hfaFieldSize);
+#endif
+
+#endif // UNIX_AMD64_ABI || TARGET_ARM64 || TARGET_RISCV64 || TARGET_LOONGARCH64
 
 public:
     ProfileArgIterator(MetaSig * pMetaSig, void* platformSpecificHandle);
@@ -73,13 +91,6 @@ public:
         LIMITED_METHOD_CONTRACT;
         return m_argIterator.NumFixedArgs();
     }
-
-#if defined(UNIX_AMD64_ABI)
-    // On certain architectures we can pass args in non-sequential registers,
-    // this function will copy the struct so it is laid out as it would be in memory
-    // so it can be passed to the profiler
-    LPVOID CopyStructFromRegisters();
-#endif // defined(UNIX_AMD64_ABI)
 
     //
     // After initialization, this method is called repeatedly until it
@@ -143,8 +154,11 @@ typedef struct _PROFILER_STACK_WALK_DATA PROFILER_STACK_WALK_DATA;
 // from the profiler implementation.  The profiler will call back on the v-table
 // to get at EE internals as required.
 
-class ProfToEEInterfaceImpl : public ICorProfilerInfo12
+class ProfToEEInterfaceImpl : public ICorProfilerInfo14
 {
+private:
+    ProfilerInfo *m_pProfilerInfo;
+
 public:
 
     // Internal Housekeeping
@@ -155,6 +169,12 @@ public:
     ProfToEEInterfaceImpl();
     virtual ~ProfToEEInterfaceImpl();
     HRESULT Init();
+
+    void SetProfilerInfo(ProfilerInfo *pProfilerInfo)
+    {
+        LIMITED_METHOD_CONTRACT;
+        m_pProfilerInfo = pProfilerInfo;
+    }
 
     // IUnknown
     ULONG STDMETHODCALLTYPE AddRef();
@@ -197,7 +217,7 @@ public:
         LPCBYTE *    ppBaseLoadAddress,
         ULONG        cchName,
         ULONG *      pcchName,
-        __out_ecount_part_opt(cchName, *pcchName) WCHAR szName[],
+        _Out_writes_to_opt_(cchName, *pcchName) WCHAR szName[],
         AssemblyID * pAssemblyId);
 
     COM_METHOD GetModuleMetaData(
@@ -258,14 +278,14 @@ public:
         AppDomainID appDomainId,
         ULONG       cchName,
         ULONG *     pcchName,
-        __out_ecount_part_opt(cchName, *pcchName) WCHAR szName[],
+        _Out_writes_to_opt_(cchName, *pcchName) WCHAR szName[],
         ProcessID * pProcessId);
 
     COM_METHOD GetAssemblyInfo(
         AssemblyID    assemblyId,
         ULONG         cchName,
         ULONG *       pcchName,
-        __out_ecount_part_opt(cchName, *pcchName) WCHAR szName[],
+        _Out_writes_to_opt_(cchName, *pcchName) WCHAR szName[],
         AppDomainID * pAppDomainId,
         ModuleID    * pModuleId);
 
@@ -456,7 +476,7 @@ public:
                                      USHORT *               pQFEVersion,         // out
                                      ULONG                  cchVersionString,    // in
                                      ULONG  *               pcchVersionString,   // out
-                                     __out_ecount_part_opt(cchVersionString, *pcchVersionString) WCHAR szVersionString[]);  // out
+                                     _Out_writes_to_opt_(cchVersionString, *pcchVersionString) WCHAR szVersionString[]);  // out
 
     COM_METHOD GetThreadStaticAddress2(ClassID classId,             // in
                                        mdFieldDef fieldToken,       // in
@@ -474,7 +494,7 @@ public:
         LPCBYTE *    ppBaseLoadAddress,
         ULONG        cchName,
         ULONG *      pcchName,
-        __out_ecount_part_opt(cchName, *pcchName) WCHAR szName[],
+        _Out_writes_to_opt_(cchName, *pcchName) WCHAR szName[],
         AssemblyID * pAssemblyId,
         DWORD *      pdwModuleFlags);
 
@@ -636,7 +656,7 @@ public:
         const WCHAR *szName,
         ULONG       cchValue,
         ULONG       *pcchValue,
-        __out_ecount_part_opt(cchValue, *pcchValue) WCHAR szValue[]);
+        _Out_writes_to_opt_(cchValue, *pcchValue) WCHAR szValue[]);
 
     COM_METHOD SetEnvironmentVariable(
         const WCHAR *szName,
@@ -691,10 +711,40 @@ public:
 
     // end ICorProfilerInfo12
 
+    // begin ICorProfilerInfo13
+    COM_METHOD CreateHandle(
+        ObjectID object,
+        COR_PRF_HANDLE_TYPE type,
+        ObjectHandleID* pHandle);
+
+    COM_METHOD DestroyHandle(
+        ObjectHandleID handle);
+
+    COM_METHOD GetObjectIDFromHandle(
+        ObjectHandleID handle,
+        ObjectID* pObject);
+
+    // end ICorProfilerInfo13
+
+    // begin ICorProfilerInfo14
+
+    COM_METHOD EnumerateNonGCObjects(
+        ICorProfilerObjectEnum** ppEnum);
+
+    COM_METHOD GetNonGCHeapBounds(ULONG cObjectRanges,
+                                  ULONG * pcObjectRanges,
+                                  COR_PRF_NONGC_HEAP_RANGE ranges[]);
+
+    COM_METHOD EventPipeCreateProvider2(
+                const WCHAR               *providerName,
+                EventPipeProviderCallback *pCallback,
+                EVENTPIPE_PROVIDER        *pProvider);
+
+    // end ICorProfilerInfo14
+
 protected:
 
     // Internal Helper Functions
-
     static void EventPipeCallbackHelper(EventPipeProvider *provider,
                                         DWORD eventId,
                                         DWORD eventVersion,
@@ -706,7 +756,8 @@ protected:
                                         LPCGUID pRelatedActivityId,
                                         Thread *pEventThread,
                                         ULONG numStackFrames,
-                                        UINT_PTR stackFrames[]);
+                                        UINT_PTR stackFrames[],
+                                        void *additionalData);
 
     HRESULT GetCodeInfoHelper(FunctionID functionId,
                                ReJITID  reJitId,
@@ -720,8 +771,8 @@ protected:
 
     HRESULT GetArrayObjectInfoHelper(Object * pObj,
                                      ULONG32 cDimensionSizes,
-                                     __out_ecount(cDimensionSizes) ULONG32 pDimensionSizes[],
-                                     __out_ecount(cDimensionSizes) int pDimensionLowerBounds[],
+                                     _Out_writes_(cDimensionSizes) ULONG32 pDimensionSizes[],
+                                     _Out_writes_(cDimensionSizes) int pDimensionLowerBounds[],
                                      BYTE ** ppData);
 
     DWORD GetModuleFlags(Module * pModule);

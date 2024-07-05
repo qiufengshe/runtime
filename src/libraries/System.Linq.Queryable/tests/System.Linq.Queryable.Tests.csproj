@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>$(NetCoreAppCurrent)</TargetFrameworks>
+    <TargetFramework>$(NetCoreAppCurrent)</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="AggregateTests.cs" />
@@ -9,10 +9,13 @@
     <Compile Include="AppendPrependTests.cs" />
     <Compile Include="AverageTests.cs" />
     <Compile Include="CastTests.cs" />
+    <Compile Include="ChunkTests.cs" />
     <Compile Include="ConcatTests.cs" />
     <Compile Include="ContainsTests.cs" />
+    <Compile Include="AggregateByTests.cs" />
     <Compile Include="CountTests.cs" />
     <Compile Include="DefaultIfEmptyTests.cs" />
+    <Compile Include="CountByTests.cs" />
     <Compile Include="DistinctTests.cs" />
     <Compile Include="ElementAtOrDefaultTests.cs" />
     <Compile Include="ElementAtTests.cs" />
@@ -23,6 +26,7 @@
     <Compile Include="FirstTests.cs" />
     <Compile Include="GroupByTests.cs" />
     <Compile Include="GroupJoinTests.cs" />
+    <Compile Include="IndexTests.cs" />
     <Compile Include="IntersectTests.cs" />
     <Compile Include="JoinTests.cs" />
     <Compile Include="LastOrDefaultTests.cs" />
@@ -33,6 +37,8 @@
     <Compile Include="OfTypeTests.cs" />
     <Compile Include="OrderByDescendingTests.cs" />
     <Compile Include="OrderByTests.cs" />
+    <Compile Include="OrderDescendingTests.cs" />
+    <Compile Include="OrderTests.cs" />
     <Compile Include="Queryable.cs" />
     <Compile Include="QueryFromExpressionTests.cs" />
     <Compile Include="ReverseTests.cs" />
@@ -50,6 +56,7 @@
     <Compile Include="TakeWhileTests.cs" />
     <Compile Include="ThenByDescendingTests.cs" />
     <Compile Include="ThenByTests.cs" />
+    <Compile Include="TrimCompatibilityTests.cs" />
     <Compile Include="UnionTests.cs" />
     <Compile Include="WhereTests.cs" />
     <Compile Include="ZipTests.cs" />

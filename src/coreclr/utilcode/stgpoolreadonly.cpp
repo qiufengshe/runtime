@@ -10,21 +10,12 @@
 //*****************************************************************************
 #include "stdafx.h"                     // Standard include.
 #include <stgpool.h>                    // Our interface definitions.
-#include "metadatatracker.h"
+
 //
 //
 // StgPoolReadOnly
 //
 //
-
-#if METADATATRACKER_ENABLED
-MetaDataTracker  *MetaDataTracker::m_MDTrackers = NULL;
-BOOL MetaDataTracker::s_bEnabled = FALSE;
-
-void        (*MetaDataTracker::s_IBCLogMetaDataAccess)(const void *addr) = NULL;
-void        (*MetaDataTracker::s_IBCLogMetaDataSearch)(const void *result) = NULL;
-
-#endif // METADATATRACKER_ENABLED
 
 const BYTE StgPoolSeg::m_zeros[64] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
                                       0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -89,7 +80,7 @@ void StgPoolReadOnly::Uninit()
 //*****************************************************************************
 HRESULT StgPoolReadOnly::GetStringW(        // Return code.
     ULONG       iOffset,                    // Offset of string in pool.
-    __out_ecount(cchBuffer) LPWSTR szOut,   // Output buffer for string.
+    _Out_writes_(cchBuffer) LPWSTR szOut,   // Output buffer for string.
     int         cchBuffer)                  // Size of output buffer.
 {
     STATIC_CONTRACT_NOTHROW;
@@ -100,7 +91,7 @@ HRESULT StgPoolReadOnly::GetStringW(        // Return code.
     int     iChars;
 
     IfFailRet(GetString(iOffset, &pString));
-    iChars = ::WszMultiByteToWideChar(CP_UTF8, 0, pString, -1, szOut, cchBuffer);
+    iChars = ::MultiByteToWideChar(CP_UTF8, 0, pString, -1, szOut, cchBuffer);
     if (iChars == 0)
         return (BadError(HRESULT_FROM_NT(GetLastError())));
     return S_OK;

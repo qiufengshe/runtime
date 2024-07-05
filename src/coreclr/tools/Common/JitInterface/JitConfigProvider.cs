@@ -6,7 +6,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
-using ILCompiler;
 using Internal.TypeSystem;
 using NumberStyles = System.Globalization.NumberStyles;
 
@@ -41,7 +40,6 @@ namespace Internal.JitInterface
             if (Interlocked.CompareExchange(ref s_instance, config, null) != null)
                 throw new InvalidOperationException();
 
-#if READYTORUN
             NativeLibrary.SetDllImportResolver(typeof(CorInfoImpl).Assembly, (libName, assembly, searchPath) =>
             {
                 IntPtr libHandle = IntPtr.Zero;
@@ -62,11 +60,8 @@ namespace Internal.JitInterface
                 }
                 return libHandle;
             });
-#else
-            Debug.Assert(jitPath == null);
-#endif
 
-            CorInfoImpl.Startup();
+            CorInfoImpl.Startup(CorInfoImpl.TargetToOs(target));
         }
 
         public IntPtr UnmanagedInstance
@@ -83,7 +78,7 @@ namespace Internal.JitInterface
         /// <param name="parameters">A collection of parameter name/value pairs.</param>
         public JitConfigProvider(IEnumerable<CorJitFlag> jitFlags, IEnumerable<KeyValuePair<string, string>> parameters)
         {
-            ArrayBuilder<CorJitFlag> jitFlagBuilder = new ArrayBuilder<CorJitFlag>();
+            ArrayBuilder<CorJitFlag> jitFlagBuilder = default(ArrayBuilder<CorJitFlag>);
             foreach (CorJitFlag jitFlag in jitFlags)
             {
                 jitFlagBuilder.Add(jitFlag);
@@ -114,7 +109,7 @@ namespace Internal.JitInterface
             string stringValue;
             int intValue;
             if (_config.TryGetValue(name, out stringValue) &&
-                Int32.TryParse(stringValue, NumberStyles.AllowHexSpecifier, null, out intValue))
+                int.TryParse(stringValue, NumberStyles.AllowHexSpecifier, null, out intValue))
             {
                 return intValue;
             }
@@ -130,20 +125,31 @@ namespace Internal.JitInterface
                 return stringValue;
             }
 
-            return String.Empty;
+            return string.Empty;
         }
 
         private static string GetTargetSpec(TargetDetails target)
         {
-            string targetOSComponent = (target.OperatingSystem == TargetOS.Windows ? "win" : "unix");
             string targetArchComponent = target.Architecture switch
             {
                 TargetArchitecture.X86 => "x86",
                 TargetArchitecture.X64 => "x64",
                 TargetArchitecture.ARM => "arm",
                 TargetArchitecture.ARM64 => "arm64",
+                TargetArchitecture.LoongArch64 => "loongarch64",
+                TargetArchitecture.RiscV64 => "riscv64",
                 _ => throw new NotImplementedException(target.Architecture.ToString())
             };
+
+            string targetOSComponent;
+            if (target.Architecture is TargetArchitecture.ARM64 or TargetArchitecture.ARM)
+            {
+                targetOSComponent = "universal";
+            }
+            else
+            {
+                targetOSComponent = target.OperatingSystem == TargetOS.Windows ? "win" : "unix";
+            }
 
             return targetOSComponent + '_' + targetArchComponent + "_" + RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant();
         }

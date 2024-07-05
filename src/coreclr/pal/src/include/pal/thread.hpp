@@ -159,19 +159,6 @@ namespace CorUnix
     };
 #endif // HAVE_MACH_EXCEPTIONS
 
-    class CThreadCRTInfo : public CThreadInfoInitializer
-    {
-    public:
-        CHAR *       strtokContext; // Context for strtok function
-        WCHAR *      wcstokContext; // Context for wcstok function
-
-        CThreadCRTInfo() :
-            strtokContext(NULL),
-            wcstokContext(NULL)
-        {
-        };
-    };
-
     class CPalThread
     {
         friend
@@ -243,7 +230,7 @@ namespace CorUnix
         //
         // The only other spot the refcount is touched is from within
         // CPalObjectBase::ReleaseReference -- incremented before the
-        // destructors for an ojbect are called, and decremented afterwords.
+        // destructors for an object are called, and decremented afterwords.
         // This permits the freeing of the thread structure to happen after
         // the freeing of the enclosing thread object has completed.
         //
@@ -330,7 +317,6 @@ namespace CorUnix
         CThreadSynchronizationInfo synchronizationInfo;
         CThreadSuspensionInfo suspensionInfo;
         CThreadApcInfo apcInfo;
-        CThreadCRTInfo crtInfo;
 
         CPalThread()
             :
@@ -767,12 +753,8 @@ inline SIZE_T PlatformGetCurrentThreadId() {
     return (SIZE_T)tid;
 }
 #elif defined(__FreeBSD__)
-#include <sys/thr.h>
-inline SIZE_T PlatformGetCurrentThreadId() {
-    long tid;
-    thr_self(&tid);
-    return (SIZE_T)tid;
-}
+#include <pthread_np.h>
+#define PlatformGetCurrentThreadId() (SIZE_T)pthread_getthreadid_np()
 #elif defined(__NetBSD__)
 #include <lwp.h>
 #define PlatformGetCurrentThreadId() (SIZE_T)_lwp_self()

@@ -1,3 +1,6 @@
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
 #ifndef LAYOUT_H
 #define LAYOUT_H
 
@@ -20,26 +23,27 @@ class ClassLayout
 
     const unsigned m_isValueClass : 1;
     INDEBUG(unsigned m_gcPtrsInitialized : 1;)
-    // The number of GC pointers in this layout. Since the the maximum size is 2^32-1 the count
+    // The number of GC pointers in this layout. Since the maximum size is 2^32-1 the count
     // can fit in at most 30 bits.
     unsigned m_gcPtrCount : 30;
 
     // Array of CorInfoGCType (as BYTE) that describes the GC layout of the class.
     // For small classes the array is stored inline, avoiding an extra allocation
     // and the pointer size overhead.
-    union {
+    union
+    {
         BYTE* m_gcPtrs;
         BYTE  m_gcPtrsArray[sizeof(BYTE*)];
     };
 
-#ifdef TARGET_AMD64
-    // A layout that has its size artificially inflated to avoid stack corruption due to
-    // bugs in user code - see Compiler::compQuirkForPPP for details.
-    ClassLayout* m_pppQuirkLayout;
-#endif
+    // The normalized type to use in IR for block nodes with this layout.
+    const var_types m_type;
 
     // Class name as reported by ICorJitInfo::getClassName
     INDEBUG(const char* m_className;)
+
+    // Shortened class name as constructed by Compiler::eeGetShortClassName()
+    INDEBUG(const char* m_shortClassName;)
 
     // ClassLayout instances should only be obtained via ClassLayoutTable.
     friend class ClassLayoutTable;
@@ -53,18 +57,20 @@ class ClassLayout
 #endif
         , m_gcPtrCount(0)
         , m_gcPtrs(nullptr)
-#ifdef TARGET_AMD64
-        , m_pppQuirkLayout(nullptr)
-#endif
+        , m_type(TYP_STRUCT)
 #ifdef DEBUG
         , m_className("block")
+        , m_shortClassName("block")
 #endif
     {
     }
 
     static ClassLayout* Create(Compiler* compiler, CORINFO_CLASS_HANDLE classHandle);
 
-    ClassLayout(CORINFO_CLASS_HANDLE classHandle, bool isValueClass, unsigned size DEBUGARG(const char* className))
+    ClassLayout(CORINFO_CLASS_HANDLE classHandle,
+                bool                 isValueClass,
+                unsigned             size,
+                var_types type       DEBUGARG(const char* className) DEBUGARG(const char* shortClassName))
         : m_classHandle(classHandle)
         , m_size(size)
         , m_isValueClass(isValueClass)
@@ -73,11 +79,10 @@ class ClassLayout
 #endif
         , m_gcPtrCount(0)
         , m_gcPtrs(nullptr)
-#ifdef TARGET_AMD64
-        , m_pppQuirkLayout(nullptr)
-#endif
+        , m_type(type)
 #ifdef DEBUG
         , m_className(className)
+        , m_shortClassName(shortClassName)
 #endif
     {
         assert(size != 0);
@@ -86,11 +91,6 @@ class ClassLayout
     void InitializeGCPtrs(Compiler* compiler);
 
 public:
-#ifdef TARGET_AMD64
-    // Get the layout for the PPP quirk - see Compiler::compQuirkForPPP for details.
-    ClassLayout* GetPPPQuirkLayout(CompAllocator alloc);
-#endif
-
     CORINFO_CLASS_HANDLE GetClassHandle() const
     {
         return m_classHandle;
@@ -102,22 +102,32 @@ public:
     }
 
 #ifdef DEBUG
+
     const char* GetClassName() const
     {
         return m_className;
     }
-#endif
+
+    const char* GetShortClassName() const
+    {
+        return m_shortClassName;
+    }
+
+#endif // DEBUG
 
     bool IsValueClass() const
     {
-        assert(!IsBlockLayout());
-
         return m_isValueClass;
     }
 
     unsigned GetSize() const
     {
         return m_size;
+    }
+
+    var_types GetType() const
+    {
+        return m_type;
     }
 
     //------------------------------------------------------------------------
@@ -175,9 +185,21 @@ public:
         return m_gcPtrCount != 0;
     }
 
+    bool IsStackOnly(Compiler* comp) const;
+
     bool IsGCPtr(unsigned slot) const
     {
         return GetGCPtr(slot) != TYPE_GC_NONE;
+    }
+
+    bool IsGCRef(unsigned slot) const
+    {
+        return GetGCPtr(slot) == TYPE_GC_REF;
+    }
+
+    bool IsGCByRef(unsigned slot) const
+    {
+        return GetGCPtr(slot) == TYPE_GC_BYREF;
     }
 
     var_types GetGCPtrType(unsigned slot) const
@@ -194,6 +216,8 @@ public:
                 unreached();
         }
     }
+
+    bool IntersectsGCPtr(unsigned offset, unsigned size) const;
 
     static bool AreCompatible(const ClassLayout* layout1, const ClassLayout* layout2);
 

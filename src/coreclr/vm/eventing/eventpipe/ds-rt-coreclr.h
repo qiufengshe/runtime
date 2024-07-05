@@ -1,67 +1,73 @@
-// Implementation of ds-rt.h targeting Mono runtime.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
+// Implementation of ds-rt.h targeting CoreCLR runtime.
 #ifndef __DIAGNOSTICS_RT_MONO_H__
 #define __DIAGNOSTICS_RT_MONO_H__
 
-#include "ds-rt-config.h"
+#include <eventpipe/ds-rt-config.h>
 
 #ifdef ENABLE_PERFTRACING
 #include "ep-rt-coreclr.h"
-#include "ds-profiler-protocol.h"
-#include "ds-dump-protocol.h"
+#include <clrconfignocache.h>
+#include <generatedumpflags.h>
+#include <eventpipe/ds-process-protocol.h>
+#include <eventpipe/ds-profiler-protocol.h>
+#include <eventpipe/ds-dump-protocol.h>
+#ifdef FEATURE_PERFMAP
+#include "perfmap.h"
+#endif
 
 #undef DS_LOG_ALWAYS_0
-#define DS_LOG_ALWAYS_0(msg) STRESS_LOG0(LF_DIAGNOSTICS_PORT, LL_ALWAYS, msg)
+#define DS_LOG_ALWAYS_0(msg) STRESS_LOG0(LF_DIAGNOSTICS_PORT, LL_ALWAYS, msg "\n")
 
 #undef DS_LOG_ALWAYS_1
-#define DS_LOG_ALWAYS_1(msg, data1) STRESS_LOG1(LF_DIAGNOSTICS_PORT, LL_ALWAYS, msg, data1)
+#define DS_LOG_ALWAYS_1(msg, data1) STRESS_LOG1(LF_DIAGNOSTICS_PORT, LL_ALWAYS, msg "\n", data1)
 
 #undef DS_LOG_ALWAYS_2
-#define DS_LOG_ALWAYS_2(msg, data1, data2) STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_ALWAYS, msg, data1, data2)
+#define DS_LOG_ALWAYS_2(msg, data1, data2) STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_ALWAYS, msg "\n", data1, data2)
 
 #undef DS_LOG_INFO_0
-#define DS_LOG_INFO_0(msg) STRESS_LOG0(LF_DIAGNOSTICS_PORT, LL_INFO10, msg)
+#define DS_LOG_INFO_0(msg) STRESS_LOG0(LF_DIAGNOSTICS_PORT, LL_INFO10, msg "\n")
 
 #undef DS_LOG_INFO_1
-#define DS_LOG_INFO_1(msg, data1) STRESS_LOG1(LF_DIAGNOSTICS_PORT, LL_INFO10, msg, data1)
+#define DS_LOG_INFO_1(msg, data1) STRESS_LOG1(LF_DIAGNOSTICS_PORT, LL_INFO10, msg "\n", data1)
 
 #undef DS_LOG_INFO_2
-#define DS_LOG_INFO_2(msg, data1, data2) STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_INFO10, msg, data1, data2)
+#define DS_LOG_INFO_2(msg, data1, data2) STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_INFO10, msg "\n", data1, data2)
 
 #undef DS_LOG_ERROR_0
-#define DS_LOG_ERROR_0(msg) STRESS_LOG0(LF_DIAGNOSTICS_PORT, LL_ERROR, msg)
+#define DS_LOG_ERROR_0(msg) STRESS_LOG0(LF_DIAGNOSTICS_PORT, LL_ERROR, msg "\n")
 
 #undef DS_LOG_ERROR_1
-#define DS_LOG_ERROR_1(msg, data1) STRESS_LOG1(LF_DIAGNOSTICS_PORT, LL_ERROR, msg, data1)
+#define DS_LOG_ERROR_1(msg, data1) STRESS_LOG1(LF_DIAGNOSTICS_PORT, LL_ERROR, msg "\n", data1)
 
 #undef DS_LOG_ERROR_2
-#define DS_LOG_ERROR_2(msg, data1, data2) STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_ERROR, msg, data1, data2)
+#define DS_LOG_ERROR_2(msg, data1, data2) STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_ERROR, msg "\n", data1, data2)
 
 #undef DS_LOG_WARNING_0
-#define DS_LOG_WARNING_0(msg) STRESS_LOG0(LF_DIAGNOSTICS_PORT, LL_WARNING, msg)
+#define DS_LOG_WARNING_0(msg) STRESS_LOG0(LF_DIAGNOSTICS_PORT, LL_WARNING, msg "\n")
 
 #undef DS_LOG_WARNING_1
-#define DS_LOG_WARNING_1(msg, data1) STRESS_LOG1(LF_DIAGNOSTICS_PORT, LL_WARNING, msg, data1)
+#define DS_LOG_WARNING_1(msg, data1) STRESS_LOG1(LF_DIAGNOSTICS_PORT, LL_WARNING, msg "\n", data1)
 
 #undef DS_LOG_WARNING_2
-#define DS_LOG_WARNING_2(msg, data1, data2) STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_WARNING, msg, data1, data2)
+#define DS_LOG_WARNING_2(msg, data1, data2) STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_WARNING, msg "\n", data1, data2)
 
 #undef DS_LOG_DEBUG_0
-#define DS_LOG_DEBUG_0(msg) STRESS_LOG0(LF_DIAGNOSTICS_PORT, LL_INFO1000, msg)
+#define DS_LOG_DEBUG_0(msg) STRESS_LOG0(LF_DIAGNOSTICS_PORT, LL_INFO1000, msg "\n")
+
+#undef DS_LOG_DEBUG_1
+#define DS_LOG_DEBUG_1(msg, data1) STRESS_LOG1(LF_DIAGNOSTICS_PORT, LL_INFO1000, msg "\n", data1)
+
+#undef DS_LOG_DEBUG_2
+#define DS_LOG_DEBUG_2(msg, data1, data2) STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_INFO1000, msg "\n", data1, data2)
 
 #undef DS_ENTER_BLOCKING_PAL_SECTION
 #define DS_ENTER_BLOCKING_PAL_SECTION
 
 #undef DS_EXIT_BLOCKING_PAL_SECTION
 #define DS_EXIT_BLOCKING_PAL_SECTION
-
-#define DS_RT_DEFINE_ARRAY(array_name, array_type, iterator_type, item_type) \
-	EP_RT_DEFINE_ARRAY_PREFIX(ds, array_name, array_type, iterator_type, item_type)
-
-#define DS_RT_DEFINE_ARRAY_ITERATOR(array_name, array_type, iterator_type, item_type) \
-	EP_RT_DEFINE_ARRAY_ITERATOR_PREFIX(ds, array_name, array_type, iterator_type, item_type)
-
-#define DS_RT_DEFINE_ARRAY_REVERSE_ITERATOR(array_name, array_type, iterator_type, item_type) \
-	EP_RT_DEFINE_ARRAY_REVERSE_ITERATOR_PREFIX(ds, array_name, array_type, iterator_type, item_type)
 
 /*
 * AutoTrace.
@@ -145,7 +151,11 @@ bool
 ds_rt_config_value_get_enable (void)
 {
 	STATIC_CONTRACT_NOTHROW;
-	return CLRConfig::GetConfigValue (CLRConfig::EXTERNAL_EnableDiagnostics) != 0;
+	if (CLRConfig::GetConfigValue (CLRConfig::EXTERNAL_EnableDiagnostics) == 0)
+	{
+		return false;
+	}
+    return CLRConfig::GetConfigValue (CLRConfig::EXTERNAL_EnableDiagnostics_IPC) != 0;
 }
 
 static
@@ -156,7 +166,7 @@ ds_rt_config_value_get_ports (void)
 	STATIC_CONTRACT_NOTHROW;
 
 	CLRConfigStringHolder value(CLRConfig::GetConfigValue (CLRConfig::EXTERNAL_DOTNET_DiagnosticPorts));
-	return ep_rt_utf16_to_utf8_string (reinterpret_cast<ep_char16_t *>(value.GetValue ()), -1);
+	return ep_rt_utf16_to_utf8_string (reinterpret_cast<ep_char16_t *>(value.GetValue ()));
 }
 
 static
@@ -174,27 +184,29 @@ ds_rt_config_value_get_default_port_suspend (void)
 
 static
 ds_ipc_result_t
-ds_rt_generate_core_dump (DiagnosticsGenerateCoreDumpCommandPayload *payload)
+ds_rt_generate_core_dump (
+	DiagnosticsDumpCommandId commandId,
+	DiagnosticsGenerateCoreDumpCommandPayload *payload,
+	ep_char8_t *errorMessageBuffer,
+	int32_t cbErrorMessageBuffer)
 {
 	STATIC_CONTRACT_NOTHROW;
 
 	ds_ipc_result_t result = DS_IPC_E_FAIL;
 	EX_TRY
 	{
-#ifdef HOST_WIN32
-		if (GenerateCrashDump (reinterpret_cast<LPCWSTR>(ds_generate_core_dump_command_payload_get_dump_name (payload)),
-			static_cast<int32_t>(ds_generate_core_dump_command_payload_get_dump_type (payload)),
-			(ds_generate_core_dump_command_payload_get_diagnostics (payload) != 0) ? true : false))
-			result = DS_IPC_S_OK;
-#else
-		MAKE_UTF8PTR_FROMWIDE_NOTHROW (dump_name, reinterpret_cast<LPCWSTR>(ds_generate_core_dump_command_payload_get_dump_name (payload)));
-		if (dump_name != nullptr) {
-			if (PAL_GenerateCoreDump (dump_name,
-				static_cast<int32_t>(ds_generate_core_dump_command_payload_get_dump_type (payload)),
-				(ds_generate_core_dump_command_payload_get_diagnostics (payload) != 0) ? true : false))
-				result = DS_IPC_S_OK;
+		uint32_t flags = ds_generate_core_dump_command_payload_get_flags(payload);
+		if (commandId == DS_DUMP_COMMANDID_GENERATE_CORE_DUMP)
+		{
+			// For the old commmand, this payload field is a bool of whether to enable logging
+			flags = flags != 0 ? GenerateDumpFlagsLoggingEnabled : 0;
 		}
-#endif
+		LPCWSTR dumpName = reinterpret_cast<LPCWSTR>(ds_generate_core_dump_command_payload_get_dump_name (payload));
+		int32_t dumpType = static_cast<int32_t>(ds_generate_core_dump_command_payload_get_dump_type (payload));
+		if (GenerateDump(dumpName, dumpType, flags, errorMessageBuffer, cbErrorMessageBuffer))
+		{
+			result = DS_IPC_S_OK;
+		}
 	}
 	EX_CATCH {}
 	EX_END_CATCH(SwallowAllExceptions);
@@ -225,31 +237,13 @@ ds_rt_transport_get_default_name (
 }
 
 /*
- * DiagnosticsIpcPollHandle.
- */
-
-DS_RT_DEFINE_ARRAY (ipc_poll_handle_array, ds_rt_ipc_poll_handle_array_t, ds_rt_ipc_poll_handle_array_iterator_t, DiagnosticsIpcPollHandle)
-DS_RT_DEFINE_ARRAY_ITERATOR (ipc_poll_handle_array, ds_rt_ipc_poll_handle_array_t, ds_rt_ipc_poll_handle_array_iterator_t, DiagnosticsIpcPollHandle)
-
-/*
- * DiagnosticsPort.
- */
-
-DS_RT_DEFINE_ARRAY (port_array, ds_rt_port_array_t, ds_rt_port_array_iterator_t, DiagnosticsPort *)
-DS_RT_DEFINE_ARRAY_ITERATOR (port_array, ds_rt_port_array_t, ds_rt_port_array_iterator_t, DiagnosticsPort *)
-
-DS_RT_DEFINE_ARRAY (port_config_array, ds_rt_port_config_array_t, ds_rt_port_config_array_iterator_t, ep_char8_t *)
-DS_RT_DEFINE_ARRAY_ITERATOR (port_config_array, ds_rt_port_config_array_t, ds_rt_port_config_array_iterator_t, ep_char8_t *)
-DS_RT_DEFINE_ARRAY_REVERSE_ITERATOR (port_config_array, ds_rt_port_config_array_t, ds_rt_port_config_array_reverse_iterator_t, ep_char8_t *)
-
-/*
 * DiagnosticsProfiler.
 */
-
-#ifdef FEATURE_PROFAPI_ATTACH_DETACH
+#ifdef PROFILING_SUPPORTED
 #include "profilinghelper.h"
 #include "profilinghelper.inl"
 
+#ifdef FEATURE_PROFAPI_ATTACH_DETACH
 static
 uint32_t
 ds_rt_profiler_attach (DiagnosticsAttachProfilerCommandPayload *payload)
@@ -262,7 +256,7 @@ ds_rt_profiler_attach (DiagnosticsAttachProfilerCommandPayload *payload)
 	// Certain actions are only allowable during attach, and this flag is how we track it.
 	ClrFlsSetThreadType (ThreadType_ProfAPI_Attach);
 
-	HRESULT hr;
+	HRESULT hr = S_OK;
 	EX_TRY {
 		hr = ProfilingAPIUtility::LoadProfilerForAttach (reinterpret_cast<const CLSID *>(ds_attach_profiler_command_payload_get_profiler_guid_cref (payload)),
 			reinterpret_cast<LPCWSTR>(ds_attach_profiler_command_payload_get_profiler_path (payload)),
@@ -279,6 +273,113 @@ ds_rt_profiler_attach (DiagnosticsAttachProfilerCommandPayload *payload)
 }
 #endif // FEATURE_PROFAPI_ATTACH_DETACH
 
+static
+uint32_t
+ds_rt_profiler_startup (DiagnosticsStartupProfilerCommandPayload *payload)
+{
+	STATIC_CONTRACT_NOTHROW;
+
+	HRESULT hr = S_OK;
+	EX_TRY {
+		StoredProfilerNode *profilerData = new StoredProfilerNode();
+		profilerData->guid = *(reinterpret_cast<const CLSID *>(ds_startup_profiler_command_payload_get_profiler_guid_cref (payload)));
+		profilerData->path.Set(reinterpret_cast<LPCWSTR>(ds_startup_profiler_command_payload_get_profiler_path (payload)));
+
+		g_profControlBlock.storedProfilers.InsertHead(profilerData);
+	}
+	EX_CATCH_HRESULT (hr);
+
+	return hr;
+}
+#endif // PROFILING_SUPPORTED
+
+static
+uint32_t
+ds_rt_set_environment_variable (const ep_char16_t *name, const ep_char16_t *value)
+{
+	return SetEnvironmentVariableW(reinterpret_cast<LPCWSTR>(name), reinterpret_cast<LPCWSTR>(value)) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+}
+
+static
+uint32_t
+ds_rt_enable_perfmap (uint32_t type)
+{
+	LIMITED_METHOD_CONTRACT;
+
+#ifdef FEATURE_PERFMAP
+	PerfMap::PerfMapType perfMapType = (PerfMap::PerfMapType)type;
+	if (perfMapType == PerfMap::PerfMapType::DISABLED || perfMapType > PerfMap::PerfMapType::PERFMAP)
+	{
+		return DS_IPC_E_INVALIDARG;
+	}
+
+	PerfMap::Enable(perfMapType, true);
+
+    return DS_IPC_S_OK;
+#else // FEATURE_PERFMAP
+    return DS_IPC_E_NOTSUPPORTED;
+#endif // FEATURE_PERFMAP
+}
+
+static
+uint32_t
+ds_rt_disable_perfmap (void)
+{
+	LIMITED_METHOD_CONTRACT;
+#ifdef FEATURE_PERFMAP
+	PerfMap::Disable();
+	return DS_IPC_S_OK;
+#else // FEATURE_PERFMAP
+	return DS_IPC_E_NOTSUPPORTED;
+#endif // FEATURE_PERFMAP
+}
+
+static ep_char16_t * _ds_rt_coreclr_diagnostic_startup_hook_paths = NULL;
+
+static
+uint32_t
+ds_rt_apply_startup_hook (const ep_char16_t *startup_hook_path)
+{
+	if (NULL == startup_hook_path)
+		return DS_IPC_E_INVALIDARG;
+
+	HRESULT hr = S_OK;
+	// This is set to true when the EE has initialized, which occurs after
+	// the diagnostic suspension point has completed.
+	if (g_fEEStarted)
+	{
+		// This is not actually starting the EE (the above already checked that),
+		// but waits for the EE to be started so that the startup hook can be loaded
+		// and executed.
+		IfFailRet(EnsureEEStarted());
+
+		// Ensure runtime thread for diagnostic server thread
+		SetupThreadNoThrow(&hr);
+		IfFailRet(hr);
+
+		EX_TRY {
+			GCX_COOP();
+
+			// Load and call startup hook since managed execution is already running.
+			MethodDescCallSite callStartupHook(METHOD__STARTUP_HOOK_PROVIDER__CALL_STARTUP_HOOK);
+
+			ARG_SLOT args[1];
+			args[0] = PtrToArgSlot(startup_hook_path);
+
+			callStartupHook.Call(args);
+		}
+		EX_CATCH_HRESULT (hr);
+
+		IfFailRet(hr);
+	}
+	else
+	{
+		Assembly::AddDiagnosticStartupHookPath(reinterpret_cast<LPCWSTR>(startup_hook_path));
+	}
+
+	return DS_IPC_S_OK;
+}
+
 /*
 * DiagnosticServer.
 */
@@ -289,13 +390,23 @@ ds_rt_server_log_pause_message (void)
 {
 	STATIC_CONTRACT_NOTHROW;
 
-	CLRConfigStringHolder ports(CLRConfig::GetConfigValue (CLRConfig::EXTERNAL_DOTNET_DiagnosticPorts));
-	uint32_t port_suspended = ds_rt_config_value_get_default_port_suspend ();
+	const char diagPortsName[] = "DiagnosticPorts";
+#ifdef HOST_WINDOWS
+    CLRConfigNoCache diagPorts = CLRConfigNoCache::Get(diagPortsName);
+#else
+    CLRConfigNoCache diagPorts = CLRConfigNoCache::Get(diagPortsName, /* noPrefix */ false, &PAL_getenv);
+#endif
+	LPCSTR ports = nullptr;
+	if (diagPorts.IsSet())
+	{
+		ports = diagPorts.AsString();
+	}
 
-	DWORD dotnetDiagnosticPortSuspend = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_DOTNET_DefaultDiagnosticPortSuspend);
-	wprintf(W("The runtime has been configured to pause during startup and is awaiting a Diagnostics IPC ResumeStartup command from a Diagnostic Port.\n"));
-	wprintf(W("DOTNET_DiagnosticPorts=\"%s\"\n"), ports == nullptr ? W("") : ports.GetValue());
-	wprintf(W("DOTNET_DefaultDiagnosticPortSuspend=%d\n"), port_suspended);
+	uint32_t port_suspended = ds_rt_config_value_get_default_port_suspend();
+
+	printf("The runtime has been configured to pause during startup and is awaiting a Diagnostics IPC ResumeStartup command from a Diagnostic Port.\n");
+	printf("DOTNET_%s=\"%s\"\n", diagPortsName, ports == nullptr ? "" : ports);
+	printf("DOTNET_DefaultDiagnosticPortSuspend=%u\n", port_suspended);
 	fflush(stdout);
 }
 

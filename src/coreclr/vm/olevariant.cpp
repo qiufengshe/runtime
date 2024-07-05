@@ -329,20 +329,24 @@ VARTYPE OleVariant::GetVarTypeForTypeHandle(TypeHandle type)
 #endif
 
 #ifdef FEATURE_COMINTEROP
-    if (CoreLibBinder::IsClass(pMT, CLASS__DISPATCH_WRAPPER))
-        return VT_DISPATCH;
-    if (CoreLibBinder::IsClass(pMT, CLASS__UNKNOWN_WRAPPER))
-        return VT_UNKNOWN;
-    if (CoreLibBinder::IsClass(pMT, CLASS__ERROR_WRAPPER))
-        return VT_ERROR;
-    if (CoreLibBinder::IsClass(pMT, CLASS__CURRENCY_WRAPPER))
-        return VT_CY;
-    if (CoreLibBinder::IsClass(pMT, CLASS__BSTR_WRAPPER))
-        return VT_BSTR;
+    // The wrapper types are only available when built-in COM is supported.
+    if (g_pConfig->IsBuiltInCOMSupported())
+    {
+        if (CoreLibBinder::IsClass(pMT, CLASS__DISPATCH_WRAPPER))
+            return VT_DISPATCH;
+        if (CoreLibBinder::IsClass(pMT, CLASS__UNKNOWN_WRAPPER))
+            return VT_UNKNOWN;
+        if (CoreLibBinder::IsClass(pMT, CLASS__ERROR_WRAPPER))
+            return VT_ERROR;
+        if (CoreLibBinder::IsClass(pMT, CLASS__CURRENCY_WRAPPER))
+            return VT_CY;
+        if (CoreLibBinder::IsClass(pMT, CLASS__BSTR_WRAPPER))
+            return VT_BSTR;
 
-    // VariantWrappers cannot be stored in VARIANT's.
-    if (CoreLibBinder::IsClass(pMT, CLASS__VARIANT_WRAPPER))
-        COMPlusThrow(kArgumentException, IDS_EE_COM_UNSUPPORTED_SIG);
+        // VariantWrappers cannot be stored in VARIANT's.
+        if (CoreLibBinder::IsClass(pMT, CLASS__VARIANT_WRAPPER))
+            COMPlusThrow(kArgumentException, IDS_EE_COM_UNSUPPORTED_SIG);
+    }
 #endif // FEATURE_COMINTEROP
 
     if (pMT->IsEnum())
@@ -831,7 +835,7 @@ MethodTable* OleVariant::GetNativeMethodTableForVarType(VARTYPE vt, MethodTable*
         case VT_CARRAY:
             return CoreLibBinder::GetClass(CLASS__INTPTR);
         case VT_VARIANT:
-            return CoreLibBinder::GetClass(CLASS__NATIVEVARIANT);
+            return CoreLibBinder::GetClass(CLASS__COMVARIANT);
         case VTHACK_ANSICHAR:
             return CoreLibBinder::GetClass(CLASS__BYTE);
         case VT_UI2:
@@ -841,7 +845,7 @@ MethodTable* OleVariant::GetNativeMethodTableForVarType(VARTYPE vt, MethodTable*
             // MethodTable to ensure the correct size.
             return CoreLibBinder::GetClass(CLASS__UINT16);
         case VT_DECIMAL:
-            return CoreLibBinder::GetClass(CLASS__NATIVEDECIMAL);
+            return CoreLibBinder::GetClass(CLASS__DECIMAL);
         default:
             PREFIX_ASSUME(pManagedMT != NULL);
             return pManagedMT;
@@ -866,23 +870,13 @@ const OleVariant::Marshaler *OleVariant::GetMarshalerForVarType(VARTYPE vt, BOOL
 
 #ifdef FEATURE_COMINTEROP
 
-#ifdef CROSSGEN_COMPILE
-#define RETURN_MARSHALER(OleToCom, ComToOle, OleRefToCom, ArrayOleToCom, ArrayComToOle, ClearArray) \
-    { static const Marshaler marshaler = { NULL, NULL, NULL, NULL, NULL, NULL }; RETURN &marshaler; }
-#else
 #define RETURN_MARSHALER(OleToCom, ComToOle, OleRefToCom, ArrayOleToCom, ArrayComToOle, ClearArray) \
     { static const Marshaler marshaler = { OleToCom, ComToOle, OleRefToCom, ArrayOleToCom, ArrayComToOle, ClearArray }; RETURN &marshaler; }
-#endif
 
 #else // FEATURE_COMINTEROP
 
-#ifdef CROSSGEN_COMPILE
-#define RETURN_MARSHALER(OleToCom, ComToOle, OleRefToCom, ArrayOleToCom, ArrayComToOle, ClearArray) \
-    { static const Marshaler marshaler = { NULL, NULL, NULL }; RETURN &marshaler; }
-#else
 #define RETURN_MARSHALER(OleToCom, ComToOle, OleRefToCom, ArrayOleToCom, ArrayComToOle, ClearArray) \
     { static const Marshaler marshaler = { ArrayOleToCom, ArrayComToOle, ClearArray }; RETURN &marshaler; }
-#endif
 
 #endif // FEATURE_COMINTEROP
 
@@ -1084,7 +1078,6 @@ VariantArray:
     }
 } // OleVariant::Marshaler *OleVariant::GetMarshalerForVarType()
 
-#ifndef CROSSGEN_COMPILE
 
 #ifdef FEATURE_COMINTEROP
 
@@ -1161,15 +1154,6 @@ void VariantData::NewVariant(VariantData * const& dest, const CVTypes type, INT6
     }
 }
 
-void SafeVariantClearHelper(_Inout_ VARIANT* pVar)
-{
-    WRAPPER_NO_CONTRACT;
-
-    VariantClear(pVar);
-}
-
-class OutOfMemoryException;
-
 void SafeVariantClear(VARIANT* pVar)
 {
     CONTRACTL
@@ -1183,52 +1167,19 @@ void SafeVariantClear(VARIANT* pVar)
     if (pVar)
     {
         GCX_PREEMP();
-        SCAN_EHMARKER();
-        PAL_CPP_TRY
-        {
-            // These are holders to tell the contract system that we're catching all exceptions.
-            SCAN_EHMARKER_TRY();
-            CLR_TRY_MARKER();
+        VariantClear(pVar);
 
-            // Most of time, oleaut32.dll is loaded already when we get here.
-            // Sometimes, CLR initializes Variant without loading oleaut32.dll, e.g. VT_BOOL.
-            // It is better for performance with EX_TRY than
-
-            SafeVariantClearHelper(pVar);
-
-            SCAN_EHMARKER_END_TRY();
-        }
-#pragma warning(suppress: 4101)
-        PAL_CPP_CATCH_DERIVED(OutOfMemoryException, obj)
-        {
-            SCAN_EHMARKER_CATCH();
-
-#if defined(STACK_GUARDS_DEBUG)
-            // Catching and just swallowing an exception means we need to tell
-            // the SO code that it should go back to normal operation, as it
-            // currently thinks that the exception is still on the fly.
-            GetThread()->GetCurrentStackGuard()->RestoreCurrentGuard();
-#endif
-
-            SCAN_EHMARKER_END_CATCH();
-        }
-        PAL_CPP_ENDTRY;
-
-        FillMemory(pVar, sizeof(VARIANT), 0x00);
+        // VariantClear resets the instance to VT_EMPTY (0)
+        // COMPAT: Clear the remaining memory for compat. The instance remains set to VT_EMPTY (0).
+        ZeroMemory(pVar, sizeof(VARIANT));
     }
 }
 
-FORCEINLINE void EmptyVariant(VARIANT* value)
-{
-    WRAPPER_NO_CONTRACT;
-    SafeVariantClear(value);
-}
-
-class VariantEmptyHolder : public Wrapper<VARIANT*, ::DoNothing<VARIANT*>, EmptyVariant, NULL>
+class VariantEmptyHolder : public Wrapper<VARIANT*, ::DoNothing<VARIANT*>, SafeVariantClear, 0>
 {
 public:
     VariantEmptyHolder(VARIANT* p = NULL) :
-        Wrapper<VARIANT*, ::DoNothing<VARIANT*>, EmptyVariant, NULL>(p)
+        Wrapper<VARIANT*, ::DoNothing<VARIANT*>, SafeVariantClear, 0>(p)
     {
         WRAPPER_NO_CONTRACT;
     }
@@ -1237,7 +1188,7 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        Wrapper<VARIANT*, ::DoNothing<VARIANT*>, EmptyVariant, NULL>::operator=(p);
+        Wrapper<VARIANT*, ::DoNothing<VARIANT*>, SafeVariantClear, 0>::operator=(p);
     }
 };
 
@@ -1254,11 +1205,11 @@ FORCEINLINE void RecordVariantRelease(VARIANT* value)
     }
 }
 
-class RecordVariantHolder : public Wrapper<VARIANT*, ::DoNothing<VARIANT*>, RecordVariantRelease, NULL>
+class RecordVariantHolder : public Wrapper<VARIANT*, ::DoNothing<VARIANT*>, RecordVariantRelease, 0>
 {
 public:
     RecordVariantHolder(VARIANT* p = NULL)
-        : Wrapper<VARIANT*, ::DoNothing<VARIANT*>, RecordVariantRelease, NULL>(p)
+        : Wrapper<VARIANT*, ::DoNothing<VARIANT*>, RecordVariantRelease, 0>(p)
     {
         WRAPPER_NO_CONTRACT;
     }
@@ -1266,7 +1217,7 @@ public:
     FORCEINLINE void operator=(VARIANT* p)
     {
         WRAPPER_NO_CONTRACT;
-        Wrapper<VARIANT*, ::DoNothing<VARIANT*>, RecordVariantRelease, NULL>::operator=(p);
+        Wrapper<VARIANT*, ::DoNothing<VARIANT*>, RecordVariantRelease, 0>::operator=(p);
     }
 };
 #endif  // FEATURE_COMINTEROP
@@ -2205,47 +2156,55 @@ void OleVariant::MarshalLPWSTRRArrayComToOle(BASEARRAYREF *pComArray, void *oleA
     }
     CONTRACTL_END;
 
-    ASSERT_PROTECTED(pComArray);
-
     LPWSTR *pOle = (LPWSTR *) oleArray;
     LPWSTR *pOleEnd = pOle + cElements;
 
-    STRINGREF *pCom = (STRINGREF *) (*pComArray)->GetDataPtr();
-
-    while (pOle < pOleEnd)
+    struct
     {
-        //
-        // We aren't calling anything which might cause a GC, so don't worry about
-        // the array moving here.
-        //
+        BASEARRAYREF pCom;
+        STRINGREF stringRef;
+    } gc;
+    gc.pCom = *pComArray;
+    gc.stringRef = NULL;
+    GCPROTECT_BEGIN(gc)
+    {
 
-        STRINGREF stringRef = *pCom++;
-
-        LPWSTR lpwstr;
-        if (stringRef == NULL)
+        int i = 0;
+        while (pOle < pOleEnd)
         {
-            lpwstr = NULL;
+            gc.stringRef = *((STRINGREF*)gc.pCom->GetDataPtr() + i);
+
+            LPWSTR lpwstr;
+            if (gc.stringRef == NULL)
+            {
+                lpwstr = NULL;
+            }
+            else
+            {
+                // Retrieve the length of the string.
+                int Length = gc.stringRef->GetStringLength();
+                int allocLength = (Length + 1) * sizeof(WCHAR);
+                if (allocLength < Length)
+                    ThrowOutOfMemory();
+
+                // Allocate the string using CoTaskMemAlloc.
+                {
+                    GCX_PREEMP();
+                    lpwstr = (LPWSTR)CoTaskMemAlloc(allocLength);
+                }
+                if (lpwstr == NULL)
+                    ThrowOutOfMemory();
+
+                // Copy the COM+ string into the newly allocated LPWSTR.
+                memcpyNoGCRefs(lpwstr, gc.stringRef->GetBuffer(), allocLength);
+                lpwstr[Length] = W('\0');
+            }
+
+            *pOle++ = lpwstr;
+            i++;
         }
-        else
-        {
-            // Retrieve the length of the string.
-            int Length = stringRef->GetStringLength();
-            int allocLength = (Length + 1) * sizeof(WCHAR);
-            if (allocLength < Length)
-                ThrowOutOfMemory();
-
-            // Allocate the string using CoTaskMemAlloc.
-            lpwstr = (LPWSTR)CoTaskMemAlloc(allocLength);
-            if (lpwstr == NULL)
-                ThrowOutOfMemory();
-
-            // Copy the COM+ string into the newly allocated LPWSTR.
-            memcpyNoGCRefs(lpwstr, stringRef->GetBuffer(), (Length + 1) * sizeof(WCHAR));
-            lpwstr[Length] = 0;
-        }
-
-        *pOle++ = lpwstr;
     }
+    GCPROTECT_END();
 }
 
 void OleVariant::ClearLPWSTRArray(void *oleArray, SIZE_T cElements, MethodTable *pInterfaceMT, PCODE pManagedMarshalerCode)
@@ -2253,12 +2212,13 @@ void OleVariant::ClearLPWSTRArray(void *oleArray, SIZE_T cElements, MethodTable 
     CONTRACTL
     {
         NOTHROW;
-        GC_NOTRIGGER;
+        GC_TRIGGERS;
         MODE_ANY;
         PRECONDITION(CheckPointer(oleArray));
     }
     CONTRACTL_END;
 
+    GCX_PREEMP();
     LPWSTR *pOle = (LPWSTR *) oleArray;
     LPWSTR *pOleEnd = pOle + cElements;
 
@@ -2341,48 +2301,56 @@ void OleVariant::MarshalLPSTRRArrayComToOle(BASEARRAYREF *pComArray, void *oleAr
     }
     CONTRACTL_END;
 
-    ASSERT_PROTECTED(pComArray);
-
     LPSTR *pOle = (LPSTR *) oleArray;
     LPSTR *pOleEnd = pOle + cElements;
 
-    STRINGREF *pCom = (STRINGREF *) (*pComArray)->GetDataPtr();
-
-    while (pOle < pOleEnd)
+    struct
     {
-        //
-        // We aren't calling anything which might cause a GC, so don't worry about
-        // the array moving here.
-        //
-        STRINGREF stringRef = *pCom++;
-
-        CoTaskMemHolder<CHAR> lpstr(NULL);
-        if (stringRef == NULL)
+        BASEARRAYREF pCom;
+        STRINGREF stringRef;
+    } gc;
+    gc.pCom = *pComArray;
+    gc.stringRef = NULL;
+    GCPROTECT_BEGIN(gc)
+    {
+        int i = 0;
+        while (pOle < pOleEnd)
         {
-            lpstr = NULL;
+            gc.stringRef = *((STRINGREF*)gc.pCom->GetDataPtr() + i);
+
+            CoTaskMemHolder<CHAR> lpstr(NULL);
+            if (gc.stringRef == NULL)
+            {
+                lpstr = NULL;
+            }
+            else
+            {
+                // Retrieve the length of the string.
+                int Length = gc.stringRef->GetStringLength();
+                int allocLength = Length * GetMaxDBCSCharByteSize() + 1;
+                if (allocLength < Length)
+                    ThrowOutOfMemory();
+
+                // Allocate the string using CoTaskMemAlloc.
+                {
+                    GCX_PREEMP();
+                    lpstr = (LPSTR)CoTaskMemAlloc(allocLength);
+                }
+                if (lpstr == NULL)
+                    ThrowOutOfMemory();
+
+                // Convert the unicode string to an ansi string.
+                int bytesWritten = InternalWideToAnsi(gc.stringRef->GetBuffer(), Length, lpstr, allocLength, fBestFitMapping, fThrowOnUnmappableChar);
+                _ASSERTE(bytesWritten >= 0 && bytesWritten < allocLength);
+                lpstr[bytesWritten] = '\0';
+            }
+
+            *pOle++ = lpstr;
+            i++;
+            lpstr.SuppressRelease();
         }
-        else
-        {
-            // Retrieve the length of the string.
-            int Length = stringRef->GetStringLength();
-            int allocLength = Length * GetMaxDBCSCharByteSize() + 1;
-            if (allocLength < Length)
-                ThrowOutOfMemory();
-
-            // Allocate the string using CoTaskMemAlloc.
-            lpstr = (LPSTR)CoTaskMemAlloc(allocLength);
-            if (lpstr == NULL)
-                ThrowOutOfMemory();
-
-            // Convert the unicode string to an ansi string.
-            int bytesWritten = InternalWideToAnsi(stringRef->GetBuffer(), Length, lpstr, allocLength, fBestFitMapping, fThrowOnUnmappableChar);
-            _ASSERTE(bytesWritten >= 0 && bytesWritten < allocLength);
-            lpstr[bytesWritten] = 0;
-        }
-
-        *pOle++ = lpstr;
-        lpstr.SuppressRelease();
     }
+    GCPROTECT_END();
 }
 
 void OleVariant::ClearLPSTRArray(void *oleArray, SIZE_T cElements, MethodTable *pInterfaceMT, PCODE pManagedMarshalerCode)
@@ -2390,12 +2358,13 @@ void OleVariant::ClearLPSTRArray(void *oleArray, SIZE_T cElements, MethodTable *
     CONTRACTL
     {
         NOTHROW;
-        GC_NOTRIGGER;
+        GC_TRIGGERS;
         MODE_ANY;
         PRECONDITION(CheckPointer(oleArray));
     }
     CONTRACTL_END;
 
+    GCX_PREEMP();
     LPSTR *pOle = (LPSTR *) oleArray;
     LPSTR *pOleEnd = pOle + cElements;
 
@@ -2598,17 +2567,34 @@ void OleVariant::MarshalRecordVariantOleToCom(VARIANT *pOleVariant,
     if (!pRecInfo)
         COMPlusThrow(kArgumentException, IDS_EE_INVALID_OLE_VARIANT);
 
+    LPVOID pvRecord = V_RECORD(pOleVariant);
+    if (pvRecord == NULL)
+    {
+        pComVariant->SetObjRef(NULL);
+        return;
+    }
+
+    MethodTable* pValueClass = NULL;
+    {
+        GCX_PREEMP();
+        pValueClass = GetMethodTableForRecordInfo(pRecInfo);
+    }
+
+    if (pValueClass == NULL)
+    {
+        // This value type should have been registered through
+        // a TLB. CoreCLR doesn't support dynamic type mapping.
+        COMPlusThrow(kArgumentException, IDS_EE_CANNOT_MAP_TO_MANAGED_VC);
+    }
+    _ASSERTE(pValueClass->IsBlittable());
+
     OBJECTREF BoxedValueClass = NULL;
     GCPROTECT_BEGIN(BoxedValueClass)
     {
-        LPVOID pvRecord = V_RECORD(pOleVariant);
-        if (pvRecord)
-        {
-            // This value type should have been registered through
-            // a TLB. CoreCLR doesn't support dynamic type mapping.
-            COMPlusThrow(kArgumentException, IDS_EE_CANNOT_MAP_TO_MANAGED_VC);
-        }
-
+        // Now that we have a blittable value class, allocate an instance of the
+        // boxed value class and copy the contents of the record into it.
+        BoxedValueClass = AllocateObject(pValueClass);
+        memcpyNoGCRefs(BoxedValueClass->GetData(), (BYTE*)pvRecord, pValueClass->GetNativeSize());
         pComVariant->SetObjRef(BoxedValueClass);
     }
     GCPROTECT_END();
@@ -2819,7 +2805,7 @@ void OleVariant::MarshalOleVariantForObject(OBJECTREF * const & pObj, VARIANT *p
         }
         else if (pMT == CoreLibBinder::GetElementType(ELEMENT_TYPE_BOOLEAN))
         {
-            V_BOOL(pOle) = *(U1*)( (*pObj)->GetData() ) ? VARIANT_TRUE : VARIANT_FALSE;
+            V_BOOL(pOle) = *(CLR_BOOL*)( (*pObj)->GetData() ) ? VARIANT_TRUE : VARIANT_FALSE;
             V_VT(pOle) = VT_BOOL;
         }
         else if (pMT == CoreLibBinder::GetElementType(ELEMENT_TYPE_I))
@@ -2992,7 +2978,7 @@ HRESULT OleVariant::MarshalCommonOleRefVariantForObject(OBJECTREF *pObj, VARIANT
         // deallocation of old value optimized away since there's nothing to
         // deallocate for this vartype.
 
-        *(V_BOOLREF(pOle)) =  ( *(U1*)( (*pObj)->GetData() ) ) ? VARIANT_TRUE : VARIANT_FALSE;
+        *(V_BOOLREF(pOle)) =  ( *(CLR_BOOL*)( (*pObj)->GetData() ) ) ? VARIANT_TRUE : VARIANT_FALSE;
     }
     else if ( (V_VT(pOle) == (VT_BYREF | VT_INT) || V_VT(pOle) == (VT_BYREF | VT_UINT)) && (pMT == CoreLibBinder::GetElementType(ELEMENT_TYPE_I4) || pMT == CoreLibBinder::GetElementType(ELEMENT_TYPE_U4)) )
     {
@@ -4647,8 +4633,8 @@ void OleVariant::MarshalArrayRefForSafeArray(SAFEARRAY *pSafeArray,
 
             if (!CorTypeInfo::IsPrimitiveType(th.GetInternalCorElementType()))
             {
-                _ASSERTE(!strcmp(th.AsMethodTable()->GetDebugClassName(),
-                                 "System.Currency"));
+                _ASSERTE(!strcmp(th.AsMethodTable()->GetDebugClassName(), "System.Currency")
+                        || !strcmp(th.AsMethodTable()->GetDebugClassName(), "System.Decimal"));
             }
         }
 #endif
@@ -4710,7 +4696,21 @@ void OleVariant::ConvertValueClassToVariant(OBJECTREF *pBoxedValueClass, VARIANT
 
     // Retrieve the ITypeInfo for the value class.
     MethodTable *pValueClassMT = (*pBoxedValueClass)->GetMethodTable();
-    IfFailThrow(GetITypeInfoForEEClass(pValueClassMT, &pTypeInfo, true /* bClassInfo */));
+    hr = GetITypeInfoForEEClass(pValueClassMT, &pTypeInfo, true /* bClassInfo */);
+    if (FAILED(hr))
+    {
+        if (hr == TLBX_E_LIBNOTREGISTERED)
+        {
+            // Indicate that conversion of the class to variant without a registered type lib is not supported
+            StackSString className;
+            pValueClassMT->_GetFullyQualifiedNameForClass(className);
+            COMPlusThrow(kNotSupportedException, IDS_EE_CLASS_TO_VARIANT_TLB_NOT_REG, className.GetUnicode());
+        }
+        else
+        {
+            COMPlusThrowHR(hr);
+        }
+    }
 
     // Convert the ITypeInfo to an IRecordInfo.
     hr = GetRecordInfoFromTypeInfo(pTypeInfo, &V_RECORDINFO(pRecHolder));
@@ -4731,11 +4731,8 @@ void OleVariant::ConvertValueClassToVariant(OBJECTREF *pBoxedValueClass, VARIANT
     // Marshal the contents of the value class into the record.
     MethodDesc* pStructMarshalStub;
     {
-        GCPROTECT_BEGIN(*pBoxedValueClass);
         GCX_PREEMP();
-
         pStructMarshalStub = NDirect::CreateStructMarshalILStub(pValueClassMT);
-        GCPROTECT_END();
     }
 
     MarshalStructViaILStub(pStructMarshalStub, (*pBoxedValueClass)->GetData(), (BYTE*)V_RECORD(pRecHolder), StructMarshalStubs::MarshalOperation::Marshal);
@@ -4789,7 +4786,7 @@ void OleVariant::TransposeArrayData(BYTE *pDestData, BYTE *pSrcData, SIZE_T dwNu
             aDestElemCount[iDims] = pSafeArray->rgsabound[iDims].cElements;
     }
 
-    // Initalize the indexes for each dimension to 0.
+    // Initialize the indexes for each dimension to 0.
     memset(aDestIndex, 0, pSafeArray->cDims * sizeof(int));
 
     // Set all the destination data positions to the start of the array.
@@ -4833,7 +4830,7 @@ void OleVariant::TransposeArrayData(BYTE *pDestData, BYTE *pSrcData, SIZE_T dwNu
     }
 }
 
-BOOL OleVariant::IsArrayOfWrappers(BASEARRAYREF *pArray, BOOL *pbOfInterfaceWrappers)
+BOOL OleVariant::IsArrayOfWrappers(_In_ BASEARRAYREF *pArray, _Out_opt_ BOOL *pbOfInterfaceWrappers)
 {
     CONTRACTL
     {
@@ -4843,6 +4840,11 @@ BOOL OleVariant::IsArrayOfWrappers(BASEARRAYREF *pArray, BOOL *pbOfInterfaceWrap
     }
     CONTRACTL_END;
 
+    if (!g_pConfig->IsBuiltInCOMSupported())
+    {
+        return FALSE;
+    }
+
     TypeHandle hndElemType = (*pArray)->GetArrayElementTypeHandle();
 
     if (!hndElemType.IsTypeDesc())
@@ -4850,7 +4852,10 @@ BOOL OleVariant::IsArrayOfWrappers(BASEARRAYREF *pArray, BOOL *pbOfInterfaceWrap
         if (hndElemType == TypeHandle(CoreLibBinder::GetClass(CLASS__DISPATCH_WRAPPER)) ||
             hndElemType == TypeHandle(CoreLibBinder::GetClass(CLASS__UNKNOWN_WRAPPER)))
         {
-            *pbOfInterfaceWrappers = TRUE;
+            if (pbOfInterfaceWrappers)
+            {
+                *pbOfInterfaceWrappers = TRUE;
+            }
             return TRUE;
         }
 
@@ -4858,12 +4863,17 @@ BOOL OleVariant::IsArrayOfWrappers(BASEARRAYREF *pArray, BOOL *pbOfInterfaceWrap
             hndElemType == TypeHandle(CoreLibBinder::GetClass(CLASS__CURRENCY_WRAPPER)) ||
             hndElemType == TypeHandle(CoreLibBinder::GetClass(CLASS__BSTR_WRAPPER)))
         {
-            *pbOfInterfaceWrappers = FALSE;
+            if (pbOfInterfaceWrappers)
+            {
+                *pbOfInterfaceWrappers = FALSE;
+            }
             return TRUE;
         }
     }
 
-    *pbOfInterfaceWrappers = FALSE;
+    if (pbOfInterfaceWrappers)
+        *pbOfInterfaceWrappers = FALSE;
+
     return FALSE;
 }
 
@@ -4875,6 +4885,7 @@ BASEARRAYREF OleVariant::ExtractWrappedObjectsFromArray(BASEARRAYREF *pArray)
         GC_TRIGGERS;
         MODE_COOPERATIVE;
         PRECONDITION(CheckPointer(pArray));
+        PRECONDITION(IsArrayOfWrappers(pArray, NULL));
     }
     CONTRACTL_END;
 
@@ -5008,6 +5019,7 @@ TypeHandle OleVariant::GetWrappedArrayElementType(BASEARRAYREF *pArray)
         GC_TRIGGERS;
         MODE_COOPERATIVE;
         PRECONDITION(CheckPointer(pArray));
+        PRECONDITION(IsArrayOfWrappers(pArray, NULL));
     }
     CONTRACTL_END;
 
@@ -5053,8 +5065,7 @@ TypeHandle OleVariant::GetArrayElementTypeWrapperAware(BASEARRAYREF *pArray)
     }
     CONTRACTL_END;
 
-    BOOL bArrayOfInterfaceWrappers;
-    if (IsArrayOfWrappers(pArray, &bArrayOfInterfaceWrappers))
+    if (IsArrayOfWrappers(pArray, nullptr))
     {
         return GetWrappedArrayElementType(pArray);
     }
@@ -5259,4 +5270,3 @@ BSTR OleVariant::ConvertStringToBSTR(STRINGREF *pStringObj)
 }
 #endif // FEATURE_COMINTEROP
 
-#endif // CROSSGEN_COMPILE

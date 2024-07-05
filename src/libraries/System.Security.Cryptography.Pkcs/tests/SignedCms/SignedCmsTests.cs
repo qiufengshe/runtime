@@ -187,7 +187,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
                 () => new SignedCms(SubjectIdentifierType.SubjectKeyIdentifier, null, true));
         }
 
-        [Fact]
+        [ConditionalFact(typeof(SignatureSupport), nameof(SignatureSupport.SupportsRsaSha1Signatures))]
         public static void CheckSignature_ExtraStore_IsAdditional()
         {
             SignedCms cms = new SignedCms();
@@ -200,7 +200,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
             cms.CheckSignature(new X509Certificate2Collection(), true);
         }
 
-        [Fact]
+        [ConditionalFact(typeof(SignatureSupport), nameof(SignatureSupport.SupportsRsaSha1Signatures))]
         public static void Decode_IgnoresExtraData()
         {
             byte[] basis = SignedDocuments.RsaPkcs1OneSignerIssuerAndSerialNumber;
@@ -535,6 +535,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
         [Theory]
         [InlineData(SubjectIdentifierType.IssuerAndSerialNumber, false)]
         [InlineData(SubjectIdentifierType.IssuerAndSerialNumber, true)]
+        [SkipOnPlatform(PlatformSupport.MobileAppleCrypto, "DSA is not available")]
         public static void AddFirstSigner_DSA(SubjectIdentifierType identifierType, bool detached)
         {
             ContentInfo contentInfo = new ContentInfo(new byte[] { 9, 8, 7, 6, 5 });
@@ -561,7 +562,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
             Assert.NotSame(cms.Certificates[0], firstSigner.Certificate);
             Assert.Equal(cms.Certificates[0], firstSigner.Certificate);
 
-#if NETCOREAPP
+#if NET
             byte[] signature = firstSigner.GetSignature();
             Assert.NotEmpty(signature);
             // DSA PKIX signature format is a DER SEQUENCE.
@@ -580,7 +581,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
             Assert.Equal(identifierType, cms.SignerInfos[0].SignerIdentifier.Type);
             Assert.Equal(firstSigner.Certificate, cms.SignerInfos[0].Certificate);
 
-#if NETCOREAPP
+#if NET
             byte[] sig2 = cms.SignerInfos[0].GetSignature();
             Assert.Equal(signature, sig2);
 #endif
@@ -632,7 +633,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
             Assert.NotSame(cms.Certificates[0], firstSigner.Certificate);
             Assert.Equal(cms.Certificates[0], firstSigner.Certificate);
 
-#if NETCOREAPP
+#if NET
             byte[] signature = firstSigner.GetSignature();
             Assert.NotEmpty(signature);
             // ECDSA PKIX signature format is a DER SEQUENCE.
@@ -654,7 +655,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
             Assert.Equal(identifierType, cms.SignerInfos[0].SignerIdentifier.Type);
             Assert.Equal(firstSigner.Certificate, cms.SignerInfos[0].Certificate);
 
-#if NETCOREAPP
+#if NET
             byte[] sig2 = cms.SignerInfos[0].GetSignature();
             Assert.Equal(signature, sig2);
 #endif
@@ -1036,7 +1037,16 @@ namespace System.Security.Cryptography.Pkcs.Tests
             else
             {
                 cms = new SignedCms();
-                cms.Decode(SignedDocuments.OneDsa1024);
+
+                // DSA is not supported on mobile Apple platforms, so use ECDsa signed document instead
+                if (PlatformDetection.UsesMobileAppleCrypto)
+                {
+                    cms.Decode(SignedDocuments.SHA256ECDSAWithRsaSha256DigestIdentifier);
+                }
+                else
+                {
+                    cms.Decode(SignedDocuments.OneDsa1024);
+                }
             }
 
             int preCount = cms.Certificates.Count;
@@ -1080,7 +1090,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
 
                 if (newDocument)
                 {
-                    // These indicies are manually computable by observing the certificate sizes.
+                    // These indices are manually computable by observing the certificate sizes.
                     // But they'll be stable unless a cert changes.
                     u1Idx = 3;
                     u1CopyIdx = 4;
@@ -1122,7 +1132,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
             cms.CheckSignature(true);
         }
 
-        [Fact]
+        [ConditionalFact(typeof(SignatureSupport), nameof(SignatureSupport.SupportsRsaSha1Signatures))]
         public static void UntrustedCertFails_WhenTrustChecked()
         {
             SignedCms cms = new SignedCms();
@@ -1155,7 +1165,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
 
             // CheckSignature doesn't read the public mutable data
             contentInfo.Content[0] ^= 0xFF;
-#if !NETCOREAPP
+#if !NET
             contentInfo.ContentType.Value = Oids.Pkcs7Hashed;
 #endif
             cms.CheckSignature(true);
@@ -1431,7 +1441,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
             Assert.Equal(contentHex, signedCms.ContentInfo.Content.ByteArrayToHex());
         }
 
-        [Fact]
+        [ConditionalFact(typeof(SignatureSupport), nameof(SignatureSupport.SupportsRsaSha1Signatures))]
         public static void CheckSignedEncrypted_IssuerSerial_FromNetFx()
         {
             CheckSignedEncrypted(
@@ -1439,7 +1449,7 @@ namespace System.Security.Cryptography.Pkcs.Tests
                 SubjectIdentifierType.IssuerAndSerialNumber);
         }
 
-        [Fact]
+        [ConditionalFact(typeof(SignatureSupport), nameof(SignatureSupport.SupportsRsaSha1Signatures))]
         public static void CheckSignedEncrypted_SKID_FromNetFx()
         {
             CheckSignedEncrypted(
@@ -1590,6 +1600,15 @@ namespace System.Security.Cryptography.Pkcs.Tests
             // Assert.NoThrow
             cms.CheckHash();
             signers[0].CheckHash();
+        }
+
+        [Fact]
+        public static void Decode_CanDecodeWithAttributeCertificate()
+        {
+            SignedCms cms = new SignedCms();
+            cms.Decode(SignedDocuments.TstWithAttributeCertificate);
+            Assert.Equal(2, cms.Certificates.Count);
+            cms.CheckSignature(verifySignatureOnly: true);
         }
 
         private static void CheckNoSignature(byte[] encoded, bool badOid=false)

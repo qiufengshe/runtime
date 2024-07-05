@@ -2,17 +2,17 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Runtime.InteropServices;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 
 internal static partial class Interop
 {
     internal static partial class Winsock
     {
-        [DllImport(Interop.Libraries.Ws2_32, SetLastError = true)]
-        internal static extern unsafe SocketError getpeername(
-            [In] SafeSocketHandle socketHandle,
-            [Out] byte* socketAddress,
-            [In, Out] ref int socketAddressSize);
+        [LibraryImport(Interop.Libraries.Ws2_32, SetLastError = true)]
+        internal static unsafe partial SocketError getpeername(
+            SafeSocketHandle socketHandle,
+            byte* socketAddress,
+            ref int socketAddressSize);
     }
 }

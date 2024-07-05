@@ -8,7 +8,6 @@ enum class WellKnownAttribute : DWORD
 {
     ParamArray,
     DefaultMember,
-    DisablePrivateReflectionType,
     FixedAddressValueType,
     UnsafeValueType,
     BestFitMapping,
@@ -23,12 +22,12 @@ enum class WellKnownAttribute : DWORD
     DefaultDllImportSearchPaths,
     Guid,
     LCIDConversion,
-    IDispatchImpl,
     ImportedFromTypeLib,
     Intrinsic,
     IsByRefLike,
     PrimaryInteropAssembly,
     ManagedToNativeComInteropStub,
+    UnmanagedCallConv,
     UnmanagedCallersOnly,
     NativeCallableInternal, // This is needed to support MCG scenarios
     TypeIdentifier,
@@ -36,6 +35,9 @@ enum class WellKnownAttribute : DWORD
     ThreadStatic,
     WinRTMarshalingBehaviorAttribute,
     PreserveBaseOverridesAttribute,
+    ObjectiveCTrackedTypeAttribute,
+    InlineArrayAttribute,
+    UnsafeAccessorAttribute,
 
     CountOfWellKnownAttributes
 };
@@ -48,8 +50,6 @@ inline const char *GetWellKnownAttributeName(WellKnownAttribute attribute)
             return "System.ParamArrayAttribute";
         case WellKnownAttribute::DefaultMember:
             return "System.Reflection.DefaultMemberAttribute";
-        case WellKnownAttribute::DisablePrivateReflectionType:
-            return "System.Runtime.CompilerServices.DisablePrivateReflectionAttribute";
         case WellKnownAttribute::FixedAddressValueType:
             return "System.Runtime.CompilerServices.FixedAddressValueTypeAttribute";
         case WellKnownAttribute::UnsafeValueType:
@@ -78,8 +78,6 @@ inline const char *GetWellKnownAttributeName(WellKnownAttribute attribute)
             return "System.Runtime.InteropServices.GuidAttribute";
         case WellKnownAttribute::LCIDConversion:
             return "System.Runtime.InteropServices.LCIDConversionAttribute";
-        case WellKnownAttribute::IDispatchImpl:
-            return "System.Runtime.InteropServices.IDispatchImplAttribute";
         case WellKnownAttribute::ImportedFromTypeLib:
             return "System.Runtime.InteropServices.ImportedFromTypeLibAttribute";
         case WellKnownAttribute::Intrinsic:
@@ -90,6 +88,8 @@ inline const char *GetWellKnownAttributeName(WellKnownAttribute attribute)
             return "System.Runtime.InteropServices.PrimaryInteropAssemblyAttribute";
         case WellKnownAttribute::ManagedToNativeComInteropStub:
             return "System.Runtime.InteropServices.ManagedToNativeComInteropStubAttribute";
+        case WellKnownAttribute::UnmanagedCallConv:
+            return "System.Runtime.InteropServices.UnmanagedCallConvAttribute";
         case WellKnownAttribute::UnmanagedCallersOnly:
             return "System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute";
         case WellKnownAttribute::NativeCallableInternal:
@@ -104,6 +104,12 @@ inline const char *GetWellKnownAttributeName(WellKnownAttribute attribute)
             return "Windows.Foundation.Metadata.MarshalingBehaviorAttribute";
         case WellKnownAttribute::PreserveBaseOverridesAttribute:
             return "System.Runtime.CompilerServices.PreserveBaseOverridesAttribute";
+        case WellKnownAttribute::ObjectiveCTrackedTypeAttribute:
+            return "System.Runtime.InteropServices.ObjectiveC.ObjectiveCTrackedTypeAttribute";
+        case WellKnownAttribute::InlineArrayAttribute:
+            return "System.Runtime.CompilerServices.InlineArrayAttribute";
+        case WellKnownAttribute::UnsafeAccessorAttribute:
+            return "System.Runtime.CompilerServices.UnsafeAccessorAttribute";
         case WellKnownAttribute::CountOfWellKnownAttributes:
         default:
             break; // Silence compiler warnings

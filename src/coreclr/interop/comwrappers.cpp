@@ -2,10 +2,13 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 #include "comwrappers.hpp"
-#include <interoplibabi.h>
 #include <interoplibimports.h>
+#include <corerror.h>
+#include <minipal/utils.h>
 
+#ifdef _WIN32
 #include <new> // placement new
+#endif // _WIN32
 
 using OBJECTHANDLE = InteropLib::OBJECTHANDLE;
 using AllocScenario = InteropLibImports::AllocScenario;
@@ -132,12 +135,12 @@ namespace ABI
                 // Insert the 'this' pointer at the appropriate locations
                 // e.g.:
                 //       32-bit         |      64-bit
-                //   (0 * 4) % 16 =  0  |  (0 * 8) % 16 = 0
-                //   (1 * 4) % 16 =  4  |  (1 * 8) % 16 = 8
-                //   (2 * 4) % 16 =  8  |  (2 * 8) % 16 = 0
-                //   (3 * 4) % 16 = 12  |  (3 * 8) % 16 = 8
-                //   (4 * 4) % 16 =  0  |  (4 * 8) % 16 = 0
-                //   (5 * 4) % 16 =  4  |  (5 * 8) % 16 = 8
+                //   (0 * 4) % 16 =  0  |  (0 * 8) % 64 =  0
+                //   (1 * 4) % 16 =  4  |  (1 * 8) % 64 =  8
+                //   (2 * 4) % 16 =  8  |  (2 * 8) % 64 = 16
+                //   (3 * 4) % 16 = 12  |  ...
+                //   (4 * 4) % 16 =  0  |  (7 * 8) % 64 = 56
+                //   (5 * 4) % 16 =  4  |  (8 * 8) % 64 =  0
                 //
                 if (((dispCount * sizeof(void*)) % ABI::DispatchAlignmentThisPtr) == 0)
                 {
@@ -180,8 +183,7 @@ namespace ABI
 }
 
 // ManagedObjectWrapper_QueryInterface needs to be visible outside of this compilation unit
-// to support the DAC. See code:ClrDataAccess::DACTryGetComWrappersObjectFromCCW for the
-// usage in the DAC (look for the GetEEFuncEntryPoint call).
+// to support the DAC (look for the GetEEFuncEntryPoint call).
 HRESULT STDMETHODCALLTYPE ManagedObjectWrapper_QueryInterface(
     _In_ ABI::ComInterfaceDispatch* disp,
     /* [in] */ REFIID riid,
@@ -220,6 +222,36 @@ namespace
     static_assert(sizeof(ManagedObjectWrapper_IUnknownImpl) == (3 * sizeof(void*)), "Unexpected vtable size");
 }
 
+// TrackerTarget_QueryInterface needs to be visible outside of this compilation unit
+// to support the DAC (look for the GetEEFuncEntryPoint call).
+HRESULT STDMETHODCALLTYPE TrackerTarget_QueryInterface(
+    _In_ ABI::ComInterfaceDispatch* disp,
+    /* [in] */ REFIID riid,
+    /* [iid_is][out] */ _COM_Outptr_ void __RPC_FAR* __RPC_FAR* ppvObject)
+{
+    ManagedObjectWrapper* wrapper = ABI::ToManagedObjectWrapper(disp);
+
+    // AddRef is "safe" at this point because since it is a MOW with an outstanding
+    // Reference Tracker reference, we know for sure the MOW is not claimed yet
+    // but the managed object could be. If the managed object is alive at this
+    // moment the AddRef will ensure it remains alive for the duration of the
+    // QueryInterface.
+    ComHolder<ManagedObjectWrapper> ensureStableLifetime{ wrapper };
+
+    // For MOWs that have outstanding Reference Tracker reference, they could be either:
+    //  1. Marked to Destroy - in this case it is unsafe to touch wrapper.
+    //  2. Object Handle target has been NULLed out by GC.
+    if (wrapper->IsMarkedToDestroy()
+        || !InteropLibImports::HasValidTarget(wrapper->Target))
+    {
+        // It is unsafe to proceed with a QueryInterface call. The MOW has been
+        // marked destroyed or the associated managed object has been collected.
+        return COR_E_ACCESSING_CCW;
+    }
+
+    return wrapper->QueryInterface(riid, ppvObject);
+}
+
 namespace
 {
     const int32_t TrackerRefShift = 32;
@@ -236,6 +268,11 @@ namespace
     constexpr ULONG GetComCount(_In_ ULONGLONG c)
     {
         return static_cast<ULONG>(c & ComRefCountMask);
+    }
+
+    constexpr bool IsMarkedToDestroy(_In_ ULONGLONG c)
+    {
+        return (c & DestroySentinel) != 0;
     }
 
     ULONG STDMETHODCALLTYPE TrackerTarget_AddRefFromReferenceTracker(_In_ ABI::ComInterfaceDispatch* disp)
@@ -281,13 +318,17 @@ namespace
     // Hard-coded IReferenceTrackerTarget vtable
     const struct
     {
-        decltype(ManagedObjectWrapper_IUnknownImpl) IUnknownImpl;
+        decltype(&TrackerTarget_QueryInterface) QueryInterface;
+        decltype(&ManagedObjectWrapper_AddRef) AddRef;
+        decltype(&ManagedObjectWrapper_Release) Release;
         decltype(&TrackerTarget_AddRefFromReferenceTracker) AddRefFromReferenceTracker;
         decltype(&TrackerTarget_ReleaseFromReferenceTracker) ReleaseFromReferenceTracker;
         decltype(&TrackerTarget_Peg) Peg;
         decltype(&TrackerTarget_Unpeg) Unpeg;
     } ManagedObjectWrapper_IReferenceTrackerTargetImpl {
-        ManagedObjectWrapper_IUnknownImpl,
+        &TrackerTarget_QueryInterface,
+        &ManagedObjectWrapper_AddRef,
+        &ManagedObjectWrapper_Release,
         &TrackerTarget_AddRefFromReferenceTracker,
         &TrackerTarget_ReleaseFromReferenceTracker,
         &TrackerTarget_Peg,
@@ -295,6 +336,41 @@ namespace
     };
 
     static_assert(sizeof(ManagedObjectWrapper_IReferenceTrackerTargetImpl) == (7 * sizeof(void*)), "Unexpected vtable size");
+}
+
+namespace
+{
+    // This IID represents an internal interface we define to tag any ManagedObjectWrappers we create.
+    // This interface type and GUID do not correspond to any public interface; it is an internal implementation detail.
+    // 5c13e51c-4f32-4726-a3fd-f3edd63da3a0
+    const GUID IID_TaggedImpl = { 0x5c13e51c, 0x4f32, 0x4726, { 0xa3, 0xfd, 0xf3, 0xed, 0xd6, 0x3d, 0xa3, 0xa0 } };
+
+    class DECLSPEC_UUID("5c13e51c-4f32-4726-a3fd-f3edd63da3a0") ITaggedImpl : public IUnknown
+    {
+    public:
+        STDMETHOD(IsCurrentVersion)(_In_ void* version) = 0;
+    };
+
+    HRESULT STDMETHODCALLTYPE ITaggedImpl_IsCurrentVersion(_In_ void*, _In_ void* version)
+    {
+        return (version == (void*)&ITaggedImpl_IsCurrentVersion) ? S_OK : E_FAIL;
+    }
+
+    // Hard-coded ManagedObjectWrapper tagged vtable.
+    const struct
+    {
+        decltype(&ManagedObjectWrapper_QueryInterface) QueryInterface;
+        decltype(&ManagedObjectWrapper_AddRef) AddRef;
+        decltype(&ManagedObjectWrapper_Release) Release;
+        decltype(&ITaggedImpl_IsCurrentVersion) IsCurrentVersion;
+    } ManagedObjectWrapper_TaggedImpl {
+        &ManagedObjectWrapper_QueryInterface,
+        &ManagedObjectWrapper_AddRef,
+        &ManagedObjectWrapper_Release,
+        &ITaggedImpl_IsCurrentVersion,
+    };
+
+    static_assert(sizeof(ManagedObjectWrapper_TaggedImpl) == (4 * sizeof(void*)), "Unexpected vtable size");
 }
 
 void ManagedObjectWrapper::GetIUnknownImpl(
@@ -306,9 +382,9 @@ void ManagedObjectWrapper::GetIUnknownImpl(
             && fpAddRef != nullptr
             && fpRelease != nullptr);
 
-    *fpQueryInterface = ManagedObjectWrapper_IUnknownImpl.QueryInterface;
-    *fpAddRef = ManagedObjectWrapper_IUnknownImpl.AddRef;
-    *fpRelease = ManagedObjectWrapper_IUnknownImpl.Release;
+    *fpQueryInterface = (void*)ManagedObjectWrapper_IUnknownImpl.QueryInterface;
+    *fpAddRef = (void*)ManagedObjectWrapper_IUnknownImpl.AddRef;
+    *fpRelease = (void*)ManagedObjectWrapper_IUnknownImpl.Release;
 }
 
 // The logic here should match code:ClrDataAccess::DACTryGetComWrappersObjectFromCCW in daccess/request.cpp
@@ -316,11 +392,37 @@ ManagedObjectWrapper* ManagedObjectWrapper::MapFromIUnknown(_In_ IUnknown* pUnk)
 {
     _ASSERTE(pUnk != nullptr);
 
-    // If the first Vtable entry is part of the ManagedObjectWrapper IUnknown impl,
+    // If the first Vtable entry is part of a ManagedObjectWrapper impl,
     // we know how to interpret the IUnknown.
     void** vtable = *reinterpret_cast<void***>(pUnk);
-    if (*vtable != ManagedObjectWrapper_IUnknownImpl.QueryInterface)
+    if (*vtable != ManagedObjectWrapper_IUnknownImpl.QueryInterface
+        && *vtable != ManagedObjectWrapper_IReferenceTrackerTargetImpl.QueryInterface)
+    {
         return nullptr;
+    }
+
+    ABI::ComInterfaceDispatch* disp = reinterpret_cast<ABI::ComInterfaceDispatch*>(pUnk);
+    return ABI::ToManagedObjectWrapper(disp);
+}
+
+ManagedObjectWrapper* ManagedObjectWrapper::MapFromIUnknownWithQueryInterface(_In_ IUnknown* pUnk)
+{
+    ManagedObjectWrapper* wrapper = MapFromIUnknown(pUnk);
+    if (wrapper != nullptr)
+        return wrapper;
+
+    // It is possible the user has defined their own IUnknown impl so
+    // we fallback to the tagged interface approach to be sure. This logic isn't
+    // handled by the DAC logic and that is by-design. Care must be taken when
+    // performing this QueryInterface() since users are free to implement a wrapper
+    // using managed code and therefore performing this operation may not be
+    // possible during a GC.
+    ComHolder<ITaggedImpl> implMaybe;
+    if (S_OK != pUnk->QueryInterface(IID_TaggedImpl, (void**)&implMaybe)
+        || S_OK != implMaybe->IsCurrentVersion((void*)&ITaggedImpl_IsCurrentVersion))
+    {
+        return nullptr;
+    }
 
     ABI::ComInterfaceDispatch* disp = reinterpret_cast<ABI::ComInterfaceDispatch*>(pUnk);
     return ABI::ToManagedObjectWrapper(disp);
@@ -339,7 +441,7 @@ HRESULT ManagedObjectWrapper::Create(
     _ASSERTE((flags & CreateComInterfaceFlagsEx::InternalMask) == CreateComInterfaceFlagsEx::None);
 
     // Maximum number of runtime supplied vtables.
-    ABI::ComInterfaceEntry runtimeDefinedLocal[4];
+    ABI::ComInterfaceEntry runtimeDefinedLocal[3];
     int32_t runtimeDefinedCount = 0;
 
     // Check if the caller will provide the IUnknown table.
@@ -354,11 +456,19 @@ HRESULT ManagedObjectWrapper::Create(
     if ((flags & CreateComInterfaceFlagsEx::TrackerSupport) == CreateComInterfaceFlagsEx::TrackerSupport)
     {
         ABI::ComInterfaceEntry& curr = runtimeDefinedLocal[runtimeDefinedCount++];
-        curr.IID = __uuidof(IReferenceTrackerTarget);
+        curr.IID = IID_IReferenceTrackerTarget;
         curr.Vtable = &ManagedObjectWrapper_IReferenceTrackerTargetImpl;
     }
 
-    _ASSERTE(runtimeDefinedCount <= ARRAYSIZE(runtimeDefinedLocal));
+    // Always add the tagged interface. This is used to confirm at run-time with certainty
+    // the wrapper is created by the ComWrappers API.
+    {
+        ABI::ComInterfaceEntry& curr = runtimeDefinedLocal[runtimeDefinedCount++];
+        curr.IID = IID_TaggedImpl;
+        curr.Vtable = &ManagedObjectWrapper_TaggedImpl;
+    }
+
+    _ASSERTE(runtimeDefinedCount <= static_cast<int32_t>(ARRAY_SIZE(runtimeDefinedLocal)));
 
     // Compute size for ManagedObjectWrapper instance.
     const size_t totalRuntimeDefinedSize = runtimeDefinedCount * sizeof(ABI::ComInterfaceEntry);
@@ -397,7 +507,7 @@ HRESULT ManagedObjectWrapper::Create(
         { userDefined, userDefinedCount }
     };
 
-    ABI::ComInterfaceDispatch* dispSection = ABI::PopulateDispatchSection(wrapperMem, dispatchSectionOffset, ARRAYSIZE(AllEntries), AllEntries);
+    ABI::ComInterfaceDispatch* dispSection = ABI::PopulateDispatchSection(wrapperMem, dispatchSectionOffset, ARRAY_SIZE(AllEntries), AllEntries);
 
     ManagedObjectWrapper* wrapper = new (wrapperMem) ManagedObjectWrapper
         {
@@ -426,11 +536,11 @@ void ManagedObjectWrapper::Destroy(_In_ ManagedObjectWrapper* wrapper)
     {
         prev = wrapper->_refCount;
         refCount = prev | DestroySentinel;
-    } while (::InterlockedCompareExchange64(&wrapper->_refCount, refCount, prev) != prev);
+    } while (InterlockedCompareExchange64(&wrapper->_refCount, refCount, prev) != prev);
 
     // The destroy sentinel represents the bit that indicates the wrapper
     // should be destroyed. Since the reference count field (64-bit) holds
-    // two counters we rely on the singular sentinal value - no other bits
+    // two counters we rely on the singular sentinel value - no other bits
     // in the 64-bit counter are set. If there are outstanding bits set it
     // indicates there are still outstanding references.
     if (refCount == DestroySentinel)
@@ -451,12 +561,12 @@ ManagedObjectWrapper::ManagedObjectWrapper(
     _In_ const ABI::ComInterfaceEntry* userDefined,
     _In_ ABI::ComInterfaceDispatch* dispatches)
     : Target{ nullptr }
+    , _refCount{ 1 }
     , _runtimeDefinedCount{ runtimeDefinedCount }
     , _userDefinedCount{ userDefinedCount }
     , _runtimeDefined{ runtimeDefined }
     , _userDefined{ userDefined }
     , _dispatches{ dispatches }
-    , _refCount{ 1 }
     , _flags{ flags }
 {
     bool wasSet = TrySetObjectHandle(objectHandle);
@@ -508,7 +618,7 @@ void* ManagedObjectWrapper::As(_In_ REFIID riid)
 
 bool ManagedObjectWrapper::TrySetObjectHandle(_In_ OBJECTHANDLE objectHandle, _In_ OBJECTHANDLE current)
 {
-    return (::InterlockedCompareExchangePointer(&Target, objectHandle, current) == current);
+    return (InterlockedCompareExchangePointer(&Target, objectHandle, current) == current);
 }
 
 bool ManagedObjectWrapper::IsSet(_In_ CreateComInterfaceFlagsEx flag) const
@@ -540,6 +650,11 @@ bool ManagedObjectWrapper::IsRooted() const
     }
 
     return rooted;
+}
+
+bool ManagedObjectWrapper::IsMarkedToDestroy() const
+{
+    return ::IsMarkedToDestroy(_refCount);
 }
 
 ULONG ManagedObjectWrapper::AddRefFromReferenceTracker()
@@ -574,10 +689,7 @@ ULONG ManagedObjectWrapper::ReleaseFromReferenceTracker()
     // If we observe the destroy sentinel, then this release
     // must destroy the wrapper.
     if (refCount == DestroySentinel)
-    {
-        _ASSERTE(!IsSet(CreateComInterfaceFlagsEx::IsPegged));
         Destroy(this);
-    }
 
     return GetTrackerCount(refCount);
 }
@@ -624,7 +736,10 @@ HRESULT ManagedObjectWrapper::QueryInterface(
                     return E_NOINTERFACE;
 
                 default:
+#if !defined(__clang__) || (__clang_major__ > 13) // Workaround bug in old clang
                     _ASSERTE(false && "Unknown result value");
+#endif
+                    FALLTHROUGH;
                 case TryInvokeICustomQueryInterfaceResult::FailedToInvoke:
                     // Set the 'lacks' flag since our attempt to use ICustomQueryInterface
                     // indicated the object lacks an implementation.
@@ -653,13 +768,11 @@ HRESULT ManagedObjectWrapper::QueryInterface(
 
 ULONG ManagedObjectWrapper::AddRef(void)
 {
-    _ASSERTE((_refCount & DestroySentinel) == 0);
     return GetComCount(::InterlockedIncrement64(&_refCount));
 }
 
 ULONG ManagedObjectWrapper::Release(void)
 {
-    _ASSERTE((_refCount & DestroySentinel) == 0);
     if (GetComCount(_refCount) == 0)
     {
         _ASSERTE(!"Over release of MOW - COM");
@@ -700,18 +813,12 @@ HRESULT NativeObjectWrapperContext::Create(
 {
     _ASSERTE(external != nullptr && context != nullptr);
 
-    // Aggregated inners are only currently supported for Aggregated
-    // scenarios involving IReferenceTracker.
-    _ASSERTE(inner == nullptr
-        || ((flags & InteropLib::Com::CreateObjectFlags_TrackerObject)
-            && (flags & InteropLib::Com::CreateObjectFlags_Aggregated)));
-
     HRESULT hr;
 
     ComHolder<IReferenceTracker> trackerObject;
     if (flags & InteropLib::Com::CreateObjectFlags_TrackerObject)
     {
-        hr = external->QueryInterface(&trackerObject);
+        hr = external->QueryInterface(IID_IReferenceTracker, (void**)&trackerObject);
         if (SUCCEEDED(hr))
             RETURN_IF_FAILED(TrackerObjectManager::OnIReferenceTrackerFound(trackerObject));
     }
@@ -755,32 +862,10 @@ void NativeObjectWrapperContext::Destroy(_In_ NativeObjectWrapperContext* wrappe
 {
     _ASSERTE(wrapper != nullptr);
 
-    // Check if the tracker object manager should be informed prior to being destroyed.
-    IReferenceTracker* trackerMaybe = wrapper->GetReferenceTracker();
-    if (trackerMaybe != nullptr)
-    {
-        // We only call this during a GC so ignore the failure as
-        // there is no way we can handle it at this point.
-        HRESULT hr = TrackerObjectManager::BeforeWrapperDestroyed(trackerMaybe);
-        _ASSERTE(SUCCEEDED(hr));
-        (void)hr;
-    }
-
     // Manually trigger the destructor since placement
     // new was used to allocate the object.
     wrapper->~NativeObjectWrapperContext();
     InteropLibImports::MemFree(wrapper, AllocScenario::NativeObjectWrapper);
-}
-
-namespace
-{
-    // State ownership mechanism.
-    enum : int
-    {
-        TrackerObjectState_NotSet = 0,
-        TrackerObjectState_SetNoRelease = 1,
-        TrackerObjectState_SetForRelease = 2,
-    };
 }
 
 NativeObjectWrapperContext::NativeObjectWrapperContext(
@@ -790,13 +875,13 @@ NativeObjectWrapperContext::NativeObjectWrapperContext(
     : _trackerObject{ trackerObject }
     , _runtimeContext{ runtimeContext }
     , _trackerObjectDisconnected{ FALSE }
-    , _trackerObjectState{ (trackerObject == nullptr ? TrackerObjectState_NotSet : TrackerObjectState_SetForRelease) }
+    , _trackerObjectState{ (trackerObject == nullptr ? TrackerObjectState::NotSet : TrackerObjectState::SetForRelease) }
     , _nativeObjectAsInner{ nativeObjectAsInner }
 #ifdef _DEBUG
     , _sentinel{ LiveContextSentinel }
 #endif
 {
-    if (_trackerObjectState == TrackerObjectState_SetForRelease)
+    if (_trackerObjectState == TrackerObjectState::SetForRelease)
         (void)_trackerObject->AddRef();
 }
 
@@ -820,7 +905,7 @@ void* NativeObjectWrapperContext::GetRuntimeContext() const noexcept
 
 IReferenceTracker* NativeObjectWrapperContext::GetReferenceTracker() const noexcept
 {
-    return ((_trackerObjectState == TrackerObjectState_NotSet) ? nullptr : _trackerObject);
+    return ((_trackerObjectState == TrackerObjectState::NotSet || _trackerObjectDisconnected) ? nullptr : _trackerObject);
 }
 
 // See TrackerObjectManager::AfterWrapperCreated() for AddRefFromTrackerSource() usage.
@@ -830,7 +915,7 @@ void NativeObjectWrapperContext::DisconnectTracker() noexcept
 {
     // Return if already disconnected or the tracker isn't set.
     if (FALSE != ::InterlockedCompareExchange((LONG*)&_trackerObjectDisconnected, TRUE, FALSE)
-        || _trackerObjectState == TrackerObjectState_NotSet)
+        || _trackerObjectState == TrackerObjectState::NotSet)
     {
         return;
     }
@@ -842,7 +927,7 @@ void NativeObjectWrapperContext::DisconnectTracker() noexcept
     (void)_trackerObject->ReleaseFromTrackerSource(); // IUnknown
 
     // Disconnect from the tracker.
-    if (_trackerObjectState == TrackerObjectState_SetForRelease)
+    if (_trackerObjectState == TrackerObjectState::SetForRelease)
     {
         (void)_trackerObject->ReleaseFromTrackerSource(); // IReferenceTracker
         (void)_trackerObject->Release();
@@ -851,11 +936,11 @@ void NativeObjectWrapperContext::DisconnectTracker() noexcept
 
 void NativeObjectWrapperContext::HandleReferenceTrackerAggregation() noexcept
 {
-    _ASSERTE(_trackerObjectState == TrackerObjectState_SetForRelease && _trackerObject != nullptr);
+    _ASSERTE(_trackerObjectState == TrackerObjectState::SetForRelease && _trackerObject != nullptr);
 
     // Aggregation with an IReferenceTracker instance creates an extra AddRef()
     // on the outer (e.g. MOW) so we clean up that issue here.
-    _trackerObjectState = TrackerObjectState_SetNoRelease;
+    _trackerObjectState = TrackerObjectState::SetNoRelease;
 
     (void)_trackerObject->ReleaseFromTrackerSource(); // IReferenceTracker
     (void)_trackerObject->Release();

@@ -1,8 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace System
 {
@@ -46,7 +46,7 @@ namespace System
             }
         }
 
-        [DllImport(RuntimeHelpers.QCall, CharSet = CharSet.Unicode)]
-        private static extern void GetTypeLoadExceptionMessage(int resourceId, StringHandleOnStack retString);
+        [LibraryImport(RuntimeHelpers.QCall)]
+        private static partial void GetTypeLoadExceptionMessage(int resourceId, StringHandleOnStack retString);
     }
 }

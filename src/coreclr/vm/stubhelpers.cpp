@@ -4,9 +4,6 @@
 // File: stubhelpers.cpp
 //
 
-//
-
-
 #include "common.h"
 
 #include "mlinfo.h"
@@ -222,14 +219,6 @@ FORCEINLINE static SOleTlsData *GetOrCreateOleTlsData()
     return pOleTlsData;
 }
 
-FORCEINLINE static void *GetCOMIPFromRCW_GetTargetNoInterception(IUnknown *pUnk, ComPlusCallInfo *pComInfo)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    LPVOID *lpVtbl = *(LPVOID **)pUnk;
-    return lpVtbl[pComInfo->m_cachedComSlot];
-}
-
 FORCEINLINE static IUnknown *GetCOMIPFromRCW_GetIUnknownFromRCWCache(RCW *pRCW, MethodTable * pItfMT)
 {
     LIMITED_METHOD_CONTRACT;
@@ -253,36 +242,7 @@ FORCEINLINE static IUnknown *GetCOMIPFromRCW_GetIUnknownFromRCWCache(RCW *pRCW, 
     return NULL;
 }
 
-// Like GetCOMIPFromRCW_GetIUnknownFromRCWCache but also computes the target. This is a couple of instructions
-// faster than GetCOMIPFromRCW_GetIUnknownFromRCWCache + GetCOMIPFromRCW_GetTargetNoInterception.
-FORCEINLINE static IUnknown *GetCOMIPFromRCW_GetIUnknownFromRCWCache_NoInterception(RCW *pRCW, ComPlusCallInfo *pComInfo, void **ppTarget)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    // The code in this helper is the "fast path" that used to be generated directly
-    // to compiled ML stubs. The idea is to aim for an efficient RCW cache hit.
-    SOleTlsData *pOleTlsData = GetOrCreateOleTlsData();
-    MethodTable *pItfMT = pComInfo->m_pInterfaceMT;
-
-    // test for free-threaded after testing for context match to optimize for apartment-bound objects
-    if (pOleTlsData->pCurrentCtx == pRCW->GetWrapperCtxCookie() || pRCW->IsFreeThreaded())
-    {
-        for (int i = 0; i < INTERFACE_ENTRY_CACHE_SIZE; i++)
-        {
-            if (pRCW->m_aInterfaceEntries[i].m_pMT == pItfMT)
-            {
-                IUnknown *pUnk = pRCW->m_aInterfaceEntries[i].m_pUnknown;
-                _ASSERTE(pUnk != NULL);
-                *ppTarget = GetCOMIPFromRCW_GetTargetNoInterception(pUnk, pComInfo);
-                return pUnk;
-            }
-        }
-    }
-
-    return NULL;
-}
-
-FORCEINLINE static void *GetCOMIPFromRCW_GetTarget(IUnknown *pUnk, ComPlusCallInfo *pComInfo)
+FORCEINLINE static void *GetCOMIPFromRCW_GetTarget(IUnknown *pUnk, CLRToCOMCallInfo *pComInfo)
 {
     LIMITED_METHOD_CONTRACT;
 
@@ -302,7 +262,7 @@ NOINLINE static IUnknown* GetCOMIPFromRCWHelper(LPVOID pFCall, OBJECTREF pSrc, M
 
     SafeComHolder<IUnknown> pRetUnk;
 
-    ComPlusCallInfo *pComInfo = ComPlusCallInfo::FromMethodDesc(pMD);
+    CLRToCOMCallInfo *pComInfo = CLRToCOMCallInfo::FromMethodDesc(pMD);
     pRetUnk = ComObject::GetComIPFromRCWThrowing(&pSrc, pComInfo->m_pInterfaceMT);
 
     *ppTarget = GetCOMIPFromRCW_GetTarget(pRetUnk, pComInfo);
@@ -334,14 +294,14 @@ FCIMPL4(IUnknown*, StubHelpers::GetCOMIPFromRCW, Object* pSrcUNSAFE, MethodDesc*
     CONTRACTL
     {
         FCALL_CHECK;
-        PRECONDITION(pMD->IsComPlusCall() || pMD->IsGenericComPlusCall() || pMD->IsEEImpl());
+        PRECONDITION(pMD->IsCLRToCOMCall() || pMD->IsEEImpl());
     }
     CONTRACTL_END;
 
     OBJECTREF pSrc = ObjectToOBJECTREF(pSrcUNSAFE);
     *pfNeedsRelease = false;
 
-    ComPlusCallInfo *pComInfo = ComPlusCallInfo::FromMethodDesc(pMD);
+    CLRToCOMCallInfo *pComInfo = CLRToCOMCallInfo::FromMethodDesc(pMD);
     RCW *pRCW = pSrc->PassiveGetSyncBlock()->GetInteropInfoNoCreate()->GetRawRCW();
     if (pRCW != NULL)
     {
@@ -366,13 +326,17 @@ FCIMPLEND
 
 #include <optdefault.h>
 
-FCIMPL2(void, StubHelpers::ObjectMarshaler__ConvertToNative, Object* pSrcUNSAFE, VARIANT* pDest)
+extern "C" void QCALLTYPE ObjectMarshaler_ConvertToNative(QCall::ObjectHandleOnStack pSrcUNSAFE, VARIANT* pDest)
 {
-    FCALL_CONTRACT;
+    QCALL_CONTRACT;
 
-    OBJECTREF pSrc = ObjectToOBJECTREF(pSrcUNSAFE);
+    BEGIN_QCALL;
 
-    HELPER_METHOD_FRAME_BEGIN_1(pSrc);
+    GCX_COOP();
+
+    OBJECTREF pSrc = pSrcUNSAFE.Get();
+    GCPROTECT_BEGIN(pSrc);
+
     if (pDest->vt & VT_BYREF)
     {
         OleVariant::MarshalOleRefVariantForObject(&pSrc, pDest);
@@ -381,111 +345,82 @@ FCIMPL2(void, StubHelpers::ObjectMarshaler__ConvertToNative, Object* pSrcUNSAFE,
     {
         OleVariant::MarshalOleVariantForObject(&pSrc, pDest);
     }
-    HELPER_METHOD_FRAME_END();
+
+    GCPROTECT_END();
+
+    END_QCALL;
 }
-FCIMPLEND
 
-FCIMPL1(Object*, StubHelpers::ObjectMarshaler__ConvertToManaged, VARIANT* pSrc)
-{
-    FCALL_CONTRACT;
-
-    OBJECTREF retVal = NULL;
-    HELPER_METHOD_FRAME_BEGIN_RET_1(retVal);
-    // The IL stub is going to call ObjectMarshaler__ClearNative() afterwards.
-    // If it doesn't it's a bug in ILObjectMarshaler.
-    OleVariant::MarshalObjectForOleVariant(pSrc, &retVal);
-    HELPER_METHOD_FRAME_END();
-
-    return OBJECTREFToObject(retVal);
-}
-FCIMPLEND
-
-FCIMPL1(void, StubHelpers::ObjectMarshaler__ClearNative, VARIANT* pSrc)
-{
-    FCALL_CONTRACT;
-
-    HELPER_METHOD_FRAME_BEGIN_0();
-    SafeVariantClear(pSrc);
-    HELPER_METHOD_FRAME_END();
-}
-FCIMPLEND
-
-#include <optsmallperfcritical.h>
-FCIMPL4(IUnknown*, StubHelpers::InterfaceMarshaler__ConvertToNative, Object* pObjUNSAFE, MethodTable* pItfMT, MethodTable* pClsMT, DWORD dwFlags)
-{
-    FCALL_CONTRACT;
-
-    if (NULL == pObjUNSAFE)
-    {
-        return NULL;
-    }
-
-    IUnknown *pIntf = NULL;
-    OBJECTREF pObj = ObjectToOBJECTREF(pObjUNSAFE);
-
-    // This is only called in IL stubs which are in CER, so we don't need to worry about ThreadAbort
-    HELPER_METHOD_FRAME_BEGIN_RET_ATTRIB_1(Frame::FRAME_ATTR_NO_THREAD_ABORT, pObj);
-
-    // We're going to be making some COM calls, better initialize COM.
-    EnsureComStarted();
-
-    pIntf = MarshalObjectToInterface(&pObj, pItfMT, pClsMT, dwFlags);
-
-    // No exception will be thrown here (including thread abort as it is delayed in IL stubs)
-    HELPER_METHOD_FRAME_END();
-
-    return pIntf;
-}
-FCIMPLEND
-
-FCIMPL4(Object*, StubHelpers::InterfaceMarshaler__ConvertToManaged, IUnknown **ppUnk, MethodTable *pItfMT, MethodTable *pClsMT, DWORD dwFlags)
-{
-    FCALL_CONTRACT;
-
-    if (NULL == *ppUnk)
-    {
-        return NULL;
-    }
-
-    OBJECTREF pObj = NULL;
-    HELPER_METHOD_FRAME_BEGIN_RET_1(pObj);
-
-    // We're going to be making some COM calls, better initialize COM.
-    EnsureComStarted();
-
-    UnmarshalObjectFromInterface(&pObj, ppUnk, pItfMT, pClsMT, dwFlags);
-
-    HELPER_METHOD_FRAME_END();
-
-    return OBJECTREFToObject(pObj);
-}
-FCIMPLEND
-
-void QCALLTYPE StubHelpers::InterfaceMarshaler__ClearNative(IUnknown * pUnk)
+extern "C" void QCALLTYPE ObjectMarshaler_ConvertToManaged(VARIANT* pSrc, QCall::ObjectHandleOnStack retObject)
 {
     QCALL_CONTRACT;
 
     BEGIN_QCALL;
 
-    ULONG cbRef = SafeReleasePreemp(pUnk);
-    LogInteropRelease(pUnk, cbRef, "InterfaceMarshalerBase::ClearNative: In/Out release");
+    GCX_COOP();
+
+    OBJECTREF retVal = NULL;
+    GCPROTECT_BEGIN(retVal);
+
+    // The IL stub is going to call ObjectMarshaler.ClearNative() afterwards.
+    // If it doesn't it's a bug in ILObjectMarshaler.
+    OleVariant::MarshalObjectForOleVariant(pSrc, &retVal);
+    retObject.Set(retVal);
+
+    GCPROTECT_END();
+
+    END_QCALL;
+}
+
+#include <optsmallperfcritical.h>
+extern "C" IUnknown* QCALLTYPE InterfaceMarshaler_ConvertToNative(QCall::ObjectHandleOnStack pObjUNSAFE, MethodTable* pItfMT, MethodTable* pClsMT, DWORD dwFlags)
+{
+    QCALL_CONTRACT;
+
+    IUnknown *pIntf = NULL;
+    BEGIN_QCALL;
+
+    // We're going to be making some COM calls, better initialize COM.
+    EnsureComStarted();
+
+    GCX_COOP();
+
+    OBJECTREF pObj = pObjUNSAFE.Get();
+    GCPROTECT_BEGIN(pObj);
+
+    pIntf = MarshalObjectToInterface(&pObj, pItfMT, pClsMT, dwFlags);
+
+    GCPROTECT_END();
+
+    END_QCALL;
+
+    return pIntf;
+}
+
+extern "C" void QCALLTYPE InterfaceMarshaler_ConvertToManaged(IUnknown** ppUnk, MethodTable* pItfMT, MethodTable* pClsMT, DWORD dwFlags, QCall::ObjectHandleOnStack retObject)
+{
+    QCALL_CONTRACT;
+
+    BEGIN_QCALL;
+
+    // We're going to be making some COM calls, better initialize COM.
+    EnsureComStarted();
+
+    GCX_COOP();
+
+    OBJECTREF pObj = NULL;
+    GCPROTECT_BEGIN(pObj);
+
+    UnmarshalObjectFromInterface(&pObj, ppUnk, pItfMT, pClsMT, dwFlags);
+    retObject.Set(pObj);
+
+    GCPROTECT_END();
 
     END_QCALL;
 }
 #include <optdefault.h>
 
 #endif // FEATURE_COMINTEROP
-
-FCIMPL0(void, StubHelpers::SetLastError)
-{
-    // Make sure this is the first thing we do after returning from the target, as almost everything can cause the last error to get trashed
-    DWORD lastError = ::GetLastError();
-
-    FCALL_CONTRACT;
-
-    GetThread()->m_dwLastError = lastError;
-}
-FCIMPLEND
 
 FCIMPL0(void, StubHelpers::ClearLastError)
 {
@@ -495,46 +430,9 @@ FCIMPL0(void, StubHelpers::ClearLastError)
 }
 FCIMPLEND
 
-NOINLINE static void InitDeclaringTypeHelper(MethodTable *pMT)
+FCIMPL1(void*, StubHelpers::GetDelegateTarget, DelegateObject *pThisUNSAFE)
 {
-    FC_INNER_PROLOG(StubHelpers::InitDeclaringType);
-
-    HELPER_METHOD_FRAME_BEGIN_ATTRIB(Frame::FRAME_ATTR_EXACT_DEPTH|Frame::FRAME_ATTR_CAPTURE_DEPTH_2);
-    pMT->CheckRunClassInitThrowing();
-    HELPER_METHOD_FRAME_END();
-
-    FC_INNER_EPILOG();
-}
-
-// Triggers cctor of pNMD's declarer, similar to code:JIT_InitClass.
-#include <optsmallperfcritical.h>
-FCIMPL1(void, StubHelpers::InitDeclaringType, NDirectMethodDesc* pNMD)
-{
-    FCALL_CONTRACT;
-
-    MethodTable *pMT = pNMD->GetMethodTable();
-    _ASSERTE(!pMT->IsClassPreInited());
-
-    if (pMT->GetDomainLocalModule()->IsClassInitialized(pMT))
-        return;
-
-    FC_INNER_RETURN_VOID(InitDeclaringTypeHelper(pMT));
-}
-FCIMPLEND
-#include <optdefault.h>
-
-FCIMPL1(void*, StubHelpers::GetNDirectTarget, NDirectMethodDesc* pNMD)
-{
-    FCALL_CONTRACT;
-
-    FCUnique(0xa2);
-    return pNMD->GetNDirectTarget();
-}
-FCIMPLEND
-
-FCIMPL2(void*, StubHelpers::GetDelegateTarget, DelegateObject *pThisUNSAFE, UINT_PTR *ppStubArg)
-{
-    PCODE pEntryPoint = NULL;
+    PCODE pEntryPoint = (PCODE)NULL;
 
 #ifdef _DEBUG
     BEGIN_PRESERVE_LAST_ERROR;
@@ -549,43 +447,15 @@ FCIMPL2(void*, StubHelpers::GetDelegateTarget, DelegateObject *pThisUNSAFE, UINT
 
     DELEGATEREF orefThis = (DELEGATEREF)ObjectToOBJECTREF(pThisUNSAFE);
 
-#if defined(TARGET_X86)
-    // On x86 we wrap the call with a thunk that handles host notifications.
-    SyncBlock *pSyncBlock = orefThis->PassiveGetSyncBlock();
-    if (pSyncBlock != NULL)
-    {
-        InteropSyncBlockInfo *pInteropInfo = pSyncBlock->GetInteropInfoNoCreate();
-        if (pInteropInfo != NULL)
-        {
-            // we return entry point to a stub that wraps the real target
-            Stub *pInterceptStub = pInteropInfo->GetInterceptStub();
-            if (pInterceptStub != NULL)
-            {
-                pEntryPoint = pInterceptStub->GetEntryPoint();
-            }
-        }
-    }
-#endif // TARGET_X86
-
 #if defined(HOST_64BIT)
     UINT_PTR target = (UINT_PTR)orefThis->GetMethodPtrAux();
 
     // See code:GenericPInvokeCalliHelper
     // The lowest bit is used to distinguish between MD and target on 64-bit.
     target = (target << 1) | 1;
+#endif // HOST_64BIT
 
-    // On 64-bit we pass the real target to the stub-for-host through this out argument,
-    // see IL code gen in NDirectStubLinker::DoNDirect for details.
-    *ppStubArg = target;
-
-#elif defined(TARGET_ARM)
-    // @ARMTODO: Nothing to do for ARM yet since we don't support the hosted path.
-#endif // HOST_64BIT, TARGET_ARM
-
-    if (pEntryPoint == NULL)
-    {
-        pEntryPoint = orefThis->GetMethodPtrAux();
-    }
+    pEntryPoint = orefThis->GetMethodPtrAux();
 
 #ifdef _DEBUG
     END_PRESERVE_LAST_ERROR;
@@ -595,17 +465,37 @@ FCIMPL2(void*, StubHelpers::GetDelegateTarget, DelegateObject *pThisUNSAFE, UINT
 }
 FCIMPLEND
 
-
-
-FCIMPL2(void, StubHelpers::ThrowInteropParamException, UINT resID, UINT paramIdx)
+#include <optsmallperfcritical.h>
+FCIMPL2(FC_BOOL_RET, StubHelpers::TryGetStringTrailByte, StringObject* thisRefUNSAFE, UINT8 *pbData)
 {
     FCALL_CONTRACT;
 
-    HELPER_METHOD_FRAME_BEGIN_0();
-    ::ThrowInteropParamException(resID, paramIdx);
-    HELPER_METHOD_FRAME_END();
+    STRINGREF thisRef = ObjectToSTRINGREF(thisRefUNSAFE);
+    FC_RETURN_BOOL(thisRef->GetTrailByte(pbData));
 }
 FCIMPLEND
+#include <optdefault.h>
+
+extern "C" void QCALLTYPE StubHelpers_SetStringTrailByte(QCall::StringHandleOnStack str, UINT8 bData)
+{
+    QCALL_CONTRACT;
+
+    BEGIN_QCALL;
+
+    GCX_COOP();
+    str.Get()->SetTrailByte(bData);
+
+    END_QCALL;
+}
+
+extern "C" void QCALLTYPE StubHelpers_ThrowInteropParamException(INT resID, INT paramIdx)
+{
+    QCALL_CONTRACT;
+
+    BEGIN_QCALL;
+    ::ThrowInteropParamException(resID, paramIdx);
+    END_QCALL;
+}
 
 #ifdef PROFILING_SUPPORTED
 FCIMPL3(SIZE_T, StubHelpers::ProfilerBeginTransitionCallback, SIZE_T pSecretParam, Thread* pThread, Object* unsafe_pThis)
@@ -616,7 +506,7 @@ FCIMPL3(SIZE_T, StubHelpers::ProfilerBeginTransitionCallback, SIZE_T pSecretPara
     // even if the profiler doesn't want to track transitions.
     if (!CORProfilerTrackTransitions())
     {
-        return NULL;
+        return 0;
     }
 
     MethodDesc* pRealMD = NULL;
@@ -628,17 +518,6 @@ FCIMPL3(SIZE_T, StubHelpers::ProfilerBeginTransitionCallback, SIZE_T pSecretPara
     DELEGATEREF dref = (DELEGATEREF)ObjectToOBJECTREF(unsafe_pThis);
     HELPER_METHOD_FRAME_BEGIN_RET_1(dref);
 
-    bool fReverseInterop = false;
-
-    if (NULL == pThread)
-    {
-        // This is our signal for the reverse interop cases.
-        fReverseInterop = true;
-        pThread = GET_THREAD();
-        // the secret param in this casee is the UMEntryThunk
-        pRealMD = ((UMEntryThunk*)pSecretParam)->GetMethod();
-    }
-    else
     if (pSecretParam == 0)
     {
         // Secret param is null.  This is the calli pinvoke case or the unmanaged delegate case.
@@ -670,14 +549,7 @@ FCIMPL3(SIZE_T, StubHelpers::ProfilerBeginTransitionCallback, SIZE_T pSecretPara
     {
         GCX_PREEMP_THREAD_EXISTS(pThread);
 
-        if (fReverseInterop)
-        {
-            ProfilerUnmanagedToManagedTransitionMD(pRealMD, COR_PRF_TRANSITION_CALL);
-        }
-        else
-        {
-            ProfilerManagedToUnmanagedTransitionMD(pRealMD, COR_PRF_TRANSITION_CALL);
-        }
+        ProfilerManagedToUnmanagedTransitionMD(pRealMD, COR_PRF_TRANSITION_CALL);
     }
 
     HELPER_METHOD_FRAME_END();
@@ -705,25 +577,9 @@ FCIMPL2(void, StubHelpers::ProfilerEndTransitionCallback, MethodDesc* pRealMD, T
     // and the transition requires us to set up a HMF.
     HELPER_METHOD_FRAME_BEGIN_0();
     {
-        bool fReverseInterop = false;
-
-        if (NULL == pThread)
-        {
-            // if pThread is null, we are doing reverse interop
-            pThread = GET_THREAD();
-            fReverseInterop = true;
-        }
-
         GCX_PREEMP_THREAD_EXISTS(pThread);
 
-        if (fReverseInterop)
-        {
-            ProfilerManagedToUnmanagedTransitionMD(pRealMD, COR_PRF_TRANSITION_RETURN);
-        }
-        else
-        {
-            ProfilerUnmanagedToManagedTransitionMD(pRealMD, COR_PRF_TRANSITION_RETURN);
-        }
+        ProfilerUnmanagedToManagedTransitionMD(pRealMD, COR_PRF_TRANSITION_RETURN);
     }
     HELPER_METHOD_FRAME_END();
 
@@ -763,10 +619,10 @@ FCIMPL3(Object*, StubHelpers::GetCOMHRExceptionObject, HRESULT hr, MethodDesc *p
     {
         IErrorInfo *pErrInfo = NULL;
 
-        if (pErrInfo == NULL && pMD != NULL)
+        if (pMD != NULL)
         {
             // Retrieve the interface method table.
-            MethodTable *pItfMT = ComPlusCallInfo::FromMethodDesc(pMD)->m_pInterfaceMT;
+            MethodTable *pItfMT = CLRToCOMCallInfo::FromMethodDesc(pMD)->m_pInterfaceMT;
 
             // Get IUnknown pointer for this interface on this object
             IUnknown* pUnk = ComObject::GetComIPFromRCW(&oref, pItfMT);
@@ -790,88 +646,6 @@ FCIMPL3(Object*, StubHelpers::GetCOMHRExceptionObject, HRESULT hr, MethodDesc *p
 }
 FCIMPLEND
 #endif // FEATURE_COMINTEROP
-
-FCIMPL3(void, StubHelpers::FmtClassUpdateNativeInternal, Object* pObjUNSAFE, BYTE* pbNative, OBJECTREF *ppCleanupWorkListOnStack)
-{
-    FCALL_CONTRACT;
-
-    OBJECTREF pObj = ObjectToOBJECTREF(pObjUNSAFE);
-    HELPER_METHOD_FRAME_BEGIN_1(pObj);
-
-    MethodTable* pMT = pObj->GetMethodTable();
-
-    if (pMT->IsBlittable())
-    {
-        memcpyNoGCRefs(pbNative, pObj->GetData(), pMT->GetNativeSize());
-    }
-    else
-    {
-        MethodDesc* structMarshalStub;
-
-        {
-            GCX_PREEMP();
-            structMarshalStub = NDirect::CreateStructMarshalILStub(pMT);
-        }
-
-        MarshalStructViaILStub(structMarshalStub, pObj->GetData(), pbNative, StructMarshalStubs::MarshalOperation::Marshal, (void**)ppCleanupWorkListOnStack);
-    }
-
-    HELPER_METHOD_FRAME_END();
-}
-FCIMPLEND
-
-FCIMPL2(void, StubHelpers::FmtClassUpdateCLRInternal, Object* pObjUNSAFE, BYTE* pbNative)
-{
-    FCALL_CONTRACT;
-
-    OBJECTREF pObj = ObjectToOBJECTREF(pObjUNSAFE);
-    HELPER_METHOD_FRAME_BEGIN_1(pObj);
-
-    MethodTable* pMT = pObj->GetMethodTable();
-
-    if (pMT->IsBlittable())
-    {
-        memcpyNoGCRefs(pObj->GetData(), pbNative, pMT->GetNativeSize());
-    }
-    else
-    {
-        MethodDesc* structMarshalStub;
-
-        {
-            GCX_PREEMP();
-            structMarshalStub = NDirect::CreateStructMarshalILStub(pMT);
-        }
-
-        MarshalStructViaILStub(structMarshalStub, pObj->GetData(), pbNative, StructMarshalStubs::MarshalOperation::Unmarshal);
-    }
-
-    HELPER_METHOD_FRAME_END();
-}
-FCIMPLEND
-
-FCIMPL2(void, StubHelpers::LayoutDestroyNativeInternal, Object* pObjUNSAFE, BYTE* pbNative)
-{
-    FCALL_CONTRACT;
-
-    OBJECTREF pObj = ObjectToOBJECTREF(pObjUNSAFE);
-    HELPER_METHOD_FRAME_BEGIN_1(pObj);
-    MethodTable* pMT = pObj->GetMethodTable();
-
-    if (!pMT->IsBlittable())
-    {
-        MethodDesc* structMarshalStub;
-
-        {
-            GCX_PREEMP();
-            structMarshalStub = NDirect::CreateStructMarshalILStub(pMT);
-        }
-
-        MarshalStructViaILStub(structMarshalStub, pObj->GetData(), pbNative, StructMarshalStubs::MarshalOperation::Cleanup);
-    }
-
-    HELPER_METHOD_FRAME_END();
-}
-FCIMPLEND
 
 FCIMPL1(Object*, StubHelpers::AllocateInternal, EnregisteredTypeHandle pRegisteredTypeHnd)
 {
@@ -1026,17 +800,6 @@ FCIMPL2(void, StubHelpers::LogPinnedArgument, MethodDesc *target, Object *pinned
 }
 FCIMPLEND
 
-#ifdef TARGET_64BIT
-FCIMPL0(void*, StubHelpers::GetStubContextAddr)
-{
-    FCALL_CONTRACT;
-
-    FCUnique(0xa1);
-    UNREACHABLE_MSG("This is a JIT intrinsic!");
-}
-FCIMPLEND
-#endif // TARGET_64BIT
-
 FCIMPL1(DWORD, StubHelpers::CalcVaListSize, VARARGS *varargs)
 {
     FCALL_CONTRACT;
@@ -1045,40 +808,12 @@ FCIMPL1(DWORD, StubHelpers::CalcVaListSize, VARARGS *varargs)
 }
 FCIMPLEND
 
-#ifdef FEATURE_ARRAYSTUB_AS_IL
-NOINLINE static void ArrayTypeCheckSlow(Object* element, PtrArray* arr)
-{
-    FC_INNER_PROLOG(StubHelpers::ArrayTypeCheck);
-    HELPER_METHOD_FRAME_BEGIN_ATTRIB(Frame::FRAME_ATTR_EXACT_DEPTH|Frame::FRAME_ATTR_CAPTURE_DEPTH_2);
-
-    if (!ObjIsInstanceOf(element, arr->GetArrayElementTypeHandle()))
-        COMPlusThrow(kArrayTypeMismatchException);
-
-    HELPER_METHOD_FRAME_END();
-
-    FC_INNER_EPILOG();
-}
-
-FCIMPL2(void, StubHelpers::ArrayTypeCheck, Object* element, PtrArray* arr)
-{
-    FCALL_CONTRACT;
-
-    if (ObjIsInstanceOfCached(element, arr->GetArrayElementTypeHandle()) == TypeHandle::CanCast)
-        return;
-
-    FC_INNER_RETURN_VOID(ArrayTypeCheckSlow(element, arr));
-}
-FCIMPLEND
-#endif // FEATURE_ARRAYSTUB_AS_IL
-
-#ifdef FEATURE_MULTICASTSTUB_AS_IL
 FCIMPL2(void, StubHelpers::MulticastDebuggerTraceHelper, Object* element, INT32 count)
 {
     FCALL_CONTRACT;
     FCUnique(0xa5);
 }
 FCIMPLEND
-#endif // FEATURE_MULTICASTSTUB_AS_IL
 
 FCIMPL0(void*, StubHelpers::NextCallReturnAddress)
 {

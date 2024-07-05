@@ -17,7 +17,7 @@ using System.Runtime.InteropServices;
 
 namespace System
 {
-    internal struct Variant
+    internal partial struct Variant
     {
         // Do Not change the order of these fields.
         // They are mapped to the native VariantData * data structure.
@@ -34,7 +34,7 @@ namespace System
         // What are the consequences of making this an enum?
         ///////////////////////////////////////////////////////////////////////
         // If you update this, update the corresponding stuff in OAVariantLib.cs,
-        // COMOAVariant.cpp (2 tables, forwards and reverse), and perhaps OleVariant.h
+        // OAVariant.cpp (2 tables, forwards and reverse), and perhaps OleVariant.h
         ///////////////////////////////////////////////////////////////////////
         internal const int CV_EMPTY = 0x0;
         internal const int CV_VOID = 0x1;
@@ -66,46 +66,17 @@ namespace System
         internal const int VTBitShift = 24;
         internal const int ArrayBitMask = 0x10000;
 
-        // Enum enum and Mask
-        internal const int EnumI1 = 0x100000;
-        internal const int EnumU1 = 0x200000;
-        internal const int EnumI2 = 0x300000;
-        internal const int EnumU2 = 0x400000;
-        internal const int EnumI4 = 0x500000;
-        internal const int EnumU4 = 0x600000;
-        internal const int EnumI8 = 0x700000;
-        internal const int EnumU8 = 0x800000;
-        internal const int EnumMask = 0xF00000;
+        internal static Variant Empty => default;
+        internal static Variant Missing => new Variant(CV_MISSING, Type.Missing, 0);
+        internal static Variant DBNull => new Variant(CV_NULL, System.DBNull.Value, 0);
 
-        internal static readonly Type[] ClassTypes = {
-            typeof(System.Empty),
-            typeof(void),
-            typeof(bool),
-            typeof(char),
-            typeof(sbyte),
-            typeof(byte),
-            typeof(short),
-            typeof(ushort),
-            typeof(int),
-            typeof(uint),
-            typeof(long),
-            typeof(ulong),
-            typeof(float),
-            typeof(double),
-            typeof(string),
-            typeof(void),           // ptr for the moment
-            typeof(DateTime),
-            typeof(TimeSpan),
-            typeof(object),
-            typeof(decimal),
-            typeof(object),     // Treat enum as Object
-            typeof(System.Reflection.Missing),
-            typeof(System.DBNull),
-        };
+        internal static bool IsSystemDrawingColor(Type type) => type.FullName == "System.Drawing.Color"; // Matches the behavior of IsTypeRefOrDef
 
-        internal static readonly Variant Empty;
-        internal static readonly Variant Missing = new Variant(Variant.CV_MISSING, Type.Missing, 0);
-        internal static readonly Variant DBNull = new Variant(Variant.CV_NULL, System.DBNull.Value, 0);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "Variant_ConvertSystemColorToOleColor")]
+        internal static partial uint ConvertSystemColorToOleColor(ObjectHandleOnStack obj);
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "Variant_ConvertOleColorToSystemColor")]
+        internal static partial void ConvertOleColorToSystemColor(ObjectHandleOnStack objret, uint value, IntPtr pMT);
 
         //
         // Native Methods
@@ -198,7 +169,7 @@ namespace System
         {
             _objref = null;
             _flags = CV_R4;
-            _data = (uint)BitConverter.SingleToInt32Bits(val);
+            _data = BitConverter.SingleToUInt32Bits(val);
         }
 
         public Variant(double val)
@@ -288,12 +259,14 @@ namespace System
                 obj = (object)(((ErrorWrapper)obj).ErrorCode);
                 Debug.Assert(obj != null, "obj != null");
             }
+#pragma warning disable 0618 // CurrencyWrapper is obsolete
             else if (obj is CurrencyWrapper)
             {
                 vt = VarEnum.VT_CY;
                 obj = (object)(((CurrencyWrapper)obj).WrappedObject);
                 Debug.Assert(obj != null, "obj != null");
             }
+#pragma warning restore 0618
             else if (obj is BStrWrapper)
             {
                 vt = VarEnum.VT_BSTR;
@@ -328,7 +301,7 @@ namespace System
                 CV_U4 => (uint)_data,
                 CV_I8 => _data,
                 CV_U8 => (ulong)_data,
-                CV_R4 => BitConverter.Int32BitsToSingle((int)_data),
+                CV_R4 => BitConverter.UInt32BitsToSingle((uint)_data),
                 CV_R8 => BitConverter.Int64BitsToDouble(_data),
                 CV_DATETIME => new DateTime(_data),
                 CV_TIMESPAN => new TimeSpan(_data),
@@ -441,7 +414,9 @@ namespace System
                     3 => /*VT_I4*/ new Variant(iv.ToInt32(provider)),
                     4 => /*VT_R4*/ new Variant(iv.ToSingle(provider)),
                     5 => /*VT_R8*/ new Variant(iv.ToDouble(provider)),
+#pragma warning disable 0618 // CurrencyWrapper is obsolete
                     6 => /*VT_CY*/ new Variant(new CurrencyWrapper(iv.ToDecimal(provider))),
+#pragma warning restore 0618
                     7 => /*VT_DATE*/ new Variant(iv.ToDateTime(provider)),
                     8 => /*VT_BSTR*/ new Variant(iv.ToString(provider)),
 #pragma warning disable CA1416 // Validate platform compatibility

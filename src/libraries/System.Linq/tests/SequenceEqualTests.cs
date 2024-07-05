@@ -1,8 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using Xunit;
 
 namespace System.Linq.Tests
@@ -213,6 +212,64 @@ namespace System.Linq.Tests
             int[] second = null;
 
             AssertExtensions.Throws<ArgumentNullException>("second", () => first.SequenceEqual(second));
+        }
+
+        [Fact]
+        public void ByteArrays_SpecialCasedButExpectedBehavior()
+        {
+            AssertExtensions.Throws<ArgumentNullException>("first", () => ((byte[])null).SequenceEqual(new byte[1]));
+            AssertExtensions.Throws<ArgumentNullException>("second", () => new byte[1].SequenceEqual(null));
+
+            Assert.False(new byte[1].SequenceEqual(new byte[0]));
+            Assert.False(new byte[0].SequenceEqual(new byte[1]));
+
+            var r = new Random();
+            for (int i = 0; i < 32; i++)
+            {
+                byte[] arr = new byte[i];
+                r.NextBytes(arr);
+
+                byte[] same = (byte[])arr.Clone();
+                Assert.True(arr.SequenceEqual(same));
+                Assert.True(same.SequenceEqual(arr));
+                Assert.True(same.SequenceEqual(arr.ToList()));
+                Assert.True(same.ToList().SequenceEqual(arr));
+                Assert.True(same.ToList().SequenceEqual(arr.ToList()));
+
+                if (i > 0)
+                {
+                    byte[] diff = (byte[])arr.Clone();
+                    diff[^1]++;
+                    Assert.False(arr.SequenceEqual(diff));
+                    Assert.False(diff.SequenceEqual(arr));
+                }
+            }
+        }
+
+        [Fact]
+        public void ICollectionsCompareCorrectly()
+        {
+            Assert.True(new TestCollection<int>([]).SequenceEqual(new TestCollection<int>([])));
+            Assert.True(new TestCollection<int>([1]).SequenceEqual(new TestCollection<int>([1])));
+            Assert.True(new TestCollection<int>([1, 2, 3]).SequenceEqual(new TestCollection<int>([1, 2, 3])));
+
+            Assert.False(new TestCollection<int>([1, 2, 3, 4]).SequenceEqual(new TestCollection<int>([1, 2, 3])));
+            Assert.False(new TestCollection<int>([1, 2, 3]).SequenceEqual(new TestCollection<int>([1, 2, 3, 4])));
+            Assert.False(new TestCollection<int>([1, 2, 3]).SequenceEqual(new TestCollection<int>([1, 2, 4])));
+            Assert.False(new TestCollection<int>([-1, 2, 3]).SequenceEqual(new TestCollection<int>([-2, 2, 3])));
+        }
+
+        [Fact]
+        public void IListsCompareCorrectly()
+        {
+            Assert.True(new ReadOnlyCollection<int>([]).SequenceEqual(new ReadOnlyCollection<int>([])));
+            Assert.True(new ReadOnlyCollection<int>([1]).SequenceEqual(new ReadOnlyCollection<int>([1])));
+            Assert.True(new ReadOnlyCollection<int>([1, 2, 3]).SequenceEqual(new ReadOnlyCollection<int>([1, 2, 3])));
+
+            Assert.False(new ReadOnlyCollection<int>([1, 2, 3, 4]).SequenceEqual(new ReadOnlyCollection<int>([1, 2, 3])));
+            Assert.False(new ReadOnlyCollection<int>([1, 2, 3]).SequenceEqual(new ReadOnlyCollection<int>([1, 2, 3, 4])));
+            Assert.False(new ReadOnlyCollection<int>([1, 2, 3]).SequenceEqual(new ReadOnlyCollection<int>([1, 2, 4])));
+            Assert.False(new ReadOnlyCollection<int>([-1, 2, 3]).SequenceEqual(new ReadOnlyCollection<int>([-2, 2, 3])));
         }
     }
 }

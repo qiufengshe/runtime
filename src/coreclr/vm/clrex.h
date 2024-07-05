@@ -18,7 +18,6 @@
 
 class BaseBind;
 class AssemblySpec;
-class PEFile;
 class PEAssembly;
 
 enum StackTraceElementFlags
@@ -130,8 +129,10 @@ public:
     }
 
     HRESULT GetHR();
+#ifdef FEATURE_COMINTEROP
     IErrorInfo *GetErrorInfo();
     HRESULT SetErrorInfo();
+#endif // FEATURE_COMINTEROP
 
     void GetMessage(SString &result);
 
@@ -179,7 +180,7 @@ public:
         HandlerState(Thread * pThread, NonNullThread dummy);
 
         void CleanupTry();
-        void SetupCatch(INDEBUG_COMMA(__in_z const char * szFile) int lineNum);
+        void SetupCatch(INDEBUG_COMMA(_In_z_ const char * szFile) int lineNum);
 #ifdef LOGGING // Use parent implementation that inlines into nothing in retail build
         void SucceedCatch();
 #endif
@@ -223,7 +224,9 @@ class EEException : public CLRException
 
     // Virtual overrides
     HRESULT GetHR();
+#ifdef FEATURE_COMINTEROP
     IErrorInfo *GetErrorInfo();
+#endif // FEATURE_COMINTEROP
     void GetMessage(SString &result);
     OBJECTREF CreateThrowable();
 
@@ -354,12 +357,12 @@ class EEResourceException : public EEException
     InlineSString<32>        m_resourceName;
 
  public:
-    EEResourceException(RuntimeExceptionKind kind, const SString &resourceName);
+    EEResourceException(RuntimeExceptionKind kind, const WCHAR* resourceName);
 
     // Unmanaged message text containing only the resource name (GC safe)
     void GetMessage(SString &result);
 
-    // Throwable message containig the resource contents (not GC safe)
+    // Throwable message containing the resource contents (not GC safe)
     BOOL GetThrowableMessage(SString &result);
 
  protected:
@@ -380,6 +383,7 @@ private:
 #endif // _DEBUG
 };
 
+#ifdef FEATURE_COMINTEROP
 // ---------------------------------------------------------------------------
 // EECOMException is an EE exception subclass composed of COM-generated data.
 // Note that you must ensure that the COM data was not derived from a wrapper
@@ -438,6 +442,7 @@ private:
     }
 #endif // _DEBUG
 };
+#endif // FEATURE_COMINTEROP
 
 // ---------------------------------------------------------------------------
 // EEFieldException is an EE exception subclass composed of a field
@@ -678,7 +683,7 @@ class EEFileLoadException : public EEException
 
     static RuntimeExceptionKind GetFileLoadKind(HRESULT hr);
     static void DECLSPEC_NORETURN Throw(AssemblySpec *pSpec, HRESULT hr, Exception *pInnerException = NULL);
-    static void DECLSPEC_NORETURN Throw(PEFile *pFile, HRESULT hr, Exception *pInnerException = NULL);
+    static void DECLSPEC_NORETURN Throw(PEAssembly *pPEAssembly, HRESULT hr, Exception *pInnerException = NULL);
     static void DECLSPEC_NORETURN Throw(LPCWSTR path, HRESULT hr, Exception *pInnerException = NULL);
     static void DECLSPEC_NORETURN Throw(PEAssembly *parent, const void *memory, COUNT_T size, HRESULT hr, Exception *pInnerException = NULL);
     static BOOL CheckType(Exception* ex); // typeof(EEFileLoadException)
@@ -722,7 +727,7 @@ class EEFileLoadException : public EEException
 // We're not actually running in the CLR, but we may need access to some CLR-exception
 // related data structures elsewhere in this header file in order to analyze CLR
 // exceptions that occurred in the target.
-#if !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
+#if !defined(DACCESS_COMPILE)
 
 #define GET_THROWABLE() CLRException::GetThrowableFromException(GET_EXCEPTION())
 
@@ -752,7 +757,7 @@ LONG CLRNoCatchHandler(EXCEPTION_POINTERS* pExceptionInfo, PVOID pv);
 #define PAL_SEH_RESTORE_GUARD_PAGE                                                  \
     if (__exCode == STATUS_STACK_OVERFLOW)                                          \
     {                                                                               \
-        Thread *__pThread = GetThread();                                            \
+        Thread *__pThread = GetThreadNULLOk();                                            \
         if (__pThread != NULL)                                                      \
         {                                                                           \
             __pThread->RestoreGuardPage();                                          \
@@ -799,7 +804,7 @@ LONG CLRNoCatchHandler(EXCEPTION_POINTERS* pExceptionInfo, PVOID pv);
             STRESS_LOG1(LF_EH, LL_INFO100,                                              \
                 "EX_RETHROW " INDEBUG(__FILE__) " line %d\n", __LINE__);                \
             __pException.SuppressRelease();                                             \
-            if ((!__state.DidCatchCxx()) && (GetThread() != NULL))                      \
+            if ((!__state.DidCatchCxx()) && (GetThreadNULLOk() != NULL))                      \
             {                                                                           \
                 if (GetThread()->PreemptiveGCDisabled())                                \
                 {                                                                       \
@@ -841,6 +846,7 @@ LONG CLRNoCatchHandler(EXCEPTION_POINTERS* pExceptionInfo, PVOID pv);
 //
 // Thus, the scoped use of FAULT_NOT_FATAL macro.
 #undef EX_CATCH_HRESULT
+#ifdef FEATURE_COMINTEROP
 #define EX_CATCH_HRESULT(_hr)                                                   \
     EX_CATCH                                                                    \
     {                                                                           \
@@ -856,8 +862,17 @@ LONG CLRNoCatchHandler(EXCEPTION_POINTERS* pExceptionInfo, PVOID pv);
         _ASSERTE(FAILED(_hr));                                                  \
     }                                                                           \
     EX_END_CATCH(SwallowAllExceptions)
+#else // FEATURE_COMINTEROP
+#define EX_CATCH_HRESULT(_hr)                                                   \
+    EX_CATCH                                                                    \
+    {                                                                           \
+        (_hr) = GET_EXCEPTION()->GetHR();                                       \
+        _ASSERTE(FAILED(_hr));                                                  \
+    }                                                                           \
+    EX_END_CATCH(SwallowAllExceptions)
+#endif // FEATURE_COMINTEROP
 
-#endif // !DACCESS_COMPILE && !CROSSGEN_COMPILE
+#endif // !DACCESS_COMPILE
 
 // When collecting dumps, we need to ignore errors unless the user cancels.
 #define EX_CATCH_RETHROW_ONLY_COR_E_OPERATIONCANCELLED                          \
@@ -908,7 +923,7 @@ LONG CLRNoCatchHandler(EXCEPTION_POINTERS* pExceptionInfo, PVOID pv);
     {                                                               \
         HRESULT *__phr = (phresult);                                \
         *__phr = S_OK;                                              \
-        _ASSERTE(GetThread() == NULL ||                             \
+        _ASSERTE(GetThreadNULLOk() == NULL ||                             \
                     !GetThread()->PreemptiveGCDisabled());          \
         MAKE_CURRENT_THREAD_AVAILABLE_EX(GetThreadNULLOk());        \
         if (CURRENT_THREAD == NULL)                                 \
@@ -933,7 +948,7 @@ LONG CLRNoCatchHandler(EXCEPTION_POINTERS* pExceptionInfo, PVOID pv);
 // ---------------------------------------------------------------------------
 
 inline CLRException::CLRException()
-  : m_throwableHandle(NULL)
+  : m_throwableHandle{}
 {
     LIMITED_METHOD_CONTRACT;
 }
@@ -1028,7 +1043,7 @@ inline EEMessageException::EEMessageException(RuntimeExceptionKind kind, HRESULT
 }
 
 
-inline EEResourceException::EEResourceException(RuntimeExceptionKind kind, const SString &resourceName)
+inline EEResourceException::EEResourceException(RuntimeExceptionKind kind, const WCHAR* resourceName)
   : EEException(kind),
     m_resourceName(resourceName)
 {

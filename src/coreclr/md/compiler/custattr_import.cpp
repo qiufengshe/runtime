@@ -16,43 +16,11 @@
 #include "rwutil.h"
 #include "mdlog.h"
 #include "importhelper.h"
-#include "mdperf.h"
 #include "posterror.h"
 #include "cahlprinternal.h"
 #include "custattr.h"
 #include "corhdr.h"
 #include <metamodelrw.h>
-
-//*****************************************************************************
-// Implementation of hash for custom attribute types.
-//*****************************************************************************
-unsigned int CCustAttrHash::Hash(const CCustAttrHashKey *pData)
-{
-    return static_cast<unsigned int>(pData->tkType);
-} // unsigned long CCustAttrHash::Hash()
-unsigned int CCustAttrHash::Compare(const CCustAttrHashKey *p1, CCustAttrHashKey *p2)
-{
-    if (p1->tkType == p2->tkType)
-        return 0;
-    return 1;
-} // unsigned long CCustAttrHash::Compare()
-CCustAttrHash::ELEMENTSTATUS CCustAttrHash::Status(CCustAttrHashKey *p)
-{
-    if (p->tkType == FREE)
-        return (FREE);
-    if (p->tkType == DELETED)
-        return (DELETED);
-    return (USED);
-} // CCustAttrHash::ELEMENTSTATUS CCustAttrHash::Status()
-void CCustAttrHash::SetStatus(CCustAttrHashKey *p, CCustAttrHash::ELEMENTSTATUS s)
-{
-    p->tkType = s;
-} // void CCustAttrHash::SetStatus()
-void* CCustAttrHash::GetKey(CCustAttrHashKey *p)
-{
-    return &p->tkType;
-} // void* CCustAttrHash::GetKey()
-
 
 //*****************************************************************************
 // Get the value of a CustomAttribute, using only TypeName for lookup.
@@ -65,27 +33,20 @@ STDMETHODIMP RegMeta::GetCustomAttributeByName( // S_OK or error.
 {
     HRESULT     hr;                     // A result.
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     LPUTF8      szName;                 // Name in UFT8.
     int         iLen;                   // A length.
     CMiniMdRW   *pMiniMd = NULL;
 
-    START_MD_PERF();
     LOCKREAD();
     pMiniMd = &(m_pStgdb->m_MiniMd);
 
-    iLen = WszWideCharToMultiByte(CP_UTF8,0, wzName,-1, NULL,0, 0,0);
+    iLen = WideCharToMultiByte(CP_UTF8,0, wzName,-1, NULL,0, 0,0);
     szName = (LPUTF8)_alloca(iLen);
-    VERIFY(WszWideCharToMultiByte(CP_UTF8,0, wzName,-1, szName,iLen, 0,0));
+    VERIFY(WideCharToMultiByte(CP_UTF8,0, wzName,-1, szName,iLen, 0,0));
 
     hr = ImportHelper::GetCustomAttributeByName(pMiniMd, tkObj, szName, ppData, pcbData);
 
 ErrExit:
-
-    STOP_MD_PERF(GetCustomAttributeByName);
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // STDMETHODIMP RegMeta::GetCustomAttributeByName()
 
@@ -103,25 +64,20 @@ STDMETHODIMP RegMeta::EnumCustomAttributes(
 {
     HRESULT         hr = S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     HENUMInternal   **ppmdEnum = reinterpret_cast<HENUMInternal **> (phEnum);
-    ULONG           ridStart;
-    ULONG           ridEnd;
-    HENUMInternal   *pEnum = *ppmdEnum;
+    RID             ridStart;
+    RID             ridEnd;
+    HENUMInternal   *pEnum = NULL;
     CustomAttributeRec  *pRec;
     ULONG           index;
 
-    LOG((LOGMD, "RegMeta::EnumCustomAttributes(0x%08x, 0x%08x, 0x%08x, 0x%08x, 0x%08x, 0x%08x)\n",
-            phEnum, tk, tkType, rCustomAttributes, cMax, pcCustomAttributes));
-    START_MD_PERF();
     LOCKREAD();
 
-    if ( pEnum == 0 )
+    if ( *ppmdEnum == 0 )
     {
         // instantiating a new ENUM
         CMiniMdRW       *pMiniMd = &(m_pStgdb->m_MiniMd);
-        CLookUpHash     *pHashTable = pMiniMd->m_pLookUpHashs[TBL_CustomAttribute];
+        CLookUpHash     *pHashTable = pMiniMd->m_pLookUpHashes[TBL_CustomAttribute];
 
         // Does caller want all custom Values?
         if (IsNilToken(tk))
@@ -220,16 +176,15 @@ STDMETHODIMP RegMeta::EnumCustomAttributes(
 
         // set the output parameter
         *ppmdEnum = pEnum;
+        pEnum = NULL;
     }
 
     // fill the output token buffer
-    hr = HENUMInternal::EnumWithCount(pEnum, cMax, rCustomAttributes, pcCustomAttributes);
+    hr = HENUMInternal::EnumWithCount(*ppmdEnum, cMax, rCustomAttributes, pcCustomAttributes);
 
 ErrExit:
     HENUMInternal::DestroyEnumIfEmpty(ppmdEnum);
-
-    STOP_MD_PERF(EnumCustomAttributes);
-    END_ENTRYPOINT_NOTHROW;
+    HENUMInternal::DestroyEnum(pEnum);
 
     return hr;
 } // STDMETHODIMP RegMeta::EnumCustomAttributes()
@@ -247,11 +202,8 @@ STDMETHODIMP RegMeta::GetCustomAttributeProps(
 {
     HRESULT     hr = S_OK;              // A result.
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     CMiniMdRW   *pMiniMd;
 
-    START_MD_PERF();
     LOCKREAD();
 
     _ASSERTE(TypeFromToken(cv) == mdtCustomAttribute);
@@ -273,9 +225,5 @@ STDMETHODIMP RegMeta::GetCustomAttributeProps(
     }
 
 ErrExit:
-
-    STOP_MD_PERF(GetCustomAttributeProps);
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 } // RegMeta::GetCustomAttributeProps

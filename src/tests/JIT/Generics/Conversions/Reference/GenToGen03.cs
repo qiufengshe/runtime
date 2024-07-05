@@ -3,6 +3,7 @@
 //
 
 using System;
+using Xunit;
 
 public struct ValX0 { }
 public struct ValY0 { }
@@ -81,7 +82,7 @@ public class Converter<T>
     }
 }
 
-public class Test
+public class Test_GenToGen03
 {
     public static int counter = 0;
     public static bool result = true;
@@ -96,7 +97,8 @@ public class Test
 
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         Eval(new Converter<int>().ToGenOfT(new Gen<int>(), false, typeof(Gen<int>)));
         Eval(new Converter<int>().ToGenBaseOfT(new Gen<int>(), false, typeof(Gen<int>)));

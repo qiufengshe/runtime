@@ -17,7 +17,6 @@
 #include <conio.h>
 #include <assert.h>
 
-#include <mono/metadata/coree.h>
 #include <mono/metadata/assembly.h>
 #include <mono/metadata/loader.h>
 #include <mono/metadata/tabledefs.h>
@@ -35,9 +34,7 @@
 #include <mono/metadata/gc-internals.h>
 #include <mono/metadata/threads-types.h>
 #include <mono/metadata/verify.h>
-#include <mono/metadata/verify-internals.h>
 #include <mono/metadata/mempool-internals.h>
-#include <mono/metadata/attach.h>
 #include <mono/utils/mono-math.h>
 #include <mono/utils/mono-compiler.h>
 #include <mono/utils/mono-counters.h>
@@ -57,10 +54,9 @@
 #include "jit-icalls.h"
 
 #define MONO_HANDLER_DELIMITER ','
-#define MONO_HANDLER_DELIMITER_LEN G_N_ELEMENTS(MONO_HANDLER_DELIMITER)-1
 
 #define MONO_HANDLER_ATEXIT_WAIT_KEYPRESS "atexit-waitkeypress"
-#define MONO_HANDLER_ATEXIT_WAIT_KEYPRESS_LEN G_N_ELEMENTS(MONO_HANDLER_ATEXIT_WAIT_KEYPRESS)-1
+#define MONO_HANDLER_ATEXIT_WAIT_KEYPRESS_LEN STRING_LENGTH(MONO_HANDLER_ATEXIT_WAIT_KEYPRESS)
 
 // Typedefs used to setup handler table.
 typedef void (*handler)(void);
@@ -236,21 +232,7 @@ mono_runtime_install_custom_handlers_usage (void)
 }
 
 void
-mono_runtime_cleanup_handlers (void)
-{
-#ifndef MONO_CROSS_COMPILE
-	win32_seh_cleanup();
-#endif
-}
-
-void
 mono_init_native_crash_info (void)
-{
-	return;
-}
-
-void
-mono_cleanup_native_crash_info (void)
 {
 	return;
 }
@@ -300,7 +282,9 @@ thread_timer_expired (HANDLE thread)
 	if (GetThreadContext (thread, &context)) {
 		guchar *ip;
 
-#ifdef _WIN64
+#ifdef _ARM64_
+		ip = (guchar *) context.Pc;
+#elif _WIN64
 		ip = (guchar *) context.Rip;
 #else
 		ip = (guchar *) context.Eip;
@@ -314,22 +298,6 @@ static VOID CALLBACK
 timer_event_proc (UINT uID, UINT uMsg, DWORD_PTR dwUser, DWORD_PTR dw1, DWORD_PTR dw2)
 {
 	thread_timer_expired ((HANDLE)dwUser);
-}
-
-static VOID
-stop_profiler_timer_event (void)
-{
-	if (g_timer_event != 0) {
-
-		timeKillEvent (g_timer_event);
-		g_timer_event = 0;
-	}
-
-	if (g_timer_main_thread != INVALID_HANDLE_VALUE) {
-
-		CloseHandle (g_timer_main_thread);
-		g_timer_main_thread = INVALID_HANDLE_VALUE;
-	}
 }
 
 static VOID
@@ -362,24 +330,9 @@ mono_runtime_setup_stat_profiler (void)
 	start_profiler_timer_event ();
 	return;
 }
-
-void
-mono_runtime_shutdown_stat_profiler (void)
-{
-	stop_profiler_timer_event ();
-	return;
-}
 #elif !HAVE_EXTERN_DEFINED_WIN32_TIMERS
 void
 mono_runtime_setup_stat_profiler (void)
-{
-	g_unsupported_api ("timeGetDevCaps, timeBeginPeriod, timeEndPeriod, timeSetEvent, timeKillEvent");
-	SetLastError (ERROR_NOT_SUPPORTED);
-	return;
-}
-
-void
-mono_runtime_shutdown_stat_profiler (void)
 {
 	g_unsupported_api ("timeGetDevCaps, timeBeginPeriod, timeEndPeriod, timeSetEvent, timeKillEvent");
 	SetLastError (ERROR_NOT_SUPPORTED);
@@ -501,8 +454,6 @@ mono_win32_runtime_tls_callback (HMODULE module_handle, DWORD reason, LPVOID res
 		mono_install_runtime_load (mini_init);
 		break;
 	case DLL_PROCESS_DETACH:
-		if (coree_module_handle)
-			FreeLibrary (coree_module_handle);
 		break;
 	case DLL_THREAD_DETACH:
 		mono_thread_info_detach ();

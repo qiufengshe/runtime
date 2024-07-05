@@ -10,15 +10,68 @@ using Microsoft.Build.Utilities;
 public class AndroidAppBuilderTask : Task
 {
     [Required]
-    public string SourceDir { get; set; } = ""!;
-
-    [Required]
     public string MonoRuntimeHeaders { get; set; } = ""!;
+
+    /// <summary>
+    /// Target directory with *dll and other content to be AOT'd and/or bundled
+    /// </summary>
+    [Required]
+    public string AppDir { get; set; } = ""!;
 
     /// <summary>
     /// This library will be used as an entry-point (e.g. TestRunner.dll)
     /// </summary>
     public string MainLibraryFileName { get; set; } = ""!;
+
+    /// <summary>
+    /// List of paths to assemblies to be included in the app. For AOT builds the 'ObjectFile' metadata key needs to point to the object file.
+    /// </summary>
+    public ITaskItem[] Assemblies { get; set; } = Array.Empty<ITaskItem>();
+
+    /// <summary>
+    /// The set of environment variables to provide to the native embedded application
+    /// </summary>
+    public ITaskItem[] EnvironmentVariables { get; set; } = Array.Empty<ITaskItem>();
+
+    /// <summary>
+    /// Additional linker arguments that apply to the app being built
+    /// </summary>
+    public ITaskItem[] ExtraLinkerArguments { get; set; } = Array.Empty<ITaskItem>();
+
+    /// <summary>
+    /// Prefer FullAOT mode for Emulator over JIT
+    /// </summary>
+    public bool ForceAOT { get; set; }
+
+    /// <summary>
+    /// Indicates if we want to AOT all assemblies or not
+    /// </summary>
+    public bool ForceFullAOT { get; set; }
+
+    /// <summary>
+    /// Mode to control whether runtime is a self-contained library or not
+    /// </summary>
+    public bool IsLibraryMode { get; set; }
+
+    /// <summary>
+    /// Extra native dependencies to link into the app
+    /// </summary>
+    public string[] NativeDependencies { get; set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Static linked runtime
+    /// </summary>
+    public bool StaticLinkedRuntime { get; set; }
+
+    /// <summary>
+    /// List of enabled runtime components
+    /// </summary>
+    public string[] RuntimeComponents { get; set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Diagnostic ports configuration string
+    /// </summary>
+    public string? DiagnosticPorts { get; set; } = ""!;
 
     [Required]
     public string RuntimeIdentifier { get; set; } = ""!;
@@ -26,6 +79,7 @@ public class AndroidAppBuilderTask : Task
     [Required]
     public string OutputDir { get; set; } = ""!;
 
+    [Required]
     public string? ProjectName { get; set; }
 
     public string? AndroidSdk { get; set; }
@@ -33,6 +87,8 @@ public class AndroidAppBuilderTask : Task
     public string? AndroidNdk { get; set; }
 
     public string? MinApiLevel { get; set; }
+
+    public string? TargetApiLevel { get; set; }
 
     public string? BuildApiLevel { get; set; }
 
@@ -58,34 +114,32 @@ public class AndroidAppBuilderTask : Task
 
     public override bool Execute()
     {
-        Utils.Logger = Log;
-
-        string abi = DetermineAbi();
-
-        var apkBuilder = new ApkBuilder();
+        var apkBuilder = new ApkBuilder(Log);
         apkBuilder.ProjectName = ProjectName;
+        apkBuilder.AppDir = AppDir;
         apkBuilder.OutputDir = OutputDir;
         apkBuilder.AndroidSdk = AndroidSdk;
         apkBuilder.AndroidNdk = AndroidNdk;
         apkBuilder.MinApiLevel = MinApiLevel;
+        apkBuilder.TargetApiLevel = TargetApiLevel;
         apkBuilder.BuildApiLevel = BuildApiLevel;
         apkBuilder.BuildToolsVersion = BuildToolsVersion;
         apkBuilder.StripDebugSymbols = StripDebugSymbols;
         apkBuilder.NativeMainSource = NativeMainSource;
         apkBuilder.KeyStorePath = KeyStorePath;
         apkBuilder.ForceInterpreter = ForceInterpreter;
-        (ApkBundlePath, ApkPackageId) = apkBuilder.BuildApk(SourceDir, abi, MainLibraryFileName, MonoRuntimeHeaders);
+        apkBuilder.ForceAOT = ForceAOT;
+        apkBuilder.ForceFullAOT = ForceFullAOT;
+        apkBuilder.EnvironmentVariables = EnvironmentVariables;
+        apkBuilder.StaticLinkedRuntime = StaticLinkedRuntime;
+        apkBuilder.RuntimeComponents = RuntimeComponents;
+        apkBuilder.DiagnosticPorts = DiagnosticPorts;
+        apkBuilder.Assemblies = Assemblies;
+        apkBuilder.IsLibraryMode = IsLibraryMode;
+        apkBuilder.NativeDependencies = NativeDependencies;
+        apkBuilder.ExtraLinkerArguments = ExtraLinkerArguments;
+        (ApkBundlePath, ApkPackageId) = apkBuilder.BuildApk(RuntimeIdentifier, MainLibraryFileName, MonoRuntimeHeaders);
 
         return true;
     }
-
-    private string DetermineAbi() =>
-        RuntimeIdentifier switch
-        {
-            "android-x86" => "x86",
-            "android-x64" => "x86_64",
-            "android-arm" => "armeabi-v7a",
-            "android-arm64" => "arm64-v8a",
-            _ => throw new ArgumentException($"{RuntimeIdentifier} is not supported for Android"),
-        };
 }

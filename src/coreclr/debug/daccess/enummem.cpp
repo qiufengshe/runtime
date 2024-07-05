@@ -18,7 +18,7 @@
 #include "typestring.h"
 #include "daccess.h"
 #include "binder.h"
-#include "win32threadpool.h"
+#include "runtimeinfo.h"
 
 #ifdef FEATURE_COMWRAPPERS
 #include <interoplibinterface.h>
@@ -29,16 +29,16 @@ extern HRESULT GetDacTableAddress(ICorDebugDataTarget* dataTarget, ULONG64 baseA
 
 #if defined(DAC_MEASURE_PERF)
 
-unsigned __int64 g_nTotalTime;
-unsigned __int64 g_nStackTotalTime;
-unsigned __int64 g_nReadVirtualTotalTime;
-unsigned __int64 g_nFindTotalTime;
-unsigned __int64 g_nFindHashTotalTime;
-unsigned __int64 g_nFindHits;
-unsigned __int64 g_nFindCalls;
-unsigned __int64 g_nFindFails;
-unsigned __int64 g_nStackWalk;
-unsigned __int64 g_nFindStackTotalTime;
+uint64_t g_nTotalTime;
+uint64_t g_nStackTotalTime;
+uint64_t g_nReadVirtualTotalTime;
+uint64_t g_nFindTotalTime;
+uint64_t g_nFindHashTotalTime;
+uint64_t g_nFindHits;
+uint64_t g_nFindCalls;
+uint64_t g_nFindFails;
+uint64_t g_nStackWalk;
+uint64_t g_nFindStackTotalTime;
 
 #endif // #if defined(DAC_MEASURE_PERF)
 
@@ -66,7 +66,7 @@ HRESULT ClrDataAccess::EnumMemCollectImages()
     ProcessModIter modIter;
     Module* modDef = NULL;
     HRESULT status = S_OK;
-    PEFile  *file;
+    PEAssembly  *assembly;
     TADDR pStartAddr = 0;
     ULONG32 ulSize = 0;
     ULONG32 ulSizeBlock;
@@ -83,32 +83,22 @@ HRESULT ClrDataAccess::EnumMemCollectImages()
             EX_TRY
             {
                 ulSize = 0;
-                file = modDef->GetFile();
+                assembly = modDef->GetPEAssembly();
 
-                // We want to save all native images
-                if (file->HasNativeImage())
-                {
-                    // We should only skip if signed by Microsoft!
-                    pStartAddr = PTR_TO_TADDR(file->GetLoadedNative()->GetBase());
-                    ulSize = file->GetLoadedNative()->GetSize();
-                }
-                // We also want to save any in-memory images.  These show up like mapped files
+                // We want to save any in-memory images.  These show up like mapped files
                 // and so would not be in a heap dump by default.  Technically it's not clear we
                 // should include them in the dump - you can often have the files available
                 // after-the-fact. But in-memory modules may be harder to track down at debug time
                 // and people may have come to rely on this - so we'll include them for now.
-                else
                 if (
-                    file->GetPath().IsEmpty() && // is in-memory
-                    file->HasMetadata() &&       // skip resource assemblies
-                    file->IsLoaded(FALSE) &&     // skip files not yet loaded
-                    !file->IsDynamic())          // skip dynamic (GetLoadedIL asserts anyway)
+                    assembly->GetPath().IsEmpty() && // is in-memory
+                    assembly->HasLoadedPEImage())         // skip files not yet loaded or Dynamic
                 {
-                    pStartAddr = PTR_TO_TADDR(file->GetLoadedIL()->GetBase());
-                    ulSize = file->GetLoadedIL()->GetSize();
+                    pStartAddr = PTR_TO_TADDR(assembly->GetLoadedLayout()->GetBase());
+                    ulSize = assembly->GetLoadedLayout()->GetSize();
                 }
 
-                // memory are mapped in in GetOsPageSize() size.
+                // memory are mapped in GetOsPageSize() size.
                 // Some memory are mapped in but some are not. You cannot
                 // write all in one block. So iterating through page size
                 //
@@ -190,18 +180,16 @@ HRESULT ClrDataAccess::EnumMemCLRStatic(IN CLRDataEnumMemoryFlags flags)
     // global variables. But it won't report the structures that are pointed by
     // global pointers.
     //
-#define DEFINE_DACVAR(id_type, size_type, id, var) \
-    ReportMem(m_globalBase + g_dacGlobals.id, sizeof(size_type));
+#define DEFINE_DACVAR(size_type, id, var) \
+    ReportMem(m_dacGlobals.id, sizeof(size_type));
 
-#ifdef TARGET_UNIX
     ULONG64 dacTableAddress;
     HRESULT hr = GetDacTableAddress(m_pTarget, m_globalBase, &dacTableAddress);
     if (FAILED(hr)) {
         return hr;
     }
     // Add the dac table memory in coreclr
-    CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED ( ReportMem((TADDR)dacTableAddress, sizeof(g_dacGlobals)); )
-#endif
+    CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED ( ReportMem((TADDR)dacTableAddress, sizeof(m_dacGlobals)); )
 
     // Cannot use CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED
     // around conditional preprocessor directives in a sane fashion.
@@ -216,25 +204,53 @@ HRESULT ClrDataAccess::EnumMemCLRStatic(IN CLRDataEnumMemoryFlags flags)
     }
     EX_END_CATCH(RethrowCancelExceptions)
 
-    CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED ( ReportMem(m_globalBase + g_dacGlobals.dac__g_pStressLog, sizeof(StressLog *)); )
+    CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED ( ReportMem(m_dacGlobals.dac__g_pStressLog, sizeof(StressLog *)); )
 
     EX_TRY
     {
         // These two static pointers are pointed to static data of byte[]
         // then run constructor in place
         //
-        ReportMem(m_globalBase + g_dacGlobals.SystemDomain__m_pSystemDomain, sizeof(SystemDomain));
+        ReportMem(m_dacGlobals.SystemDomain__m_pSystemDomain, sizeof(SystemDomain));
 
         // We need IGCHeap pointer to make EEVersion work
-        ReportMem(m_globalBase + g_dacGlobals.dac__g_pGCHeap, sizeof(IGCHeap *));
+        ReportMem(m_dacGlobals.dac__g_pGCHeap, sizeof(IGCHeap *));
 
         // see synblk.cpp, the pointer is pointed to a static byte[]
         SyncBlockCache::s_pSyncBlockCache.EnumMem();
 
-        ReportMem(m_globalBase + g_dacGlobals.dac__g_FCDynamicallyAssignedImplementations,
+        ReportMem(m_dacGlobals.dac__g_FCDynamicallyAssignedImplementations,
                   sizeof(TADDR)*ECall::NUM_DYNAMICALLY_ASSIGNED_FCALL_IMPLEMENTATIONS);
 
         ReportMem(g_gcDacGlobals.GetAddr(), sizeof(GcDacVars));
+
+        PTR_WSTR entryAssemblyPath = (PTR_WSTR)g_EntryAssemblyPath;
+        entryAssemblyPath.EnumMem();
+
+        // Triage dumps must not include full paths (PII data). Replace entry assembly path with file name only.
+        if (flags == CLRDATA_ENUM_MEM_TRIAGE)
+        {
+            WCHAR* path = entryAssemblyPath;
+            if (path != NULL)
+            {
+                size_t pathLen = u16_strlen(path) + 1;
+
+                // Get the file name based on the last directory separator
+                const WCHAR* name = u16_strrchr(path, DIRECTORY_SEPARATOR_CHAR_W);
+                if (name != NULL)
+                {
+                    name += 1;
+                    size_t len = u16_strlen(name) + 1;
+                    wcscpy_s(path, len, name);
+
+                    // Null out the rest of the buffer
+                    for (size_t i = len; i < pathLen; ++i)
+                        path[i] = W('\0');
+
+                    DacUpdateMemoryRegion(entryAssemblyPath.GetAddr(), pathLen, (BYTE*)path);
+                }
+            }
+        }
 
         // We need all of the dac variables referenced by the GC DAC global struct.
         // This struct contains pointers to pointers, so we first dereference the pointers
@@ -294,6 +310,21 @@ HRESULT ClrDataAccess::EnumMemCLRStatic(IN CLRDataEnumMemoryFlags flags)
     return S_OK;
 }
 
+HRESULT ClrDataAccess::EnumMemDumpJitManagerInfo(IN CLRDataEnumMemoryFlags flags)
+{
+    SUPPORTS_DAC;
+
+    HRESULT status = S_OK;
+
+    if (flags == CLRDATA_ENUM_MEM_HEAP2)
+    {
+        EEJitManager* managerPtr = ExecutionManager::GetEEJitManager();
+        managerPtr->EnumMemoryRegions(flags);
+    }
+
+    return status;
+}
+
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //
 // This function reports memory that a heap dump need to debug CLR
@@ -336,11 +367,14 @@ HRESULT ClrDataAccess::EnumMemoryRegionsWorkerHeap(IN CLRDataEnumMemoryFlags fla
     // Dump AppDomain-specific info
     CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED( status = EnumMemDumpAppDomainInfo(flags); )
 
+    // Dump jit manager info
+    CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED( status = EnumMemDumpJitManagerInfo(flags); )
+
     // Dump the Debugger object data needed
     CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED( g_pDebugger->EnumMemoryRegions(flags); )
 
     // now dump the memory get dragged in by using DAC API implicitly.
-    m_dumpStats.m_cbImplicity = m_instances.DumpAllInstances(m_enumMemCb);
+    m_dumpStats.m_cbImplicitly = m_instances.DumpAllInstances(m_enumMemCb);
 
     // Do not let any remaining implicitly enumerated memory leak out.
     Flush();
@@ -351,7 +385,7 @@ HRESULT ClrDataAccess::EnumMemoryRegionsWorkerHeap(IN CLRDataEnumMemoryFlags fla
 //+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //
 // Helper function for skinny mini-dump
-// Pass in an managed object, this function will dump the EEClass hierachy
+// Pass in an managed object, this function will dump the EEClass hierarchy
 // and field desc of object so SOS's !DumpObj will work
 //
 //
@@ -540,12 +574,12 @@ HRESULT ClrDataAccess::DumpManagedExcepObject(CLRDataEnumMemoryFlags flags, OBJE
             // Pulls in sequence points.
             DebugInfoManager::EnumMemoryRegionsForMethodDebugInfo(flags, pMD);
             PCODE addr = pMD->GetNativeCode();
-            if (addr != NULL)
+            if (addr != (PCODE)NULL)
             {
                 EECodeInfo codeInfo(addr);
                 if (codeInfo.IsValid())
                 {
-                    IJitManager::MethodRegionInfo methodRegionInfo = { NULL, 0, NULL, 0 };
+                    IJitManager::MethodRegionInfo methodRegionInfo = { (TADDR)NULL, 0, (TADDR)NULL, 0 };
                     codeInfo.GetMethodRegionInfo(&methodRegionInfo);
                 }
             }
@@ -616,11 +650,8 @@ HRESULT ClrDataAccess::EnumMemDumpModuleList(CLRDataEnumMemoryFlags flags)
     Module*         modDef;
     TADDR           base;
     ULONG32         length;
-    PEFile          *file;
+    PEAssembly*     assembly;
     TSIZE_T         cbMemoryReported = m_cbMemoryReported;
-#ifdef FEATURE_PREJIT
-    COUNT_T         count;
-#endif // FEATURE_PREJIT
 
     //
     // Iterating through module list
@@ -645,18 +676,13 @@ HRESULT ClrDataAccess::EnumMemDumpModuleList(CLRDataEnumMemoryFlags flags)
                 // To enable a debugger to check on whether a module is an NI or IL image, they need
                 // the DOS header, PE headers, and IMAGE_COR20_HEADER for the Flags member.
                 // We expose no API today to find this out.
-                PTR_PEFile pPEFile = modDef->GetFile();
-                PEImage * pILImage = pPEFile->GetILimage();
-                PEImage * pNIImage = pPEFile->GetNativeImage();
+                PTR_PEAssembly pPEAssembly = modDef->GetPEAssembly();
+                PEImage * pILImage = pPEAssembly->GetPEImage();
 
                 // Implicitly gets the COR header.
                 if ((pILImage) && (pILImage->HasLoadedLayout()))
                 {
                     pILImage->GetCorHeaderFlags();
-                }
-                if ((pNIImage) && (pNIImage->HasLoadedLayout()))
-                {
-                    pNIImage->GetCorHeaderFlags();
                 }
             }
             EX_CATCH_RETHROW_ONLY_COR_E_OPERATIONCANCELLED
@@ -664,18 +690,9 @@ HRESULT ClrDataAccess::EnumMemDumpModuleList(CLRDataEnumMemoryFlags flags)
 
             EX_TRY
             {
-                file = modDef->GetFile();
-                base = PTR_TO_TADDR(file->GetLoadedImageContents(&length));
-                file->EnumMemoryRegions(flags);
-#ifdef FEATURE_PREJIT
-
-                // If module has native image and it has debug map, we need to get the debug map.
-                //
-                if (modDef->HasNativeImage() && modDef->GetNativeImage()->HasNativeDebugMap())
-                {
-                    modDef->GetNativeImage()->GetNativeDebugMap(&count);
-                }
-#endif // FEATURE_PREJIT
+                assembly = modDef->GetPEAssembly();
+                base = PTR_TO_TADDR(assembly->GetLoadedImageContents(&length));
+                assembly->EnumMemoryRegions(flags);
             }
             EX_CATCH
             {
@@ -708,18 +725,23 @@ HRESULT ClrDataAccess::EnumMemDumpAppDomainInfo(CLRDataEnumMemoryFlags flags)
 {
     SUPPORTS_DAC;
 
-    AppDomainIterator adIter(FALSE);
+    if (flags == CLRDATA_ENUM_MEM_HEAP2)
+    {
+        SystemDomain::System()->GetLoaderAllocator()->EnumMemoryRegions(flags);
+    }
+
+    AppDomain* appDomain = AppDomain::GetCurrentDomain();
+    if (appDomain == NULL)
+        return S_OK;
+
     EX_TRY
     {
-        while (adIter.Next())
-        {
-            CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED
-            (
-                // Note that the flags being CLRDATA_ENUM_MEM_MINI prevents
-                // you from pulling entire files loaded into memory into the dump.
-                adIter.GetDomain()->EnumMemoryRegions(flags, true);
-            );
-        }
+        CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED
+        (
+            // Note that the flags being CLRDATA_ENUM_MEM_MINI prevents
+            // you from pulling entire files loaded into memory into the dump.
+            appDomain->EnumMemoryRegions(flags, true);
+        );
     }
     EX_CATCH_RETHROW_ONLY_COR_E_OPERATIONCANCELLED
 
@@ -742,7 +764,7 @@ HRESULT ClrDataAccess::EnumMemWalkStackHelper(CLRDataEnumMemoryFlags flags,
 
 #if defined(DAC_MEASURE_PERF)
     g_nStackWalk = 1;
-    unsigned __int64 nStart= GetCycleCount();
+    uint64_t nStart= GetCycleCount();
 #endif
 
     HRESULT status = S_OK;
@@ -763,7 +785,7 @@ HRESULT ClrDataAccess::EnumMemWalkStackHelper(CLRDataEnumMemoryFlags flags,
         {
             bool frameHadContext = false;
             status = pStackWalk->GetFrame(&pFrame);
-            PCODE addr = NULL;
+            PCODE addr = (PCODE)NULL;
             if (status == S_OK && pFrame != NULL)
             {
                 // write out the code that ip pointed to
@@ -815,7 +837,7 @@ HRESULT ClrDataAccess::EnumMemWalkStackHelper(CLRDataEnumMemoryFlags flags,
 
                         if (!pThread->IsAddressInStack(currentSP))
                         {
-                            _ASSERTE(!"Target stack has been corrupted, SP must in in the stack range.");
+                            _ASSERTE(!"Target stack has been corrupted, SP must in the stack range.");
                             break;
                         }
                     }
@@ -856,7 +878,7 @@ HRESULT ClrDataAccess::EnumMemWalkStackHelper(CLRDataEnumMemoryFlags flags,
                                     // MethodTable
                                     ReleaseHolder<IXCLRDataValue> pDV(NULL);
                                     ReleaseHolder<IXCLRDataValue> pAssociatedValue(NULL);
-                                    CLRDATA_ADDRESS address;
+                                    CLRDATA_ADDRESS address = 0;
                                     PTR_Object pObjThis = NULL;
 
                                     if (SUCCEEDED(pFrame->GetArgumentByIndex(0, &pDV, 0, NULL, NULL)) &&
@@ -894,8 +916,8 @@ HRESULT ClrDataAccess::EnumMemWalkStackHelper(CLRDataEnumMemoryFlags flags,
                                 {
                                     // This method has a generic type token which is required to figure out the exact instantiation
                                     // of the method.
-                                    // We need to to use the variable index of the generic type token in order to do the look up.
-                                    CLRDATA_ADDRESS address = NULL;
+                                    // We need to use the variable index of the generic type token in order to do the look up.
+                                    CLRDATA_ADDRESS address = (CLRDATA_ADDRESS)NULL;
                                     DWORD dwExactGenericArgsTokenIndex = 0;
                                     ReleaseHolder<IXCLRDataValue> pDV(NULL);
                                     ReleaseHolder<IXCLRDataValue> pAssociatedValue(NULL);
@@ -933,7 +955,7 @@ HRESULT ClrDataAccess::EnumMemWalkStackHelper(CLRDataEnumMemoryFlags flags,
 
 #if defined(FEATURE_EH_FUNCLETS) && defined(USE_GC_INFO_DECODER)
 
-                            if (addr != NULL)
+                            if (addr != (PCODE)NULL)
                             {
                                 EECodeInfo codeInfo(addr);
 
@@ -975,7 +997,7 @@ HRESULT ClrDataAccess::EnumMemWalkStackHelper(CLRDataEnumMemoryFlags flags,
     EX_END_CATCH(RethrowCancelExceptions)
 
 #if defined(DAC_MEASURE_PERF)
-    unsigned __int64 nEnd = GetCycleCount();
+    uint64_t nEnd = GetCycleCount();
     g_nStackTotalTime += nEnd - nStart;
     g_nStackWalk = 0;
 #endif // #if defined(DAC_MEASURE_PERF)
@@ -1064,7 +1086,7 @@ HRESULT ClrDataAccess::EnumMemDumpAllThreadsStack(CLRDataEnumMemoryFlags flags)
 {
     SUPPORTS_DAC;
 
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)
+#if (defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)) && !defined(TARGET_UNIX)
     // Dump the exception object stored in the WinRT stowed exception
     EnumMemStowedException(flags);
 #endif // defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)
@@ -1297,7 +1319,7 @@ HRESULT ClrDataAccess::EnumMemDumpAllThreadsStack(CLRDataEnumMemoryFlags flags)
 }
 
 
-#if defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)
+#if (defined(FEATURE_COMINTEROP) || defined(FEATURE_COMWRAPPERS)) && !defined(TARGET_UNIX)
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //
 // WinRT stowed exception holds the (CCW)pointer to a managed exception object.
@@ -1404,7 +1426,7 @@ HRESULT ClrDataAccess::EnumMemStowedException(CLRDataEnumMemoryFlags flags)
         ReportMem(remoteStowedException, sizeof(STOWED_EXCEPTION_INFORMATION_HEADER));
 
         // check if this is a v2 stowed exception
-        STOWED_EXCEPTION_INFORMATION_V2 stowedException = { 0 };
+        STOWED_EXCEPTION_INFORMATION_V2 stowedException = { {0} };
         if (FAILED(m_pTarget->ReadVirtual(TO_CDADDR(remoteStowedException),
             (PBYTE)&stowedException, sizeof(STOWED_EXCEPTION_INFORMATION_HEADER), &bytesRead))
             || bytesRead != sizeof(STOWED_EXCEPTION_INFORMATION_HEADER)
@@ -1459,7 +1481,7 @@ HRESULT ClrDataAccess::DumpStowedExceptionObject(CLRDataEnumMemoryFlags flags, C
 
         // And the MOW it points to
         TADDR mow = DACGetManagedObjectWrapperFromCCW(ccwPtr);
-        ReportMem(mow, sizeof(ManagedObjectWrapperDACInterface));
+        ReportMem(mow, sizeof(InteropLib::ABI::ManagedObjectWrapperLayout));
     }
 #endif
 #ifdef FEATURE_COMINTEROP
@@ -1558,6 +1580,33 @@ HRESULT ClrDataAccess::EnumMemCLRMainModuleInfo()
         status = E_UNEXPECTED;
     }
 
+    if (pe.HasDirectoryEntry(IMAGE_DIRECTORY_ENTRY_EXPORT))
+    {
+        COUNT_T size = 0;
+        TADDR pExportTablesOffset = pe.GetDirectoryEntryData(IMAGE_DIRECTORY_ENTRY_EXPORT, &size);
+
+        ReportMem(pExportTablesOffset, size, true);
+
+        PTR_VOID runtimeExport = pe.GetExport(RUNTIME_INFO_SIGNATURE);
+        const char *runtimeExportSignature = dac_cast<PTR_STR>(runtimeExport);
+        if (runtimeExport != NULL &&
+            strcmp(runtimeExportSignature, RUNTIME_INFO_SIGNATURE) == 0)
+        {
+            ReportMem(dac_cast<TADDR>(runtimeExport), sizeof(RuntimeInfo), true);
+        }
+
+        runtimeExport = pe.GetExport(DACCESS_TABLE_SYMBOL);
+        if (runtimeExport != NULL)
+        {
+            ReportMem(dac_cast<TADDR>(runtimeExport), sizeof(DacGlobals), true);
+        }
+    }
+    else
+    {
+        // We always expect (attach state, metrics and such on windows, and dac table on mac and linux).
+        return E_UNEXPECTED;
+    }
+
     return status;
 }
 
@@ -1602,6 +1651,7 @@ HRESULT ClrDataAccess::EnumMemoryRegionsWorkerSkinny(IN CLRDataEnumMemoryFlags f
     //
     // collect CLR static
     CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED( status = EnumMemCLRStatic(flags); )
+    CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED( status = EnumMemCLRHeapCrticalStatic(flags); );
 
     // Dump AppDomain-specific info needed for MiniDumpNormal.
     CATCH_ALL_EXCEPT_RETHROW_COR_E_OPERATIONCANCELLED( status = EnumMemDumpAppDomainInfo(flags); )
@@ -1615,7 +1665,7 @@ HRESULT ClrDataAccess::EnumMemoryRegionsWorkerSkinny(IN CLRDataEnumMemoryFlags f
 #endif // FEATURE_MINIMETADATA_IN_TRIAGEDUMPS
 
     // now dump the memory get dragged in by using DAC API implicitly.
-    m_dumpStats.m_cbImplicity = m_instances.DumpAllInstances(m_enumMemCb);
+    m_dumpStats.m_cbImplicitly = m_instances.DumpAllInstances(m_enumMemCb);
 
     // Do not let any remaining implicitly enumerated memory leak out.
     Flush();
@@ -1665,7 +1715,7 @@ HRESULT ClrDataAccess::EnumMemoryRegionsWorkerMicroTriage(IN CLRDataEnumMemoryFl
 #endif // FEATURE_MINIMETADATA_IN_TRIAGEDUMPS
 
     // now dump the memory get dragged in by using DAC API implicitly.
-    m_dumpStats.m_cbImplicity = m_instances.DumpAllInstances(m_enumMemCb);
+    m_dumpStats.m_cbImplicitly = m_instances.DumpAllInstances(m_enumMemCb);
 
     // Do not let any remaining implicitly enumerated memory leak out.
     Flush();
@@ -1756,7 +1806,7 @@ HRESULT ClrDataAccess::EnumMemoryRegionsWorkerCustom()
         // we are done...
 
         // now dump the memory get dragged in implicitly
-        m_dumpStats.m_cbImplicity = m_instances.DumpAllInstances(m_enumMemCb);
+        m_dumpStats.m_cbImplicitly = m_instances.DumpAllInstances(m_enumMemCb);
 
     }
     else if (eFlavor == DUMP_FLAVOR_CriticalCLRState)
@@ -1783,7 +1833,7 @@ HRESULT ClrDataAccess::EnumMemoryRegionsWorkerCustom()
         // we are done...
 
         // now dump the memory get dragged in implicitly
-        m_dumpStats.m_cbImplicity = m_instances.DumpAllInstances(m_enumMemCb);
+        m_dumpStats.m_cbImplicitly = m_instances.DumpAllInstances(m_enumMemCb);
 
     }
     else if (eFlavor == DUMP_FLAVOR_NonHeapCLRState)
@@ -1853,7 +1903,7 @@ HRESULT ClrDataAccess::EnumMemoryRegionsWrapper(IN CLRDataEnumMemoryFlags flags)
             // triage micro-dump
             status = EnumMemoryRegionsWorkerMicroTriage(flags);
         }
-        else if (flags == CLRDATA_ENUM_MEM_HEAP)
+        else if (flags == CLRDATA_ENUM_MEM_HEAP || flags == CLRDATA_ENUM_MEM_HEAP2)
         {
             status = EnumMemoryRegionsWorkerHeap(flags);
         }
@@ -1911,8 +1961,8 @@ ClrDataAccess::EnumMemoryRegions(IN ICLRDataEnumMemoryRegionsCallback* callback,
     g_nFindStackTotalTime = 0;
 
     LARGE_INTEGER nClockFrequency;
-    unsigned __int64 nStart = 0;
-    unsigned __int64 nEnd = 0;
+    uint64_t nStart = 0;
+    uint64_t nEnd = 0;
 
     QueryPerformanceFrequency(&nClockFrequency);
 
@@ -1937,13 +1987,24 @@ ClrDataAccess::EnumMemoryRegions(IN ICLRDataEnumMemoryRegionsCallback* callback,
     // It is expected to fail on pre Win8 OSes.
     callback->QueryInterface(IID_ICLRDataEnumMemoryRegionsCallback2, (void **)&m_updateMemCb);
 
+    // QI for optional logging callback that createdump uses
+    callback->QueryInterface(IID_ICLRDataLoggingCallback, (void **)&m_logMessageCb);
+
     EX_TRY
     {
         ClearDumpStats();
         if (miniDumpFlags & MiniDumpWithPrivateReadWriteMemory)
         {
             // heap dump
-            status = EnumMemoryRegionsWrapper(CLRDATA_ENUM_MEM_HEAP);
+            if (flags == CLRDATA_ENUM_MEM_HEAP2)
+            {
+                DacLogMessage("EnumMemoryRegions(CLRDATA_ENUM_MEM_HEAP2)\n");
+            }
+            else
+            {
+                flags = CLRDATA_ENUM_MEM_HEAP;
+            }
+            status = EnumMemoryRegionsWrapper(flags);
         }
         else if (miniDumpFlags & MiniDumpWithFullAuxiliaryState)
         {
@@ -2000,6 +2061,11 @@ ClrDataAccess::EnumMemoryRegions(IN ICLRDataEnumMemoryRegionsCallback* callback,
         m_updateMemCb->Release();
         m_updateMemCb = NULL;
     }
+    if (m_logMessageCb)
+    {
+        m_logMessageCb->Release();
+        m_logMessageCb = NULL;
+    }
     m_enumMemCb = NULL;
 
     DAC_LEAVE();
@@ -2012,7 +2078,7 @@ ClrDataAccess::EnumMemoryRegions(IN ICLRDataEnumMemoryRegionsCallback* callback,
     fprintf(fp, "Total = %g msec\n"
                "ReadVirtual = %g msec\n"
                "StackWalk = %g msec; Find: %g msec\n"
-               "Find = %g msec; Hash = %g msec; Calls = %I64u; Hits = %I64u; Not found = %I64u\n\n=====\n",
+               "Find = %g msec; Hash = %g msec; Calls = %llu; Hits = %llu; Not found = %llu\n\n=====\n",
                (float) (1000*g_nTotalTime/nClockFrequency.QuadPart),
                (float) (1000*g_nReadVirtualTotalTime/nClockFrequency.QuadPart),
                (float) (1000*g_nStackTotalTime/nClockFrequency.QuadPart), (float) (1000*g_nFindStackTotalTime/nClockFrequency.QuadPart),

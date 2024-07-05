@@ -2,13 +2,14 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 /*
-	Test that variance is not inherited across interfaces.
+	Test_InterfaceInheritanceTest2 that variance is not inherited across interfaces.
 	So if the parent interface is co/contra variant but the child interface is not variant 
 	we can use the generic type parameter of the child in any position 
 	(both as return parameter and argument type to a method)
 */
 
 using System;
+using Xunit;
 
 public class C1<T> : I1<T> 
 {
@@ -37,7 +38,7 @@ public class C2<T> : I2<T>
 
 
 
-public class Test
+public class Test_InterfaceInheritanceTest2
 {	
 	static bool pass;
 
@@ -101,7 +102,8 @@ public class Test
 	
 	
 	
-  	public static int Main() 
+  	[Fact]
+  	public static int TestEntryPoint() 
 	{
 		pass = true;
 

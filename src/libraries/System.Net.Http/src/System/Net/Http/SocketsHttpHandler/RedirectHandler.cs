@@ -53,6 +53,10 @@ namespace System.Net.Http
                 // Clear the authorization header.
                 request.Headers.Authorization = null;
 
+                if (HttpTelemetry.Log.IsEnabled())
+                {
+                    HttpTelemetry.Log.Redirect(redirectUri.AbsoluteUri);
+                }
                 if (NetEventSource.Log.IsEnabled())
                 {
                     Trace($"Redirecting from {request.RequestUri} to {redirectUri} in response to status code {(int)response.StatusCode} '{response.StatusCode}'.", request.GetHashCode());
@@ -74,6 +78,8 @@ namespace System.Net.Http
                         request.Headers.TransferEncodingChunked = false;
                     }
                 }
+
+                request.MarkAsRedirected();
 
                 // Issue the redirected request.
                 response = await _redirectInnerHandler.SendAsync(request, async, cancellationToken).ConfigureAwait(false);
@@ -142,9 +148,10 @@ namespace System.Net.Http
             {
                 case HttpStatusCode.Moved:
                 case HttpStatusCode.Found:
-                case HttpStatusCode.SeeOther:
                 case HttpStatusCode.MultipleChoices:
                     return requestMethod == HttpMethod.Post;
+                case HttpStatusCode.SeeOther:
+                    return requestMethod != HttpMethod.Get && requestMethod != HttpMethod.Head;
                 default:
                     return false;
             }

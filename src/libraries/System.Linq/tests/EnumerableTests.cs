@@ -3,6 +3,7 @@
 
 using System.Collections;
 using System.Collections.Generic;
+using Xunit;
 
 namespace System.Linq.Tests
 {
@@ -86,7 +87,7 @@ namespace System.Linq.Tests
             public bool Equals(string x, string y)
             {
                 if (ReferenceEquals(x, y)) return true;
-                if (x == null | y == null) return false;
+                if (x is null | y is null) return false;
                 int length = x.Length;
                 if (length != y.Length) return false;
                 using (var en = x.OrderBy(i => i).GetEnumerator())
@@ -102,7 +103,7 @@ namespace System.Linq.Tests
 
             public int GetHashCode(string obj)
             {
-                if (obj == null) return 0;
+                if (obj is null) return 0;
                 int hash = obj.Length;
                 foreach (char c in obj)
                     hash ^= c;
@@ -240,6 +241,28 @@ namespace System.Linq.Tests
         protected static IEnumerable<T> FlipIsCollection<T>(IEnumerable<T> source)
         {
             return source is ICollection<T> ? ForceNotCollection(source) : new List<T>(source);
+        }
+        protected static T[] Repeat<T>(Func<int, T> factory, int count)
+        {
+            T[] results = new T[count];
+            for (int index = 0; index < results.Length; index++)
+            {
+                results[index] = factory(index);
+            }
+
+            return results;
+        }
+
+        protected static IEnumerable<T> ListPartitionOrEmpty<T>(IList<T> source) // Or Empty
+        {
+            var listPartition = source.Skip(0);
+            return listPartition;
+        }
+
+        protected static IEnumerable<T> EnumerablePartitionOrEmpty<T>(IEnumerable<T> source) // Or Empty
+        {
+            var enumerablePartition = ForceNotCollection(source).Skip(0);
+            return enumerablePartition;
         }
 
         protected struct StringWithIntArray

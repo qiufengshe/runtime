@@ -3,6 +3,7 @@
 //
 
 using System;
+using Xunit;
 
 public interface IFoo
 {
@@ -34,7 +35,7 @@ public struct GenStruct<T> where T : IFoo
         return t;
     }
 }
-public class Test
+public class Test_Convert_static01
 {
     public static int counter = 0;
     public static bool result = true;
@@ -49,7 +50,8 @@ public class Test
 
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         Eval(GenClass<FooClass>.ConvertToConstraint(new FooClass()).GetType().Equals(typeof(FooClass)));
         Eval(GenClass<FooStruct>.ConvertToConstraint(new FooStruct()).GetType().Equals(typeof(FooStruct)));

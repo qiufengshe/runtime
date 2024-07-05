@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-
 using Debug = System.Diagnostics.Debug;
 
 namespace Internal.TypeSystem
@@ -100,6 +98,11 @@ namespace Internal.TypeSystem
         /// </summary>
         public static bool IsCompatibleWith(this TypeDesc thisType, TypeDesc otherType)
         {
+            return thisType.IsCompatibleWith(otherType, null);
+        }
+
+        internal static bool IsCompatibleWith(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect visited)
+        {
             // Structs can be cast to the interfaces they implement, but they are not compatible according to ECMA I.8.7.1
             bool isCastFromValueTypeToReferenceType = otherType.IsValueType && !thisType.IsValueType;
             if (isCastFromValueTypeToReferenceType)
@@ -135,7 +138,7 @@ namespace Internal.TypeSystem
             }
 
             // Nullable<T> can be cast to T, but this is not compatible according to ECMA I.8.7.1
-            bool isCastFromNullableOfTtoT = thisType.IsNullable && otherType.IsEquivalentTo(thisType.Instantiation[0]);
+            bool isCastFromNullableOfTtoT = thisType.IsNullable && otherType.IsEquivalentTo(thisType.Instantiation[0], visited);
             if (isCastFromNullableOfTtoT)
             {
                 return false;
@@ -144,12 +147,25 @@ namespace Internal.TypeSystem
             return otherType.CanCastTo(thisType);
         }
 
-        private static bool IsEquivalentTo(this TypeDesc thisType, TypeDesc otherType)
+        public static bool IsEquivalentTo(this TypeDesc thisType, TypeDesc otherType)
         {
-            // TODO: Once type equivalence is implemented, this implementation needs to be enhanced to honor it.
-            return thisType == otherType;
+            bool isEquivalentTo = thisType == otherType;
+            if (!isEquivalentTo)
+                thisType.IsEquivalentTo(otherType, (StackOverflowProtect)null, ref isEquivalentTo);
+
+            return isEquivalentTo;
         }
 
+        internal static bool IsEquivalentTo(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect visited)
+        {
+            bool isEquivalentTo = thisType == otherType;
+            if (!isEquivalentTo)
+                thisType.IsEquivalentTo(otherType, visited, ref isEquivalentTo);
+
+            return isEquivalentTo;
+        }
+
+        static partial void IsEquivalentTo(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect visited, ref bool isEquivalentTo);
         private static bool CanCastToInternal(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect protect)
         {
             if (thisType == otherType)
@@ -197,9 +213,21 @@ namespace Internal.TypeSystem
                 return true;
             }
 
+            Instantiation typeInstantiation;
+            Instantiation methodInstantiation = default(Instantiation);
+            if (thisType.AssociatedTypeOrMethod is MethodDesc method)
+            {
+                typeInstantiation = method.OwningType.Instantiation;
+                methodInstantiation = method.Instantiation;
+            }
+            else
+            {
+                typeInstantiation = ((TypeDesc)thisType.AssociatedTypeOrMethod).Instantiation;
+            }
             foreach (var typeConstraint in thisType.TypeConstraints)
             {
-                if (typeConstraint.CanCastToInternal(otherType, protect))
+                TypeDesc instantiatedConstraint = typeConstraint.InstantiateSignature(typeInstantiation, methodInstantiation);
+                if (instantiatedConstraint.CanCastToInternal(otherType, protect))
                 {
                     return true;
                 }
@@ -247,7 +275,7 @@ namespace Internal.TypeSystem
             // unboxed versions do not.  Parameterized types have the
             // unboxed version, thus, if the from type parameter is value
             // class then only an exact match/equivalence works.
-            if (thisType.ParameterType == paramType)
+            if (thisType.ParameterType.IsEquivalentTo(paramType))
             {
                 return true;
             }
@@ -263,7 +291,7 @@ namespace Internal.TypeSystem
             else if (curTypesParm.IsGenericParameter)
             {
                 var genericVariableFromParam = (GenericParameterDesc)curTypesParm;
-                if (genericVariableFromParam.HasReferenceTypeConstraint)
+                if (genericVariableFromParam.HasReferenceTypeConstraint || IsConstrainedAsGCPointer(genericVariableFromParam))
                 {
                     return genericVariableFromParam.CanCastToInternal(paramType, protect);
                 }
@@ -271,17 +299,9 @@ namespace Internal.TypeSystem
             else if (fromParamUnderlyingType.IsPrimitive)
             {
                 TypeDesc toParamUnderlyingType = paramType.UnderlyingType;
-                if (toParamUnderlyingType.IsPrimitive)
+                if (GetNormalizedIntegralArrayElementType(fromParamUnderlyingType) == GetNormalizedIntegralArrayElementType(toParamUnderlyingType))
                 {
-                    if (toParamUnderlyingType == fromParamUnderlyingType)
-                    {
-                        return true;
-                    }
-
-                    if (ArePrimitveTypesEquivalentSize(fromParamUnderlyingType, toParamUnderlyingType))
-                    {
-                        return true;
-                    }
+                    return true;
                 }
             }
 
@@ -289,59 +309,72 @@ namespace Internal.TypeSystem
             return false;
         }
 
-        // Returns true of the two types are equivalent primitive types. Used by array casts.
-        private static bool ArePrimitveTypesEquivalentSize(TypeDesc type1, TypeDesc type2)
+        private static bool IsConstrainedAsGCPointer(GenericParameterDesc type)
         {
-            Debug.Assert(type1.IsPrimitive && type2.IsPrimitive);
+            foreach (var typeConstraint in type.TypeConstraints)
+            {
+                if (typeConstraint.IsGenericParameter)
+                {
+                    if (IsConstrainedAsGCPointer((GenericParameterDesc)typeConstraint))
+                        return true;
+                }
+
+                if (!typeConstraint.IsInterface && typeConstraint.IsGCPointer)
+                {
+                    // Object, ValueType, and Enum are GCPointers but they do not constrain the type to GCPointer!
+                    if (!typeConstraint.IsWellKnownType(WellKnownType.Object) &&
+                        !typeConstraint.IsWellKnownType(WellKnownType.ValueType) &&
+                        !typeConstraint.IsWellKnownType(WellKnownType.Enum))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static TypeFlags GetNormalizedIntegralArrayElementType(TypeDesc type)
+        {
+            Debug.Assert(!type.IsEnum);
 
             // Primitive types such as E_T_I4 and E_T_U4 are interchangeable
-            // Enums with interchangeable underlying types are interchangable
+            // Enums with interchangeable underlying types are interchangeable
             // BOOL is NOT interchangeable with I1/U1, neither CHAR -- with I2/U2
-            // Float and double are not interchangable here.
+            // Float and double are not interchangeable here.
 
-            int sourcePrimitiveTypeEquivalenceSize = type1.GetIntegralTypeMatchSize();
-
-            // Quick check to see if the first type can be matched.
-            if (sourcePrimitiveTypeEquivalenceSize == 0)
+            TypeFlags elementType = type.Category;
+            switch (elementType)
             {
-                return false;
-            }
-
-            int targetPrimitiveTypeEquivalenceSize = type2.GetIntegralTypeMatchSize();
-
-            return sourcePrimitiveTypeEquivalenceSize == targetPrimitiveTypeEquivalenceSize;
-        }
-
-        private static int GetIntegralTypeMatchSize(this TypeDesc type)
-        {
-            Debug.Assert(type.IsPrimitive);
-
-            switch (type.Category)
-            {
-                case TypeFlags.SByte:
                 case TypeFlags.Byte:
-                    return 1;
                 case TypeFlags.UInt16:
-                case TypeFlags.Int16:
-                    return 2;
-                case TypeFlags.Int32:
                 case TypeFlags.UInt32:
-                    return 4;
-                case TypeFlags.Int64:
                 case TypeFlags.UInt64:
-                    return 8;
-                case TypeFlags.IntPtr:
                 case TypeFlags.UIntPtr:
-                    return type.Context.Target.PointerSize;
-                default:
-                    return 0;
+                    return elementType - 1;
             }
+
+            return elementType;
         }
+
 
         public static bool IsArrayElementTypeCastableBySize(TypeDesc elementType)
         {
-            TypeDesc underlyingType = elementType.UnderlyingType;
-            return underlyingType.IsPrimitive && GetIntegralTypeMatchSize(underlyingType) != 0;
+            switch (elementType.UnderlyingType.Category)
+            {
+                case TypeFlags.Byte:
+                case TypeFlags.SByte:
+                case TypeFlags.UInt16:
+                case TypeFlags.Int16:
+                case TypeFlags.UInt32:
+                case TypeFlags.Int32:
+                case TypeFlags.UInt64:
+                case TypeFlags.Int64:
+                case TypeFlags.UIntPtr:
+                case TypeFlags.IntPtr:
+                    return true;
+            }
+
+            return false;
         }
 
         private static bool CanCastToClassOrInterface(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect protect)
@@ -358,9 +391,11 @@ namespace Internal.TypeSystem
 
         private static bool CanCastToInterface(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect protect)
         {
-            if (!otherType.HasVariance)
+            // Interfaces that don't have variance can still behave variantly when arrays are involved.
+            bool arrayCovariance = thisType.IsSzArray && otherType.HasInstantiation;
+            if (!otherType.HasVariance && !arrayCovariance)
             {
-                return thisType.CanCastToNonVariantInterface(otherType, protect);
+                return thisType.CanCastToNonVariantInterface(otherType);
             }
             else
             {
@@ -371,7 +406,7 @@ namespace Internal.TypeSystem
 
                 foreach (var interfaceType in thisType.RuntimeInterfaces)
                 {
-                    if (interfaceType.CanCastByVarianceToInterfaceOrDelegate(otherType, protect))
+                    if (interfaceType.CanCastByVarianceToInterfaceOrDelegate(otherType, protect, arrayCovariance))
                     {
                         return true;
                     }
@@ -381,16 +416,16 @@ namespace Internal.TypeSystem
             return false;
         }
 
-        private static bool CanCastToNonVariantInterface(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect protect)
+        private static bool CanCastToNonVariantInterface(this TypeDesc thisType, TypeDesc otherType)
         {
-            if (otherType == thisType)
+            if (otherType.IsEquivalentTo(thisType))
             {
                 return true;
             }
 
             foreach (var interfaceType in thisType.RuntimeInterfaces)
             {
-                if (interfaceType == otherType)
+                if (interfaceType.IsEquivalentTo(otherType))
                 {
                     return true;
                 }
@@ -399,8 +434,13 @@ namespace Internal.TypeSystem
             return false;
         }
 
-        private static bool CanCastByVarianceToInterfaceOrDelegate(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect protectInput)
+        private static bool CanCastByVarianceToInterfaceOrDelegate(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect protectInput, bool arrayCovariance = false)
         {
+            if (thisType == otherType)
+            {
+                return true;
+            }
+
             if (!thisType.HasSameTypeDefinition(otherType))
             {
                 return false;
@@ -427,25 +467,26 @@ namespace Internal.TypeSystem
                 TypeDesc arg = instantiationThis[i];
                 TypeDesc targetArg = instantiationTarget[i];
 
-                if (arg != targetArg)
+                if (!arg.IsEquivalentTo(targetArg))
                 {
-                    GenericParameterDesc openArgType = (GenericParameterDesc)instantiationOpen[i];
+                    GenericVariance variance = arrayCovariance
+                        ? GenericVariance.Covariant : ((GenericParameterDesc)instantiationOpen[i]).Variance;
 
-                    switch (openArgType.Variance)
+                    switch (variance)
                     {
                         case GenericVariance.Covariant:
-                            if (!arg.IsBoxedAndCanCastTo(targetArg, protect))
+                            if (!arg.IsBoxedAndCanCastTo(targetArg, protect, arrayCovariance))
                                 return false;
                             break;
 
                         case GenericVariance.Contravariant:
-                            if (!targetArg.IsBoxedAndCanCastTo(arg, protect))
+                            if (!targetArg.IsBoxedAndCanCastTo(arg, protect, arrayCovariance))
                                 return false;
                             break;
 
                         default:
                             // non-variant
-                            Debug.Assert(openArgType.Variance == GenericVariance.None);
+                            Debug.Assert(variance == GenericVariance.None);
                             return false;
                     }
                 }
@@ -469,7 +510,7 @@ namespace Internal.TypeSystem
                 // First chase inheritance hierarchy until we hit a class that only differs in its instantiation
                 do
                 {
-                    if (curType == otherType)
+                    if (curType.IsEquivalentTo(otherType))
                     {
                         return true;
                     }
@@ -500,7 +541,7 @@ namespace Internal.TypeSystem
 
                 do
                 {
-                    if (curType == otherType)
+                    if (curType.IsEquivalentTo(otherType))
                         return true;
 
                     curType = curType.BaseType;
@@ -510,7 +551,7 @@ namespace Internal.TypeSystem
             return false;
         }
 
-        private static bool IsBoxedAndCanCastTo(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect protect)
+        private static bool IsBoxedAndCanCastTo(this TypeDesc thisType, TypeDesc otherType, StackOverflowProtect protect, bool arrayCovariance)
         {
             TypeDesc fromUnderlyingType = thisType.UnderlyingType;
 
@@ -521,47 +562,63 @@ namespace Internal.TypeSystem
             else if (thisType.IsGenericParameter)
             {
                 var genericVariableFromParam = (GenericParameterDesc)thisType;
-                if (genericVariableFromParam.HasReferenceTypeConstraint)
+                if (genericVariableFromParam.HasReferenceTypeConstraint || IsConstrainedAsGCPointer(genericVariableFromParam))
                 {
                     return genericVariableFromParam.CanCastToInternal(otherType, protect);
+                }
+            }
+            else if (arrayCovariance && fromUnderlyingType.IsPrimitive)
+            {
+                TypeDesc toUnderlyingType = otherType.UnderlyingType;
+                if (GetNormalizedIntegralArrayElementType(fromUnderlyingType) == GetNormalizedIntegralArrayElementType(toUnderlyingType))
+                {
+                    return true;
                 }
             }
 
             return false;
         }
+    }
 
-        private class StackOverflowProtect
+    internal sealed class StackOverflowProtect
+    {
+        private CastingPair _value;
+        private StackOverflowProtect _previous;
+
+        public StackOverflowProtect(CastingPair value, StackOverflowProtect previous)
         {
-            private CastingPair _value;
-            private StackOverflowProtect _previous;
-
-            public StackOverflowProtect(CastingPair value, StackOverflowProtect previous)
-            {
-                _value = value;
-                _previous = previous;
-            }
-
-            public bool Contains(CastingPair value)
-            {
-                for (var current = this; current != null; current = current._previous)
-                    if (current._value.Equals(value))
-                        return true;
-                return false;
-            }
+            _value = value;
+            _previous = previous;
         }
 
-        private struct CastingPair
+        public static StackOverflowProtect GetTypeEquivalentForbiddenScope(StackOverflowProtect previous)
         {
-            public readonly TypeDesc FromType;
-            public readonly TypeDesc ToType;
-
-            public CastingPair(TypeDesc fromType, TypeDesc toType)
-            {
-                FromType = fromType;
-                ToType = toType;
-            }
-
-            public bool Equals(CastingPair other) => FromType == other.FromType && ToType == other.ToType;
+            var protect = new StackOverflowProtect(default(CastingPair), previous);
+            return protect;
         }
+
+        public bool Contains(CastingPair value)
+        {
+            for (var current = this; current != null; current = current._previous)
+            {
+                if (current._value.Equals(value))
+                    return true;
+            }
+            return false;
+        }
+    }
+
+    internal struct CastingPair
+    {
+        public readonly TypeDesc FromType;
+        public readonly TypeDesc ToType;
+
+        public CastingPair(TypeDesc fromType, TypeDesc toType)
+        {
+            FromType = fromType;
+            ToType = toType;
+        }
+
+        public bool Equals(CastingPair other) => FromType == other.FromType && ToType == other.ToType;
     }
 }

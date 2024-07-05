@@ -2,9 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading;
-using Internal.Runtime.CompilerServices;
 
 namespace System.Runtime.InteropServices
 {
@@ -22,7 +22,7 @@ namespace System.Runtime.InteropServices
     /// Pinned - same as Normal, but allows the address of the actual object to be taken.
     /// </remarks>
     [StructLayout(LayoutKind.Sequential)]
-    public partial struct GCHandle
+    public partial struct GCHandle : IEquatable<GCHandle>
     {
         // The actual integer handle value that the EE uses internally.
         private IntPtr _handle;
@@ -46,7 +46,7 @@ namespace System.Runtime.InteropServices
             if (type == GCHandleType.Pinned)
             {
                 // Record if the handle is pinned.
-                handle = (IntPtr)((nint)handle | 1);
+                handle |= 1;
             }
 
             _handle = handle;
@@ -58,12 +58,14 @@ namespace System.Runtime.InteropServices
         /// <summary>Creates a new GC handle for an object.</summary>
         /// <param name="value">The object that the GC handle is created for.</param>
         /// <returns>A new GC handle that protects the object.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static GCHandle Alloc(object? value) => new GCHandle(value, GCHandleType.Normal);
 
         /// <summary>Creates a new GC handle for an object.</summary>
         /// <param name="value">The object that the GC handle is created for.</param>
         /// <param name="type">The type of GC handle to create.</param>
         /// <returns>A new GC handle that protects the object.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static GCHandle Alloc(object? value, GCHandleType type) => new GCHandle(value, type);
 
         /// <summary>Frees a GC handle.</summary>
@@ -78,7 +80,7 @@ namespace System.Runtime.InteropServices
         // Target property - allows getting / updating of the handle's referent.
         public object? Target
         {
-            get
+            readonly get
             {
                 IntPtr handle = _handle;
                 ThrowIfInvalid(handle);
@@ -103,7 +105,7 @@ namespace System.Runtime.InteropServices
         /// Retrieve the address of an object in a Pinned handle.  This throws
         /// an exception if the handle is any type other than Pinned.
         /// </summary>
-        public IntPtr AddrOfPinnedObject()
+        public readonly IntPtr AddrOfPinnedObject()
         {
             // Check if the handle was not a pinned handle.
             // You can only get the address of pinned handles.
@@ -125,6 +127,7 @@ namespace System.Runtime.InteropServices
 
             unsafe
             {
+                // Unsafe.AsPointer calls are safe since object is pinned.
                 if (RuntimeHelpers.ObjectHasComponentSize(target))
                 {
                     if (target.GetType() == typeof(string))
@@ -133,7 +136,7 @@ namespace System.Runtime.InteropServices
                     }
 
                     Debug.Assert(target is Array);
-                    return (IntPtr)Unsafe.AsPointer(ref Unsafe.As<Array>(target).GetRawArrayData());
+                    return (IntPtr)Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(Unsafe.As<Array>(target)));
                 }
 
                 return (IntPtr)Unsafe.AsPointer(ref target.GetRawData());
@@ -141,7 +144,7 @@ namespace System.Runtime.InteropServices
         }
 
         /// <summary>Determine whether this handle has been allocated or not.</summary>
-        public bool IsAllocated => _handle != IntPtr.Zero;
+        public readonly bool IsAllocated => _handle != 0;
 
         /// <summary>
         /// Used to create a GCHandle from an int.  This is intended to
@@ -160,25 +163,30 @@ namespace System.Runtime.InteropServices
 
         public static IntPtr ToIntPtr(GCHandle value) => value._handle;
 
-        public override int GetHashCode() => _handle.GetHashCode();
+        public override readonly int GetHashCode() => _handle.GetHashCode();
 
-        public override bool Equals(object? o) => o is GCHandle && _handle == ((GCHandle)o)._handle;
+        public override readonly bool Equals([NotNullWhen(true)] object? o) => o is GCHandle other && Equals(other);
+
+        /// <summary>Indicates whether the current instance is equal to another instance of the same type.</summary>
+        /// <param name="other">An instance to compare with this instance.</param>
+        /// <returns>true if the current instance is equal to the other instance; otherwise, false.</returns>
+        public readonly bool Equals(GCHandle other) => _handle == other._handle;
 
         public static bool operator ==(GCHandle a, GCHandle b) => a._handle == b._handle;
 
         public static bool operator !=(GCHandle a, GCHandle b) => a._handle != b._handle;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static IntPtr GetHandleValue(IntPtr handle) => new IntPtr((nint)handle & ~(nint)1); // Remove Pin flag
+        private static IntPtr GetHandleValue(IntPtr handle) => new IntPtr(handle & ~1); // Remove Pin flag
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static bool IsPinned(IntPtr handle) => ((nint)handle & 1) != 0; // Check Pin flag
+        private static bool IsPinned(IntPtr handle) => (handle & 1) != 0; // Check Pin flag
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void ThrowIfInvalid(IntPtr handle)
         {
             // Check if the handle was never initialized or was freed.
-            if (handle == IntPtr.Zero)
+            if (handle == 0)
             {
                 ThrowHelper.ThrowInvalidOperationException_HandleIsNotInitialized();
             }

@@ -12,12 +12,14 @@
 //
 
 using System;
+using Xunit;
 
-class Test{
-	public static int Main(){
+public class Test_L_2_3_1{
+	[Fact]
+	public static int TestEntryPoint(){
 		int mi_RetCode;
 		A a = new A();
-		mi_RetCode = a.Test();
+		mi_RetCode = a.Test_L_2_3_1();
 
 			
 		if(mi_RetCode == 100)
@@ -32,7 +34,7 @@ class Test{
 struct A{
 //@csharp - C# will not allow family or famorassem accessibility on value class members
 
-	public int Test(){
+	public int Test_L_2_3_1(){
 		int mi_RetCode = 100;
 		
 		/////////////////////////////////
@@ -101,7 +103,7 @@ struct A{
 		
 		////////////////////////////////////////////
 		// Test access from within the nested class
-		if(Nested_Cls.Test() != 100)
+		if(Nested_Cls.Test_L_2_3_1() != 100)
 			mi_RetCode = 0;
 		
 		return mi_RetCode;
@@ -167,7 +169,7 @@ struct A{
 	
 	
 	public struct Cls{
-		public int Test(){
+		public int Test_L_2_3_1(){
 			int mi_RetCode = 100;
 			
 			/////////////////////////////////////////////////////////////////////////

@@ -81,7 +81,6 @@ CordbThread::CordbThread(CordbProcess * pProcess, VMPTR_Thread vmThread) :
     m_fFloatStateValid(false),
     m_floatStackTop(0),
     m_fException(false),
-    m_fCreationEventQueued(false),
     m_EnCRemapFunctionIP(NULL),
     m_userState(kInvalidUserState),
     m_hCachedThread(INVALID_HANDLE_VALUE),
@@ -185,6 +184,10 @@ HRESULT CordbThread::QueryInterface(REFIID id, void ** ppInterface)
     else if (id == IID_ICorDebugThread4)
     {
         *ppInterface = static_cast<ICorDebugThread4*>(this);
+    }
+    else if (id == IID_ICorDebugThread5)
+    {
+        *ppInterface = static_cast<ICorDebugThread5*>(this);
     }
     else if (id == IID_IUnknown)
     {
@@ -653,7 +656,7 @@ void CordbThread::RefreshHandle(HANDLE * phThread)
                                    hThread,
                                    GetCurrentProcess(),
                                    &m_hCachedThread,
-                                   NULL,
+                                   0,
                                    FALSE,
                                    DUPLICATE_SAME_ACCESS);
         *phThread = m_hCachedThread;
@@ -1500,7 +1503,11 @@ void CordbThread::Get32bitFPRegisters(CONTEXT * pContext)
     for (i = 0; i <= floatStackTop; i++)
     {
         double td = 0.0;
+#ifdef _MSC_VER
         __asm fstp td // copy out the double
+#else
+        __asm("fstpl %0" : "=m" (td));
+#endif
         m_floatValues[i] = td;
     }
 
@@ -1626,8 +1633,8 @@ HRESULT CordbThread::SetIP(bool fCanSetIPOnly,
 
     ATT_REQUIRE_STOPPED_MAY_FAIL(GetProcess());
 
-    VMPTR_DomainFile vmDomainFile = pNativeCode->GetModule()->m_vmDomainFile;
-    _ASSERTE(!vmDomainFile.IsNull());
+    VMPTR_DomainAssembly vmDomainAssembly = pNativeCode->GetModule()->m_vmDomainAssembly;
+    _ASSERTE(!vmDomainAssembly.IsNull());
 
     // If this thread is stopped due to an exception, never allow SetIP
     if (HasException())
@@ -1639,7 +1646,7 @@ HRESULT CordbThread::SetIP(bool fCanSetIPOnly,
     GetProcess()->InitIPCEvent(&event, DB_IPCE_SET_IP, true, GetAppDomain()->GetADToken());
     event.SetIP.fCanSetIPOnly = fCanSetIPOnly;
     event.SetIP.vmThreadToken = m_vmThreadToken;
-    event.SetIP.vmDomainFile = vmDomainFile;
+    event.SetIP.vmDomainAssembly = vmDomainAssembly;
     event.SetIP.mdMethod = pNativeCode->GetMetadataToken();
     event.SetIP.vmMethodDesc = pNativeCode->GetVMNativeCodeMethodDescToken();
     event.SetIP.startAddress = pNativeCode->GetAddress();
@@ -1651,7 +1658,7 @@ HRESULT CordbThread::SetIP(bool fCanSetIPOnly,
         "mod:0x%x  MethodDef:0x%x offset:0x%x  il?:0x%x\n",
          GetCurrentThreadId(),
          VmPtrToCookie(m_vmThreadToken),
-         VmPtrToCookie(vmDomainFile),
+         VmPtrToCookie(vmDomainAssembly),
          pNativeCode->GetMetadataToken(),
          offset,
          fIsIL));
@@ -2132,11 +2139,6 @@ HRESULT CordbThread::InterceptCurrentException(ICorDebugFrame * pFrame)
     FAIL_IF_NEUTERED(this);
     ATT_REQUIRE_STOPPED_MAY_FAIL(GetProcess());
 
-#if defined(FEATURE_DBGIPC_TRANSPORT_DI)
-    // Continuable exceptions are not implemented on Unix-like platforms.
-    return E_NOTIMPL;
-
-#else  // !FEATURE_DBGIPC_TRANSPORT_DI
     HRESULT hr = S_OK;
     EX_TRY
     {
@@ -2213,7 +2215,6 @@ HRESULT CordbThread::InterceptCurrentException(ICorDebugFrame * pFrame)
     }
     EX_CATCH_HRESULT(hr);
     return hr;
-#endif // FEATURE_DBGIPC_TRANSPORT_DI
 }
 
 //---------------------------------------------------------------------------------------
@@ -2456,6 +2457,42 @@ HRESULT CordbThread::GetCurrentCustomDebuggerNotification(ICorDebugValue ** ppNo
     PUBLIC_API_END(hr);
     return hr;
 }
+
+// ICorDebugThread5
+
+/*
+ * GetBytesAllocated
+ *
+ * Returns S_OK if it was possible to obtain the allocation information for the thread
+ * and sets the corresponding SOH and UOH allocations.
+ */
+HRESULT CordbThread::GetBytesAllocated(ULONG64 *pSohAllocatedBytes,
+                                       ULONG64 *pUohAllocatedBytes)
+{
+    PUBLIC_API_ENTRY(this);
+    FAIL_IF_NEUTERED(this);
+    ATT_REQUIRE_STOPPED_MAY_FAIL(GetProcess());
+
+    HRESULT hr = S_OK;
+    EX_TRY
+    {
+        DacThreadAllocInfo threadAllocInfo = { 0 };
+
+        if (pSohAllocatedBytes == NULL || pUohAllocatedBytes == NULL)
+        {
+            ThrowHR(E_INVALIDARG);
+        }
+
+        IDacDbiInterface * pDAC = GetProcess()->GetDAC();
+        pDAC->GetThreadAllocInfo(m_vmThreadToken, &threadAllocInfo);
+
+        *pSohAllocatedBytes = threadAllocInfo.m_allocBytesSOH;
+        *pUohAllocatedBytes = threadAllocInfo.m_allocBytesUOH;
+    }
+    EX_CATCH_HRESULT(hr);
+
+    return hr;
+} // CordbThread::GetBytesAllocated
 
 /*
  *
@@ -2750,21 +2787,6 @@ HRESULT CordbThread::GetBlockingObjects(ICorDebugBlockingObjectEnum **ppBlocking
     return hr;
 }
 
-// ----------------------------------------------------------------------------
-// CordbThread::SetCreateEventQueued
-void CordbThread::SetCreateEventQueued()
-{
-    m_fCreationEventQueued = true;
-}
-
-// ----------------------------------------------------------------------------
-// CordbThread::CreateEventWasQueued
-bool CordbThread::CreateEventWasQueued()
-{
-    return m_fCreationEventQueued;
-}
-
-
 #ifdef FEATURE_INTEROP_DEBUGGING
 /* ------------------------------------------------------------------------- *
  * Unmanaged Thread classes
@@ -2826,15 +2848,6 @@ CordbUnmanagedThread::~CordbUnmanagedThread()
     CONSISTENCY_CHECK_MSGF(!HasOOBEvent(), ("Deleting thread w/ outstanding OOB event:this=%p,event-code=%d\n", this, OOBEvent()->m_currentDebugEvent.dwDebugEventCode));
 }
 
-#define WINNT_TLS_OFFSET_X86    0xe10     // TLS[0] at fs:[WINNT_TLS_OFFSET]
-#define WINNT_TLS_OFFSET_AMD64  0x1480
-#define WINNT_TLS_OFFSET_ARM    0xe10
-#define WINNT_TLS_OFFSET_ARM64  0x1480
-#define WINNT5_TLSEXPANSIONPTR_OFFSET_X86   0xf94 // TLS[64] at [fs:[WINNT5_TLSEXPANSIONPTR_OFFSET]]
-#define WINNT5_TLSEXPANSIONPTR_OFFSET_AMD64 0x1780
-#define WINNT5_TLSEXPANSIONPTR_OFFSET_ARM   0xf94
-#define WINNT5_TLSEXPANSIONPTR_OFFSET_ARM64 0x1780
-
 HRESULT CordbUnmanagedThread::LoadTLSArrayPtr(void)
 {
     FAIL_IF_NEUTERED(this);
@@ -2842,20 +2855,9 @@ HRESULT CordbUnmanagedThread::LoadTLSArrayPtr(void)
     HRESULT hr = S_OK;
     _ASSERTE(GetProcess()->ThreadHoldsProcessLock());
 
-
     // Just simple math on NT with a small tls index.
     // The TLS slots for 0-63 are embedded in the TIB.
-#if defined(TARGET_X86)
-    m_pTLSArray = (BYTE*) m_threadLocalBase + WINNT_TLS_OFFSET_X86;
-#elif defined(TARGET_AMD64)
-    m_pTLSArray = (BYTE*) m_threadLocalBase + WINNT_TLS_OFFSET_AMD64;
-#elif defined(TARGET_ARM)
-    m_pTLSArray = (BYTE*) m_threadLocalBase + WINNT_TLS_OFFSET_ARM;
-#elif defined(TARGET_ARM64)
-    m_pTLSArray = (BYTE*) m_threadLocalBase + WINNT_TLS_OFFSET_ARM64;
-#else
-    PORTABILITY_ASSERT("Implement OOP TLS on your platform");
-#endif
+    m_pTLSArray = (BYTE*) m_threadLocalBase + offsetof(TEB, TlsSlots);
 
     // Extended slot is lazily initialized, so check every time.
     if (m_pTLSExtendedArray == NULL)
@@ -2866,17 +2868,7 @@ HRESULT CordbUnmanagedThread::LoadTLSArrayPtr(void)
         // never move once we find it for a given thread, so we
         // cache it here so we don't always have to perform two
         // ReadProcessMemory's.
-#if defined(TARGET_X86)
-        void *ppTLSArray = (BYTE*) m_threadLocalBase + WINNT5_TLSEXPANSIONPTR_OFFSET_X86;
-#elif defined(TARGET_AMD64)
-        void *ppTLSArray = (BYTE*) m_threadLocalBase + WINNT5_TLSEXPANSIONPTR_OFFSET_AMD64;
-#elif defined(TARGET_ARM)
-        void *ppTLSArray = (BYTE*) m_threadLocalBase + WINNT5_TLSEXPANSIONPTR_OFFSET_ARM;
-#elif defined(TARGET_ARM64)
-        void *ppTLSArray = (BYTE*) m_threadLocalBase + WINNT5_TLSEXPANSIONPTR_OFFSET_ARM64;
-#else
-        PORTABILITY_ASSERT("Implement OOP TLS on your platform");
-#endif
+        void *ppTLSArray = (BYTE*) m_threadLocalBase + offsetof(TEB, TlsExpansionSlots);
 
         hr = GetProcess()->SafeReadStruct(PTR_TO_CORDB_ADDRESS(ppTLSArray), &m_pTLSExtendedArray);
     }
@@ -2979,11 +2971,11 @@ HRESULT CordbUnmanagedThread::RestoreLeafSeh()
 #endif
 
 // Read the contents from the LS's Predefined TLS block.
-// This is an auxillary TLS storage array-of-void*, indexed off the TLS.
+// This is an auxiliary TLS storage array-of-void*, indexed off the TLS.
 // pRead is optional. This makes sense when '0' is a valid default value.
 // 1) On success (block exists in LS, we can read it),
 //    return value of data in the slot, *pRead = true
-// 2) On failure to read block (block doens't exist yet, any other failure)
+// 2) On failure to read block (block doesn't exist yet, any other failure)
 //    return value == 0 (assumed default, *pRead = false
 REMOTE_PTR CordbUnmanagedThread::GetPreDefTlsSlot(SIZE_T offset)
 {
@@ -3067,7 +3059,7 @@ HRESULT CordbUnmanagedThread::GetTlsSlot(DWORD slot, REMOTE_PTR * pValue)
 //
 // Notes:
 //   This is very brittle because the OS can lazily allocates storage for TLS slots.
-//   In order to gaurantee the storage is available, it must have been written to by the debuggee.
+//   In order to guarantee the storage is available, it must have been written to by the debuggee.
 //   For managed threads, that's easy because the Thread* is already written to the slot.
 //   But for pure native threads where GetThread() == NULL, the storage may not yet be allocated.
 //
@@ -3502,14 +3494,14 @@ HRESULT CordbUnmanagedThread::GetThreadContext(DT_CONTEXT* pContext)
     // 3) The original context present when the hijack was started
     //
     // Both #1 and #3 are stored in the GetHijackCtx() space so of course you can't
-    // have them both. You have have #1 if IsContextSet() is true, otherwise it holds #3
+    // have them both. You have #1 if IsContextSet() is true, otherwise it holds #3.
     //
     // GenericHijack, FirstChanceHijackForSync, and RaiseExceptionHijack use #1 if available
     // and fallback to #3 if not. In other words they use GetHijackCtx() regardless of which thing it holds
     // M2UHandoff uses #1 if available and then falls back to #2.
     //
     // The reasoning here is that the first three hijacks are intended to be transparent. Since
-    // the debugger shouldn't know they are occuring then it shouldn't see changes potentially
+    // the debugger shouldn't know they are occurring then it shouldn't see changes potentially
     // made on the LS. The M2UHandoff is not transparent, it has to update the context in order
     // to get clear of a bp.
     //
@@ -4349,7 +4341,7 @@ void CordbUnmanagedThread::SaveRaiseExceptionEntryContext()
         return;
     }
 
-    // If everything was succesful then set this flag, otherwise none of the above data is considered valid
+    // If everything was successful then set this flag, otherwise none of the above data is considered valid
     SetState(CUTS_HasRaiseExceptionEntryCtx);
     return;
 }
@@ -5134,7 +5126,7 @@ HRESULT CordbValueEnum::Next(ULONG celt, ICorDebugValue *values[], ULONG *pceltF
 
     HRESULT hr = S_OK;
 
-    int iMax = min( m_iMax, m_iCurrent+celt);
+    int iMax = (int)min( (ULONG)m_iMax, m_iCurrent+celt);
     int i;
     for (i = m_iCurrent; i< iMax;i++)
     {
@@ -5225,7 +5217,7 @@ CordbInternalFrame::CordbInternalFrame(CordbThread *          pThread,
         // Find the module of the function.  Note that this module isn't necessarily in the same domain as our frame.
         // FuncEval frames can point to methods they are going to invoke in another domain.
         CordbModule * pModule = NULL;
-        pModule = GetProcess()->LookupOrCreateModule(pData->stubFrame.vmDomainFile);
+        pModule = GetProcess()->LookupOrCreateModule(pData->stubFrame.vmDomainAssembly);
         _ASSERTE(pModule != NULL);
 
         //
@@ -5347,11 +5339,11 @@ HRESULT CordbInternalFrame::GetStackRange(CORDB_ADDRESS *pStart,
     {
         if (pStart != NULL)
         {
-            *pStart = NULL;
+            *pStart = (CORDB_ADDRESS)NULL;
         }
         if (pEnd != NULL)
         {
-            *pEnd = NULL;
+            *pEnd = (CORDB_ADDRESS)NULL;
         }
         return E_NOTIMPL;
     }
@@ -5911,7 +5903,7 @@ CORDB_ADDRESS CordbNativeFrame::GetLSStackAddress(
         // we should definitely have an ambient-sp. If this is null, then the jit
         // likely gave us an inconsistent data.
         TADDR taAmbient = this->GetAmbientESP();
-        _ASSERTE(taAmbient != NULL);
+        _ASSERTE(taAmbient != (TADDR)NULL);
 
         pRemoteValue = PTR_TO_CORDB_ADDRESS(taAmbient + offset);
     }
@@ -5968,11 +5960,11 @@ HRESULT CordbNativeFrame::GetStackRange(CORDB_ADDRESS *pStart,
     {
         if (pStart != NULL)
         {
-            *pStart = NULL;
+            *pStart = (CORDB_ADDRESS)NULL;
         }
         if (pEnd != NULL)
         {
-            *pEnd = NULL;
+            *pEnd = (CORDB_ADDRESS)NULL;
         }
         return E_NOTIMPL;
     }
@@ -6038,7 +6030,7 @@ HRESULT CordbNativeFrame::IsChild(BOOL * pIsChild)
 //
 // Arguments:
 //    pPotentialParentFrame - the ICDNativeFrame2 to check
-//    pIsParent             - out paramter; returns whether the specified frame is indeed the parent frame
+//    pIsParent             - out parameter; returns whether the specified frame is indeed the parent frame
 //
 // Return Value:
 //    S_OK on success.
@@ -6338,6 +6330,126 @@ UINT_PTR * CordbNativeFrame::GetAddressOfRegister(CorDebugRegister regNum) const
 
     case REGISTER_ARM64_PC:
         ret = (UINT_PTR*)&m_rd.PC;
+        break;
+#elif defined(TARGET_RISCV64)
+    case REGISTER_RISCV64_PC:
+        ret = (UINT_PTR*)&m_rd.PC;
+        break;
+
+    case REGISTER_RISCV64_RA:
+        ret = (UINT_PTR*)&m_rd.RA;
+        break;
+
+    case REGISTER_RISCV64_GP:
+        ret = (UINT_PTR*)&m_rd.GP;
+        break;
+
+    case REGISTER_RISCV64_TP:
+        ret = (UINT_PTR*)&m_rd.TP;
+        break;
+
+    case REGISTER_RISCV64_T0:
+        ret = (UINT_PTR*)&m_rd.T0;
+        break;
+
+    case REGISTER_RISCV64_T1:
+        ret = (UINT_PTR*)&m_rd.T1;
+        break;
+
+    case REGISTER_RISCV64_T2:
+        ret = (UINT_PTR*)&m_rd.T2;
+        break;
+
+    case REGISTER_RISCV64_S1:
+        ret = (UINT_PTR*)&m_rd.S1;
+        break;
+
+    case REGISTER_RISCV64_A0:
+        ret = (UINT_PTR*)&m_rd.A0;
+        break;
+
+    case REGISTER_RISCV64_A1:
+        ret = (UINT_PTR*)&m_rd.A1;
+        break;
+
+    case REGISTER_RISCV64_A2:
+        ret = (UINT_PTR*)&m_rd.A2;
+        break;
+
+    case REGISTER_RISCV64_A3:
+        ret = (UINT_PTR*)&m_rd.A3;
+        break;
+
+    case REGISTER_RISCV64_A4:
+        ret = (UINT_PTR*)&m_rd.A4;
+        break;
+
+    case REGISTER_RISCV64_A5:
+        ret = (UINT_PTR*)&m_rd.A5;
+        break;
+
+    case REGISTER_RISCV64_A6:
+        ret = (UINT_PTR*)&m_rd.A6;
+        break;
+
+    case REGISTER_RISCV64_A7:
+        ret = (UINT_PTR*)&m_rd.A7;
+        break;
+
+    case REGISTER_RISCV64_S2:
+        ret = (UINT_PTR*)&m_rd.S2;
+        break;
+
+    case REGISTER_RISCV64_S3:
+        ret = (UINT_PTR*)&m_rd.S3;
+        break;
+
+    case REGISTER_RISCV64_S4:
+        ret = (UINT_PTR*)&m_rd.S4;
+        break;
+
+    case REGISTER_RISCV64_S5:
+        ret = (UINT_PTR*)&m_rd.S5;
+        break;
+
+    case REGISTER_RISCV64_S6:
+        ret = (UINT_PTR*)&m_rd.S6;
+        break;
+
+    case REGISTER_RISCV64_S7:
+        ret = (UINT_PTR*)&m_rd.S7;
+        break;
+
+    case REGISTER_RISCV64_S8:
+        ret = (UINT_PTR*)&m_rd.S8;
+        break;
+
+    case REGISTER_RISCV64_S9:
+        ret = (UINT_PTR*)&m_rd.S9;
+        break;
+
+    case REGISTER_RISCV64_S10:
+        ret = (UINT_PTR*)&m_rd.S10;
+        break;
+
+    case REGISTER_RISCV64_S11:
+        ret = (UINT_PTR*)&m_rd.S11;
+        break;
+
+    case REGISTER_RISCV64_T3:
+        ret = (UINT_PTR*)&m_rd.T3;
+        break;
+
+    case REGISTER_RISCV64_T4:
+        ret = (UINT_PTR*)&m_rd.T4;
+        break;
+
+    case REGISTER_RISCV64_T5:
+        ret = (UINT_PTR*)&m_rd.T5;
+        break;
+
+    case REGISTER_RISCV64_T6:
+        ret = (UINT_PTR*)&m_rd.T6;
         break;
 #endif
 
@@ -6860,7 +6972,7 @@ CordbNativeFrame::GetLocalMemoryValue(CORDB_ADDRESS address,
     _ASSERTE(m_nativeCode->GetFunction() != NULL);
     HRESULT hr = S_OK;
 
-    ICorDebugValue *pValue;
+    ICorDebugValue *pValue = NULL;
     EX_TRY
     {
         CordbValue::CreateValueByType(GetCurrentAppDomain(),
@@ -7196,7 +7308,7 @@ SIZE_T CordbNativeFrame::GetInspectionIP()
 bool CordbNativeFrame::IsFunclet()
 {
 #ifdef FEATURE_EH_FUNCLETS
-    return (m_misc.parentIP != NULL);
+    return (m_misc.parentIP != (SIZE_T)NULL);
 #else
     return false;
 #endif // FEATURE_EH_FUNCLETS
@@ -7288,7 +7400,8 @@ CordbJITILFrame::CordbJITILFrame(CordbNativeFrame *    pNativeFrame,
                                  GENERICS_TYPE_TOKEN   exactGenericArgsToken,
                                  DWORD                 dwExactGenericArgsTokenIndex,
                                  bool                  fVarArgFnx,
-                                 CordbReJitILCode *    pRejitCode)
+                                 CordbReJitILCode *    pRejitCode,
+                                 bool                  fAdjustedIP)
   : CordbBase(pNativeFrame->GetProcess(), 0, enumCordbJITILFrame),
     m_nativeFrame(pNativeFrame),
     m_ilCode(pCode),
@@ -7297,13 +7410,14 @@ CordbJITILFrame::CordbJITILFrame(CordbNativeFrame *    pNativeFrame,
     m_fVarArgFnx(fVarArgFnx),
     m_allArgsCount(0),
     m_rgbSigParserBuf(NULL),
-    m_FirstArgAddr(NULL),
+    m_FirstArgAddr((CORDB_ADDRESS)NULL),
     m_rgNVI(NULL),
     m_genericArgs(),
     m_genericArgsLoaded(false),
     m_frameParamsToken(exactGenericArgsToken),
     m_dwFrameParamsTokenIndex(dwExactGenericArgsTokenIndex),
-    m_pReJitCode(pRejitCode)
+    m_pReJitCode(pRejitCode),
+    m_adjustedIP(fAdjustedIP)
 {
     // We'll initialize the SigParser in CordbJITILFrame::Init().
     m_sigParserCached = SigParser(NULL, 0);
@@ -7423,7 +7537,7 @@ HRESULT CordbJITILFrame::Init()
         // The stackwalking code can't always successfully retrieve the generics type token.
         // For example, on 64-bit, the JIT only encodes the generics type token location if
         // a method has catch clause for a generic exception (e.g. "catch(MyException<string> e)").
-        if ((m_dwFrameParamsTokenIndex != (DWORD)ICorDebugInfo::MAX_ILNUM) && (m_frameParamsToken == NULL))
+        if ((m_dwFrameParamsTokenIndex != (DWORD)ICorDebugInfo::MAX_ILNUM) && (m_frameParamsToken == (GENERICS_TYPE_TOKEN)NULL))
         {
             // All variables are unavailable in the prolog and the epilog.
             // This includes the generics type token.  Failing to get the token just means that
@@ -8072,11 +8186,11 @@ HRESULT CordbJITILFrame::FabricateNativeInfo(DWORD dwIndex,
             IfFailThrow(pArgType->GetUnboxedObjectSize(&cbType));
 
 #if defined(TARGET_X86) // STACK_GROWS_DOWN_ON_ARGS_WALK
-            // The the rpCur pointer starts off in the right spot for the
+            // The rpCur pointer starts off in the right spot for the
             // first argument, but thereafter we have to decrement it
             // before getting the variable's location from it.  So increment
             // it here to be consistent later.
-            rpCur += max(cbType, cbArchitectureMin);
+            rpCur += max((ULONG)cbType, cbArchitectureMin);
 #endif
 
             // Grab the IL code's function's method signature so we can see if it's static.
@@ -8109,7 +8223,7 @@ HRESULT CordbJITILFrame::FabricateNativeInfo(DWORD dwIndex,
                 IfFailThrow(pArgType->GetUnboxedObjectSize(&cbType));
 
 #if defined(TARGET_X86) // STACK_GROWS_DOWN_ON_ARGS_WALK
-                rpCur -= max(cbType, cbArchitectureMin);
+                rpCur -= max((ULONG)cbType, cbArchitectureMin);
                 m_rgNVI[i].loc.vlFixedVarArg.vlfvOffset =
                     (unsigned)(m_FirstArgAddr - rpCur);
 
@@ -8119,7 +8233,7 @@ HRESULT CordbJITILFrame::FabricateNativeInfo(DWORD dwIndex,
 #else // STACK_GROWS_UP_ON_ARGS_WALK
                 m_rgNVI[i].loc.vlFixedVarArg.vlfvOffset =
                     (unsigned)(rpCur - m_FirstArgAddr);
-                rpCur += max(cbType, cbArchitectureMin);
+                rpCur += max((ULONG)cbType, cbArchitectureMin);
                 AlignAddressForType(pArgType, rpCur);
 #endif
 
@@ -8303,6 +8417,12 @@ HRESULT CordbJITILFrame::GetNativeVariable(CordbType *type,
                                                        type, ppValue);
 #elif defined(TARGET_ARM64)
         hr = m_nativeFrame->GetLocalFloatingPointValue(pNativeVarInfo->loc.vlReg.vlrReg + REGISTER_ARM64_V0,
+                                                       type, ppValue);
+#elif defined(TARGET_LOONGARCH64)
+        hr = m_nativeFrame->GetLocalFloatingPointValue(pNativeVarInfo->loc.vlReg.vlrReg + REGISTER_LOONGARCH64_F0,
+                                                       type, ppValue);
+#elif defined(TARGET_RISCV64)
+        hr = m_nativeFrame->GetLocalFloatingPointValue(pNativeVarInfo->loc.vlReg.vlrReg + REGISTER_RISCV64_F0,
                                                        type, ppValue);
 #else
 #error Platform not implemented
@@ -8551,10 +8671,10 @@ HRESULT CordbJITILFrame::RemapFunction(ULONG32 nOffset)
     HRESULT hr = S_OK;
     PUBLIC_API_BEGIN(this)
     {
-#if !defined(EnC_SUPPORTED)
+#if !defined(FEATURE_REMAP_FUNCTION)
         ThrowHR(E_NOTIMPL);
 
-#else  // EnC_SUPPORTED
+#else  // FEATURE_REMAP_FUNCTION
         // Can only be called on leaf frame.
         if (!m_nativeFrame->IsLeafFrame())
         {
@@ -8571,7 +8691,7 @@ HRESULT CordbJITILFrame::RemapFunction(ULONG32 nOffset)
         // Tell the left-side to do the remap
         hr = m_nativeFrame->m_pThread->SetRemapIP(nOffset);
 
-#endif // EnC_SUPPORTED
+#endif // FEATURE_REMAP_FUNCTION
     }
     PUBLIC_API_END(hr);
 
@@ -8604,7 +8724,7 @@ HRESULT CordbJITILFrame::BuildInstantiationForCallsite(CordbModule * pModule, Ne
 
     // If the targetClass is a TypeSpec that means its first element is GENERICINST.
     // We only need to build types for the Instantiation if targetClass is a TypeSpec.
-    ULONG classGenerics = 0;
+    uint32_t classGenerics = 0;
     SigParser typeSig;
     if (TypeFromToken(targetClass) == mdtTypeSpec)
     {
@@ -8632,10 +8752,10 @@ HRESULT CordbJITILFrame::BuildInstantiationForCallsite(CordbModule * pModule, Ne
 
     // Similarly for method generics.  Simply fill "methodGenerics" with the number
     // of generics, and move "genericSig" to the start of the first generic param.
-    ULONG methodGenerics = 0;
+    uint32_t methodGenerics = 0;
     if (!genericSig.IsNull())
     {
-        ULONG callingConv = 0;
+        uint32_t callingConv = 0;
         IfFailRet(genericSig.GetCallingConvInfo(&callingConv));
         if (callingConv == IMAGE_CEE_CS_CALLCONV_GENERICINST)
             IfFailRet(genericSig.GetData(&methodGenerics));
@@ -8740,6 +8860,10 @@ HRESULT CordbJITILFrame::GetReturnValueForType(CordbType *pType, ICorDebugValue 
     const CorDebugRegister floatRegister = REGISTER_ARM64_V0;
 #elif  defined(TARGET_ARM)
     const CorDebugRegister floatRegister = REGISTER_ARM_D0;
+#elif  defined(TARGET_LOONGARCH64)
+    const CorDebugRegister floatRegister = REGISTER_LOONGARCH64_F0;
+#elif  defined(TARGET_RISCV64)
+    const CorDebugRegister floatRegister = REGISTER_RISCV64_F0;
 #endif
 
 #if defined(TARGET_X86)
@@ -8752,7 +8876,10 @@ HRESULT CordbJITILFrame::GetReturnValueForType(CordbType *pType, ICorDebugValue 
 #elif  defined(TARGET_ARM)
     const CorDebugRegister ptrRegister = REGISTER_ARM_R0;
     const CorDebugRegister ptrHighWordRegister = REGISTER_ARM_R1;
-
+#elif  defined(TARGET_LOONGARCH64)
+    const CorDebugRegister ptrRegister = REGISTER_LOONGARCH64_A0;
+#elif  defined(TARGET_RISCV64)
+    const CorDebugRegister ptrRegister = REGISTER_RISCV64_A0;
 #endif
 
     CorElementType corReturnType = pType->GetElementType();
@@ -8904,6 +9031,21 @@ CordbILCode* CordbJITILFrame::GetOriginalILCode()
 CordbReJitILCode* CordbJITILFrame::GetReJitILCode()
 {
     return m_pReJitCode;
+}
+
+void CordbJITILFrame::AdjustIPAfterException()
+{
+    CordbNativeFrame* nativeFrameToAdjustIP = m_nativeFrame;
+    if (!m_adjustedIP)
+    {
+        DWORD nativeOffsetToMap = (DWORD)nativeFrameToAdjustIP->m_ip - STACKWALK_CONTROLPC_ADJUST_OFFSET;
+        CorDebugMappingResult mappingType;
+        ULONG uILOffset = nativeFrameToAdjustIP->m_nativeCode->GetSequencePoints()->MapNativeOffsetToIL(
+                nativeOffsetToMap,
+                &mappingType);
+        m_ip= uILOffset;
+        m_adjustedIP = true;
+    }
 }
 
 /* ------------------------------------------------------------------------- *
@@ -9176,7 +9318,7 @@ HRESULT CordbEval::GatherArgInfo(ICorDebugValue *pValue,
             argData->fullArgType = buffer;
             argData->fullArgTypeNodeCount = fullArgTypeNodeCount;
             // Is it enregistered?
-            if ((addr == NULL) && (pVCObjVal->GetValueHome() != NULL))
+            if ((addr == (CORDB_ADDRESS)NULL) && (pVCObjVal->GetValueHome() != NULL))
             {
                 pVCObjVal->GetValueHome()->CopyToIPCEType(&(argData->argHome));
             }
@@ -9194,7 +9336,7 @@ HRESULT CordbEval::GatherArgInfo(ICorDebugValue *pValue,
         CordbGenericValue *gv = (CordbGenericValue*)pValue;
         argData->argIsLiteral = gv->CopyLiteralData(argData->argLiteralData);
         // Is it enregistered?
-        if ((addr == NULL) && (gv->GetValueHome() != NULL))
+        if ((addr == (CORDB_ADDRESS)NULL) && (gv->GetValueHome() != NULL))
         {
             gv->GetValueHome()->CopyToIPCEType(&(argData->argHome));
         }
@@ -9621,7 +9763,7 @@ HRESULT CordbEval::CallParameterizedFunction(ICorDebugFunction *pFunction,
         event.FuncEval.vmThreadToken = m_thread->m_vmThreadToken;
         event.FuncEval.funcEvalType = m_evalType;
         event.FuncEval.funcMetadataToken = m_function->GetMetadataToken();
-        event.FuncEval.vmDomainFile = m_function->GetModule()->GetRuntimeDomainFile();
+        event.FuncEval.vmDomainAssembly = m_function->GetModule()->GetRuntimeDomainAssembly();
         event.FuncEval.funcEvalKey = hFuncEval.Ptr();
         event.FuncEval.argCount = nArgs;
         event.FuncEval.genericArgsCount = nTypeArgs;
@@ -9790,6 +9932,7 @@ HRESULT CordbEval::NewParameterizedObject(ICorDebugFunction * pConstructor,
 
             if (FAILED(hr))
             {
+                delete [] pArgData;
                 return hr;
             }
         }
@@ -9803,7 +9946,7 @@ HRESULT CordbEval::NewParameterizedObject(ICorDebugFunction * pConstructor,
     event.FuncEval.vmThreadToken = m_thread->m_vmThreadToken;
     event.FuncEval.funcEvalType = m_evalType;
     event.FuncEval.funcMetadataToken = m_function->GetMetadataToken();
-    event.FuncEval.vmDomainFile = m_function->GetModule()->GetRuntimeDomainFile();
+    event.FuncEval.vmDomainAssembly = m_function->GetModule()->GetRuntimeDomainAssembly();
     event.FuncEval.funcEvalKey = hFuncEval.Ptr();
     event.FuncEval.argCount = nArgs;
     event.FuncEval.genericArgsCount = nTypeArgs;
@@ -9904,7 +10047,7 @@ HRESULT CordbEval::NewParameterizedObjectNoConstructor(ICorDebugClass * pClass,
     event.FuncEval.funcEvalType = m_evalType;
     event.FuncEval.funcMetadataToken = mdMethodDefNil;
     event.FuncEval.funcClassMetadataToken = (mdTypeDef)m_class->m_id;
-    event.FuncEval.vmDomainFile = m_class->GetModule()->GetRuntimeDomainFile();
+    event.FuncEval.vmDomainAssembly = m_class->GetModule()->GetRuntimeDomainAssembly();
     event.FuncEval.funcEvalKey = hFuncEval.Ptr();
     event.FuncEval.argCount = 0;
     event.FuncEval.genericArgsCount = nTypeArgs;
@@ -9937,7 +10080,7 @@ HRESULT CordbEval::NewString(LPCWSTR string)
 {
     PUBLIC_API_ENTRY(this);
     FAIL_IF_NEUTERED(this);
-    return NewStringWithLength(string, (UINT)wcslen(string));
+    return NewStringWithLength(string, (UINT)u16_strlen(string));
 }
 
 //---------------------------------------------------------------------------------------
@@ -9999,7 +10142,7 @@ HRESULT CordbEval::NewStringWithLength(LPCWSTR wszString, UINT iLength)
     // Note: no function or module here...
     event.FuncEval.funcMetadataToken = mdMethodDefNil;
     event.FuncEval.funcClassMetadataToken = mdTypeDefNil;
-    event.FuncEval.vmDomainFile = VMPTR_DomainFile::NullPtr();
+    event.FuncEval.vmDomainAssembly = VMPTR_DomainAssembly::NullPtr();
     event.FuncEval.argCount = 0;
     event.FuncEval.genericArgsCount = 0;
     event.FuncEval.genericArgsNodeCount = 0;
@@ -10116,7 +10259,7 @@ HRESULT CordbEval::NewParameterizedArray(ICorDebugType * pElementType,
     // Note: no function or module here...
     event.FuncEval.funcMetadataToken = mdMethodDefNil;
     event.FuncEval.funcClassMetadataToken = mdTypeDefNil;
-    event.FuncEval.vmDomainFile = VMPTR_DomainFile::NullPtr();
+    event.FuncEval.vmDomainAssembly = VMPTR_DomainAssembly::NullPtr();
     event.FuncEval.argCount = 0;
     event.FuncEval.genericArgsCount = 1;
 
@@ -10518,7 +10661,7 @@ HRESULT CordbEval::CreateValueForType(ICorDebugType *   pIType,
 /* ------------------------------------------------------------------------- *
  * CordbEval2
  *
- *   Extentions to the CordbEval class for Whidbey
+ *   Extensions to the CordbEval class for Whidbey
  *
  * ------------------------------------------------------------------------- */
 
@@ -10738,7 +10881,7 @@ HRESULT CordbCodeEnum::Next(ULONG celt, ICorDebugCode *values[], ULONG *pceltFet
 
     HRESULT hr = S_OK;
 
-    int iMax = min( m_iMax, m_iCurrent+celt);
+    int iMax = (int)min( (ULONG)m_iMax, m_iCurrent+celt);
     int i;
 
     for (i = m_iCurrent; i < iMax; i++)
@@ -10774,4 +10917,3 @@ HRESULT CordbCodeEnum::Next(ULONG celt, ICorDebugCode *values[], ULONG *pceltFet
 
     return hr;
 }
-

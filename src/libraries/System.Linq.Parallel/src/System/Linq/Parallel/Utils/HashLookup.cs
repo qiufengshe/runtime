@@ -17,7 +17,7 @@ namespace System.Linq.Parallel
     /// </summary>
     /// <typeparam name="TKey">The kind of keys contained within.</typeparam>
     /// <typeparam name="TValue">The kind of values contained within.</typeparam>
-    internal class HashLookup<TKey, TValue>
+    internal sealed class HashLookup<TKey, TValue>
     {
         private int[] buckets;
         private Slot[] slots;
@@ -78,7 +78,7 @@ namespace System.Linq.Parallel
         {
             int hashCode = GetKeyHashCode(key);
 
-            for (int i = buckets[hashCode % buckets.Length] - 1; i >= 0; i = slots[i].next)
+            for (int i = buckets[(uint)hashCode % buckets.Length] - 1; i >= 0; i = slots[i].next)
             {
                 if (slots[i].hashCode == hashCode && AreKeysEqual(slots[i].key, key))
                 {

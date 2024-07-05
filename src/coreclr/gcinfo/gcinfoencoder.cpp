@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "gcinfoencoder.h"
+#include "targetosarch.h"
 
 #ifdef _DEBUG
     #ifndef LOGGING
@@ -343,7 +344,7 @@ GcInfoSize& GcInfoSize::operator+=(const GcInfoSize& other)
     NumUntracked += other.NumUntracked;
     NumTransitions += other.NumTransitions;
     SizeOfCode += other.SizeOfCode;
-    EncPreservedSlots += other.EncPreservedSlots;
+    EncInfoSize += other.EncInfoSize;
 
     UntrackedSlotSize += other.UntrackedSlotSize;
     NumUntrackedSize += other.NumUntrackedSize;
@@ -383,45 +384,45 @@ void GcInfoSize::Log(DWORD level, const char * header)
         LogSpew(LF_GCINFO, level, header);
 
         LogSpew(LF_GCINFO, level, "---COUNTS---\n");
-        LogSpew(LF_GCINFO, level, "NumMethods: %Iu\n", NumMethods);
-        LogSpew(LF_GCINFO, level, "NumCallSites: %Iu\n", NumCallSites);
-        LogSpew(LF_GCINFO, level, "NumRanges: %Iu\n", NumRanges);
-        LogSpew(LF_GCINFO, level, "NumRegs: %Iu\n", NumRegs);
-        LogSpew(LF_GCINFO, level, "NumStack: %Iu\n", NumStack);
-        LogSpew(LF_GCINFO, level, "NumUntracked: %Iu\n", NumUntracked);
-        LogSpew(LF_GCINFO, level, "NumTransitions: %Iu\n", NumTransitions);
-        LogSpew(LF_GCINFO, level, "SizeOfCode: %Iu\n", SizeOfCode);
-        LogSpew(LF_GCINFO, level, "EncPreservedSlots: %Iu\n", EncPreservedSlots);
+        LogSpew(LF_GCINFO, level, "NumMethods: %zu\n", NumMethods);
+        LogSpew(LF_GCINFO, level, "NumCallSites: %zu\n", NumCallSites);
+        LogSpew(LF_GCINFO, level, "NumRanges: %zu\n", NumRanges);
+        LogSpew(LF_GCINFO, level, "NumRegs: %zu\n", NumRegs);
+        LogSpew(LF_GCINFO, level, "NumStack: %zu\n", NumStack);
+        LogSpew(LF_GCINFO, level, "NumUntracked: %zu\n", NumUntracked);
+        LogSpew(LF_GCINFO, level, "NumTransitions: %zu\n", NumTransitions);
+        LogSpew(LF_GCINFO, level, "SizeOfCode: %zu\n", SizeOfCode);
+        LogSpew(LF_GCINFO, level, "EncInfoSize: %zu\n", EncInfoSize);
 
         LogSpew(LF_GCINFO, level, "---SIZES(bits)---\n");
-        LogSpew(LF_GCINFO, level, "Total: %Iu\n", TotalSize);
-        LogSpew(LF_GCINFO, level, "UntrackedSlot: %Iu\n", UntrackedSlotSize);
-        LogSpew(LF_GCINFO, level, "NumUntracked: %Iu\n", NumUntrackedSize);
-        LogSpew(LF_GCINFO, level, "Flags: %Iu\n", FlagsSize);
-        LogSpew(LF_GCINFO, level, "CodeLength: %Iu\n", CodeLengthSize);
-        LogSpew(LF_GCINFO, level, "Prolog/Epilog: %Iu\n", ProEpilogSize);
-        LogSpew(LF_GCINFO, level, "SecObj: %Iu\n", SecObjSize);
-        LogSpew(LF_GCINFO, level, "GsCookie: %Iu\n", GsCookieSize);
-        LogSpew(LF_GCINFO, level, "PspSym: %Iu\n", PspSymSize);
-        LogSpew(LF_GCINFO, level, "GenericsCtx: %Iu\n", GenericsCtxSize);
-        LogSpew(LF_GCINFO, level, "StackBase: %Iu\n", StackBaseSize);
-        LogSpew(LF_GCINFO, level, "FixedArea: %Iu\n", FixedAreaSize);
-        LogSpew(LF_GCINFO, level, "ReversePInvokeFrame: %Iu\n", ReversePInvokeFrameSize);
-        LogSpew(LF_GCINFO, level, "NumCallSites: %Iu\n", NumCallSitesSize);
-        LogSpew(LF_GCINFO, level, "NumRanges: %Iu\n", NumRangesSize);
-        LogSpew(LF_GCINFO, level, "CallSiteOffsets: %Iu\n", CallSitePosSize);
-        LogSpew(LF_GCINFO, level, "Ranges: %Iu\n", RangeSize);
-        LogSpew(LF_GCINFO, level, "NumRegs: %Iu\n", NumRegsSize);
-        LogSpew(LF_GCINFO, level, "NumStack: %Iu\n", NumStackSize);
-        LogSpew(LF_GCINFO, level, "RegSlots: %Iu\n", RegSlotSize);
-        LogSpew(LF_GCINFO, level, "StackSlots: %Iu\n", StackSlotSize);
-        LogSpew(LF_GCINFO, level, "CallSiteStates: %Iu\n", CallSiteStateSize);
-        LogSpew(LF_GCINFO, level, "EhOffsets: %Iu\n", EhPosSize);
-        LogSpew(LF_GCINFO, level, "EhStates: %Iu\n", EhStateSize);
-        LogSpew(LF_GCINFO, level, "ChunkPointers: %Iu\n", ChunkPtrSize);
-        LogSpew(LF_GCINFO, level, "ChunkMasks: %Iu\n", ChunkMaskSize);
-        LogSpew(LF_GCINFO, level, "ChunkFinalStates: %Iu\n", ChunkFinalStateSize);
-        LogSpew(LF_GCINFO, level, "Transitions: %Iu\n", ChunkTransitionSize);
+        LogSpew(LF_GCINFO, level, "Total: %zu\n", TotalSize);
+        LogSpew(LF_GCINFO, level, "UntrackedSlot: %zu\n", UntrackedSlotSize);
+        LogSpew(LF_GCINFO, level, "NumUntracked: %zu\n", NumUntrackedSize);
+        LogSpew(LF_GCINFO, level, "Flags: %zu\n", FlagsSize);
+        LogSpew(LF_GCINFO, level, "CodeLength: %zu\n", CodeLengthSize);
+        LogSpew(LF_GCINFO, level, "Prolog/Epilog: %zu\n", ProEpilogSize);
+        LogSpew(LF_GCINFO, level, "SecObj: %zu\n", SecObjSize);
+        LogSpew(LF_GCINFO, level, "GsCookie: %zu\n", GsCookieSize);
+        LogSpew(LF_GCINFO, level, "PspSym: %zu\n", PspSymSize);
+        LogSpew(LF_GCINFO, level, "GenericsCtx: %zu\n", GenericsCtxSize);
+        LogSpew(LF_GCINFO, level, "StackBase: %zu\n", StackBaseSize);
+        LogSpew(LF_GCINFO, level, "FixedArea: %zu\n", FixedAreaSize);
+        LogSpew(LF_GCINFO, level, "ReversePInvokeFrame: %zu\n", ReversePInvokeFrameSize);
+        LogSpew(LF_GCINFO, level, "NumCallSites: %zu\n", NumCallSitesSize);
+        LogSpew(LF_GCINFO, level, "NumRanges: %zu\n", NumRangesSize);
+        LogSpew(LF_GCINFO, level, "CallSiteOffsets: %zu\n", CallSitePosSize);
+        LogSpew(LF_GCINFO, level, "Ranges: %zu\n", RangeSize);
+        LogSpew(LF_GCINFO, level, "NumRegs: %zu\n", NumRegsSize);
+        LogSpew(LF_GCINFO, level, "NumStack: %zu\n", NumStackSize);
+        LogSpew(LF_GCINFO, level, "RegSlots: %zu\n", RegSlotSize);
+        LogSpew(LF_GCINFO, level, "StackSlots: %zu\n", StackSlotSize);
+        LogSpew(LF_GCINFO, level, "CallSiteStates: %zu\n", CallSiteStateSize);
+        LogSpew(LF_GCINFO, level, "EhOffsets: %zu\n", EhPosSize);
+        LogSpew(LF_GCINFO, level, "EhStates: %zu\n", EhStateSize);
+        LogSpew(LF_GCINFO, level, "ChunkPointers: %zu\n", ChunkPtrSize);
+        LogSpew(LF_GCINFO, level, "ChunkMasks: %zu\n", ChunkMaskSize);
+        LogSpew(LF_GCINFO, level, "ChunkFinalStates: %zu\n", ChunkFinalStateSize);
+        LogSpew(LF_GCINFO, level, "Transitions: %zu\n", ChunkTransitionSize);
     }
 }
 
@@ -453,16 +454,6 @@ GcInfoEncoder::GcInfoEncoder(
     m_pAllocator = pJitAllocator;
     m_pNoMem = pNoMem;
 
-#ifdef _DEBUG
-    CORINFO_METHOD_HANDLE methodHandle = pMethodInfo->ftn;
-
-    // Get the name of the current method along with the enclosing class
-    // or module name.
-    m_MethodName =
-        pCorJitInfo->getMethodName(methodHandle, (const char **)&m_ModuleName);
-#endif
-
-
     m_SlotTableSize = m_SlotTableInitialSize;
     m_SlotTable = (GcSlotDesc*) m_pAllocator->Alloc( m_SlotTableSize*sizeof(GcSlotDesc) );
     m_NumSlots = 0;
@@ -472,7 +463,6 @@ GcInfoEncoder::GcInfoEncoder(
     m_NumCallSites = 0;
 #endif
 
-    m_SecurityObjectStackSlot = NO_SECURITY_OBJECT;
     m_GSCookieStackSlot = NO_GS_COOKIE;
     m_GSCookieValidRangeStart = 0;
     _ASSERTE(sizeof(m_GSCookieValidRangeEnd) == sizeof(UINT32));
@@ -483,10 +473,13 @@ GcInfoEncoder::GcInfoEncoder(
 
     m_StackBaseRegister = NO_STACK_BASE_REGISTER;
     m_SizeOfEditAndContinuePreservedArea = NO_SIZE_OF_EDIT_AND_CONTINUE_PRESERVED_AREA;
+#ifdef TARGET_ARM64
+    m_SizeOfEditAndContinueFixedStackFrame = 0;
+#endif
     m_ReversePInvokeFrameSlot = NO_REVERSE_PINVOKE_FRAME;
 #ifdef TARGET_AMD64
     m_WantsReportOnlyLeaf = false;
-#elif defined(TARGET_ARM) || defined(TARGET_ARM64)
+#elif defined(TARGET_ARM) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
     m_HasTailCalls = false;
 #endif // TARGET_AMD64
     m_IsVarArg = false;
@@ -577,8 +570,11 @@ GcSlotId GcInfoEncoder::GetStackSlotId( INT32 spOffset, GcSlotFlags flags, GcSta
 
     _ASSERTE( (flags & (GC_SLOT_IS_REGISTER | GC_SLOT_IS_DELETED)) == 0 );
 
-    // the spOffset for the stack slot is required to be pointer size aligned
-    _ASSERTE((spOffset % TARGET_POINTER_SIZE) == 0);
+    if (!(TargetOS::IsApplePlatform && TargetArchitecture::IsArm64))
+    {
+        // the spOffset for the stack slot is required to be pointer size aligned
+        _ASSERTE((spOffset % TARGET_POINTER_SIZE) == 0);
+    }
 
     m_SlotTable[ m_NumSlots ].Slot.Stack.SpOffset = spOffset;
     m_SlotTable[ m_NumSlots ].Slot.Stack.Base = spBase;
@@ -687,18 +683,6 @@ void GcInfoEncoder::SetCodeLength( UINT32 length )
     m_CodeLength = length;
 }
 
-
-void GcInfoEncoder::SetSecurityObjectStackSlot( INT32 spOffset )
-{
-    _ASSERTE( spOffset != NO_SECURITY_OBJECT );
-#if defined(TARGET_AMD64)
-    _ASSERTE( spOffset < 0x10 && "The security object cannot reside in an input variable!" );
-#endif
-    _ASSERTE( m_SecurityObjectStackSlot == NO_SECURITY_OBJECT || m_SecurityObjectStackSlot == spOffset );
-
-    m_SecurityObjectStackSlot  = spOffset;
-}
-
 void GcInfoEncoder::SetPrologSize( UINT32 prologSize )
 {
     _ASSERTE(prologSize != 0);
@@ -743,6 +727,11 @@ void GcInfoEncoder::SetStackBaseRegister( UINT32 regNum )
     _ASSERTE( regNum != NO_STACK_BASE_REGISTER );
     _ASSERTE(DENORMALIZE_STACK_BASE_REGISTER(NORMALIZE_STACK_BASE_REGISTER(regNum)) == regNum);
     _ASSERTE( m_StackBaseRegister == NO_STACK_BASE_REGISTER || m_StackBaseRegister == regNum );
+#if defined(TARGET_LOONGARCH64)
+    assert(regNum == 3 || 22 == regNum);
+#elif defined(TARGET_RISCV64)
+    assert(regNum == 2 || 8 == regNum);
+#endif
     m_StackBaseRegister = regNum;
 }
 
@@ -753,12 +742,19 @@ void GcInfoEncoder::SetSizeOfEditAndContinuePreservedArea( UINT32 slots )
     m_SizeOfEditAndContinuePreservedArea = slots;
 }
 
+#ifdef TARGET_ARM64
+void GcInfoEncoder::SetSizeOfEditAndContinueFixedStackFrame( UINT32 size )
+{
+    m_SizeOfEditAndContinueFixedStackFrame = size;
+}
+#endif
+
 #ifdef TARGET_AMD64
 void GcInfoEncoder::SetWantsReportOnlyLeaf()
 {
     m_WantsReportOnlyLeaf = true;
 }
-#elif defined(TARGET_ARM) || defined(TARGET_ARM64)
+#elif defined(TARGET_ARM) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
 void GcInfoEncoder::SetHasTailCalls()
 {
     m_HasTailCalls = true;
@@ -926,7 +922,11 @@ void GcInfoEncoder::FinalizeSlotIds()
 #endif
 }
 
-bool GcInfoEncoder::IsAlwaysScratch(GcSlotDesc &slotDesc)
+#ifdef PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED
+
+// tells whether a slot cannot contain an object reference
+// at call instruction or right after returning
+bool GcInfoEncoder::DoNotTrackInPartiallyInterruptible(GcSlotDesc &slotDesc)
 {
 #if defined(TARGET_ARM)
 
@@ -937,7 +937,31 @@ bool GcInfoEncoder::IsAlwaysScratch(GcSlotDesc &slotDesc)
         _ASSERTE(regNum >= 0 && regNum <= 14);
         _ASSERTE(regNum != 13);  // sp
 
-        return ((regNum <= 3) || (regNum >= 12)); // R12 and R14/LR are both scratch registers
+        return ((regNum <= 3) || (regNum >= 12)) // R12 is volatile and SP/LR can't contain objects around calls
+            && regNum != 0                       // R0 can contain return value
+            ;
+    }
+    else if (!slotDesc.IsUntracked() && (slotDesc.Slot.Stack.Base == GC_SP_REL) &&
+        ((UINT32)slotDesc.Slot.Stack.SpOffset < m_SizeOfStackOutgoingAndScratchArea))
+    {
+        return TRUE;
+    }
+    else
+        return FALSE;
+
+#elif defined(TARGET_ARM64)
+
+    _ASSERTE(m_SizeOfStackOutgoingAndScratchArea != (UINT32)-1);
+    if (slotDesc.IsRegister())
+    {
+        int regNum = (int)slotDesc.Slot.RegisterNumber;
+        _ASSERTE(regNum >= 0 && regNum <= 30);
+        _ASSERTE(regNum != 18);
+
+        return (regNum <= 17 || regNum >= 29) // X0 through X17 are scratch, FP/LR can't be used for objects around calls
+            && regNum != 0                    // X0 can contain return value
+            && regNum != 1                    // X1 can contain return value
+            ;
     }
     else if (!slotDesc.IsUntracked() && (slotDesc.Slot.Stack.Base == GC_SP_REL) &&
         ((UINT32)slotDesc.Slot.Stack.SpOffset < m_SizeOfStackOutgoingAndScratchArea))
@@ -957,7 +981,7 @@ bool GcInfoEncoder::IsAlwaysScratch(GcSlotDesc &slotDesc)
         _ASSERTE(regNum != 4);  // rsp
 
         UINT16 PreservedRegMask =
-              (1 << 3)  // rbx
+            (1 << 3)  // rbx
             | (1 << 5)  // rbp
 #ifndef UNIX_AMD64_ABI
             | (1 << 6)  // rsi
@@ -966,7 +990,12 @@ bool GcInfoEncoder::IsAlwaysScratch(GcSlotDesc &slotDesc)
             | (1 << 12)  // r12
             | (1 << 13)  // r13
             | (1 << 14)  // r14
-            | (1 << 15); // r15
+            | (1 << 15)  // r15
+            | (1 << 0)   // rax - may contain return value
+#ifdef UNIX_AMD64_ABI
+            | (1 << 2)   // rdx - may contain return value
+#endif
+            ;
 
         return !(PreservedRegMask & (1 << regNum));
     }
@@ -982,19 +1011,25 @@ bool GcInfoEncoder::IsAlwaysScratch(GcSlotDesc &slotDesc)
     return FALSE;
 #endif
 }
+#endif // PARTIALLY_INTERRUPTIBLE_GC_SUPPORTED
 
 void GcInfoEncoder::Build()
 {
 #ifdef _DEBUG
     _ASSERTE(m_IsSlotTableFrozen || m_NumSlots == 0);
-#endif
 
     _ASSERTE((1 << NUM_NORM_CODE_OFFSETS_PER_CHUNK_LOG2) == NUM_NORM_CODE_OFFSETS_PER_CHUNK);
 
+    char methodName[256];
+    m_pCorJitInfo->printMethodName(m_pMethodInfo->ftn, methodName, sizeof(methodName));
+
+    char className[256];
+    m_pCorJitInfo->printClassName(m_pCorJitInfo->getMethodClass(m_pMethodInfo->ftn), className, sizeof(className));
+
     LOG((LF_GCINFO, LL_INFO100,
-         "Entering GcInfoEncoder::Build() for method %s[%s]\n",
-         m_MethodName, m_ModuleName
-         ));
+         "Entering GcInfoEncoder::Build() for method %s:%s\n",
+         className, methodName));
+#endif
 
 
     ///////////////////////////////////////////////////////////////////////
@@ -1002,18 +1037,17 @@ void GcInfoEncoder::Build()
     ///////////////////////////////////////////////////////////////////////
 
 
-    UINT32 hasSecurityObject = (m_SecurityObjectStackSlot != NO_SECURITY_OBJECT);
     UINT32 hasGSCookie = (m_GSCookieStackSlot != NO_GS_COOKIE);
     UINT32 hasContextParamType = (m_GenericsInstContextStackSlot != NO_GENERICS_INST_CONTEXT);
     UINT32 hasReversePInvokeFrame = (m_ReversePInvokeFrameSlot != NO_REVERSE_PINVOKE_FRAME);
 
-    BOOL slimHeader = (!m_IsVarArg && !hasSecurityObject && !hasGSCookie && (m_PSPSymStackSlot == NO_PSP_SYM) &&
+    BOOL slimHeader = (!m_IsVarArg && !hasGSCookie && (m_PSPSymStackSlot == NO_PSP_SYM) &&
         !hasContextParamType && (m_InterruptibleRanges.Count() == 0) && !hasReversePInvokeFrame &&
         ((m_StackBaseRegister == NO_STACK_BASE_REGISTER) || (NORMALIZE_STACK_BASE_REGISTER(m_StackBaseRegister) == 0))) &&
         (m_SizeOfEditAndContinuePreservedArea == NO_SIZE_OF_EDIT_AND_CONTINUE_PRESERVED_AREA) &&
 #ifdef TARGET_AMD64
         !m_WantsReportOnlyLeaf &&
-#elif defined(TARGET_ARM) || defined(TARGET_ARM64)
+#elif defined(TARGET_ARM) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
         !m_HasTailCalls &&
 #endif // TARGET_AMD64
         !IsStructReturnKind(m_ReturnKind);
@@ -1024,6 +1058,11 @@ void GcInfoEncoder::Build()
     {
         // Slim encoding means nothing special, partially interruptible, maybe a default frame register
         GCINFO_WRITE(m_Info1, 0, 1, FlagsSize); // Slim encoding
+#if defined(TARGET_LOONGARCH64)
+        assert(m_StackBaseRegister == 22 || 3 == m_StackBaseRegister);
+#elif defined(TARGET_RISCV64)
+        assert(m_StackBaseRegister == 8 || 2 == m_StackBaseRegister);
+#endif
         GCINFO_WRITE(m_Info1, (m_StackBaseRegister == NO_STACK_BASE_REGISTER) ? 0 : 1, 1, FlagsSize);
 
         GCINFO_WRITE(m_Info1, m_ReturnKind, SIZE_OF_RETURN_KIND_IN_SLIM_HEADER, RetKindSize);
@@ -1032,14 +1071,19 @@ void GcInfoEncoder::Build()
     {
         GCINFO_WRITE(m_Info1, 1, 1, FlagsSize); // Fat encoding
         GCINFO_WRITE(m_Info1, (m_IsVarArg ? 1 : 0), 1, FlagsSize);
-        GCINFO_WRITE(m_Info1, (hasSecurityObject ? 1 : 0), 1, FlagsSize);
+        GCINFO_WRITE(m_Info1, 0 /* unused - was hasSecurityObject */, 1, FlagsSize);
         GCINFO_WRITE(m_Info1, (hasGSCookie ? 1 : 0), 1, FlagsSize);
         GCINFO_WRITE(m_Info1, ((m_PSPSymStackSlot != NO_PSP_SYM) ? 1 : 0), 1, FlagsSize);
         GCINFO_WRITE(m_Info1, m_contextParamType, 2, FlagsSize);
+#if defined(TARGET_LOONGARCH64)
+        assert(m_StackBaseRegister == 22 || 3 == m_StackBaseRegister);
+#elif defined(TARGET_RISCV64)
+        assert(m_StackBaseRegister == 8 || 2 == m_StackBaseRegister);
+#endif
         GCINFO_WRITE(m_Info1, ((m_StackBaseRegister != NO_STACK_BASE_REGISTER) ? 1 : 0), 1, FlagsSize);
 #ifdef TARGET_AMD64
         GCINFO_WRITE(m_Info1, (m_WantsReportOnlyLeaf ? 1 : 0), 1, FlagsSize);
-#elif defined(TARGET_ARM) || defined(TARGET_ARM64)
+#elif defined(TARGET_ARM) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
         GCINFO_WRITE(m_Info1, (m_HasTailCalls ? 1 : 0), 1, FlagsSize);
 #endif // TARGET_AMD64
         GCINFO_WRITE(m_Info1, ((m_SizeOfEditAndContinuePreservedArea != NO_SIZE_OF_EDIT_AND_CONTINUE_PRESERVED_AREA) ? 1 : 0), 1, FlagsSize);
@@ -1072,7 +1116,7 @@ void GcInfoEncoder::Build()
         GCINFO_WRITE_VARL_U(m_Info1, normPrologSize-1, NORM_PROLOG_SIZE_ENCBASE, ProEpilogSize);
         GCINFO_WRITE_VARL_U(m_Info1, normEpilogSize, NORM_EPILOG_SIZE_ENCBASE, ProEpilogSize);
     }
-    else if (hasSecurityObject || hasContextParamType)
+    else if (hasContextParamType)
     {
         _ASSERTE(!slimHeader);
         // Save the prolog size, to be used for determining when it is not safe
@@ -1082,19 +1126,6 @@ void GcInfoEncoder::Build()
         _ASSERTE(normPrologSize > 0 && normPrologSize < m_CodeLength);
 
         GCINFO_WRITE_VARL_U(m_Info1, normPrologSize-1, NORM_PROLOG_SIZE_ENCBASE, ProEpilogSize);
-    }
-
-    // Encode the offset to the security object.
-    if(hasSecurityObject)
-    {
-        _ASSERTE(!slimHeader);
-#ifdef _DEBUG
-        LOG((LF_GCINFO, LL_INFO1000, "Security object at " FMT_STK "\n",
-             DBG_STK(m_SecurityObjectStackSlot)
-             ));
-#endif
-
-        GCINFO_WRITE_VARL_S(m_Info1, NORMALIZE_STACK_SLOT(m_SecurityObjectStackSlot), SECURITY_OBJECT_STACK_SLOT_ENCBASE, SecObjSize);
     }
 
     // Encode the offset to the GS cookie.
@@ -1136,12 +1167,20 @@ void GcInfoEncoder::Build()
 
     if(!slimHeader && (m_StackBaseRegister != NO_STACK_BASE_REGISTER))
     {
+#if defined(TARGET_LOONGARCH64)
+        assert(m_StackBaseRegister == 22 || 3 == m_StackBaseRegister);
+#elif defined(TARGET_RISCV64)
+        assert(m_StackBaseRegister == 8 || 2 == m_StackBaseRegister);
+#endif
         GCINFO_WRITE_VARL_U(m_Info1, NORMALIZE_STACK_BASE_REGISTER(m_StackBaseRegister), STACK_BASE_REGISTER_ENCBASE, StackBaseSize);
     }
 
     if (m_SizeOfEditAndContinuePreservedArea != NO_SIZE_OF_EDIT_AND_CONTINUE_PRESERVED_AREA)
     {
-        GCINFO_WRITE_VARL_U(m_Info1, m_SizeOfEditAndContinuePreservedArea, SIZE_OF_EDIT_AND_CONTINUE_PRESERVED_AREA_ENCBASE, EncPreservedSlots);
+        GCINFO_WRITE_VARL_U(m_Info1, m_SizeOfEditAndContinuePreservedArea, SIZE_OF_EDIT_AND_CONTINUE_PRESERVED_AREA_ENCBASE, EncInfoSize);
+#ifdef TARGET_ARM64
+        GCINFO_WRITE_VARL_U(m_Info1, m_SizeOfEditAndContinueFixedStackFrame, SIZE_OF_EDIT_AND_CONTINUE_FIXED_STACK_FRAME_ENCBASE, EncInfoSize);
+#endif
     }
 
     if (hasReversePInvokeFrame)
@@ -1391,7 +1430,7 @@ void GcInfoEncoder::Build()
             else
             {
                 UINT32 slotIndex = pCurrent->SlotId;
-                if(!IsAlwaysScratch(m_SlotTable[slotIndex]))
+                if(!DoNotTrackInPartiallyInterruptible(m_SlotTable[slotIndex]))
                 {
                     BYTE becomesLive = pCurrent->BecomesLive;
                     _ASSERTE((liveState.ReadBit(slotIndex) && !becomesLive)
@@ -2264,8 +2303,8 @@ lExitSuccess:;
         m_CurrentMethodSize.Log(LL_INFO100, "=== PartiallyInterruptible method breakdown ===\r\n");
         g_PiGcInfoSize.Log(LL_INFO10, "=== PartiallyInterruptible global breakdown ===\r\n");
     }
-    LogSpew(LF_GCINFO, LL_INFO10, "Total SlimHeaders: %Iu\n", g_NumSlimHeaders);
-    LogSpew(LF_GCINFO, LL_INFO10, "NumMethods: %Iu\n", g_NumFatHeaders);
+    LogSpew(LF_GCINFO, LL_INFO10, "Total SlimHeaders: %zu\n", g_NumSlimHeaders);
+    LogSpew(LF_GCINFO, LL_INFO10, "NumMethods: %zu\n", g_NumFatHeaders);
 #endif
 }
 

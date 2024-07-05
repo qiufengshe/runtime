@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -15,6 +16,15 @@ namespace Microsoft.Extensions.Http.Logging
 {
     public class RedactedLogValueIntegrationTest
     {
+        private static class EventIds
+        {
+            public static readonly EventId RequestHeader = new EventId(102, "RequestHeader");
+            public static readonly EventId ResponseHeader = new EventId(103, "ResponseHeader");
+
+            public static readonly EventId RequestPipelineRequestHeader = new EventId(102, "RequestPipelineRequestHeader");
+            public static readonly EventId RequestPipelineResponseHeader = new EventId(103, "RequestPipelineResponseHeader");
+        }
+
         [Fact]
         public async Task RedactHeaderValueWithHeaderList_ValueIsRedactedBeforeLogging()
         {
@@ -47,50 +57,50 @@ namespace Microsoft.Extensions.Http.Logging
             var message = Assert.Single(messages.Where(m =>
             {
                 return
-                    m.EventId == LoggingScopeHttpMessageHandler.Log.EventIds.RequestHeader &&
+                    m.EventId == EventIds.RequestPipelineRequestHeader &&
                     m.LoggerName == "System.Net.Http.HttpClient.test.LogicalHandler";
             }));
-            Assert.StartsWith(
+            Assert.StartsWith(LineEndingsHelper.Normalize(
 @"Request Headers:
 Authorization: *
 Cache-Control: no-cache
-", message.Message);
+"), message.Message);
 
             message = Assert.Single(messages.Where(m =>
             {
                 return
-                    m.EventId == LoggingHttpMessageHandler.Log.EventIds.RequestHeader &&
+                    m.EventId == EventIds.RequestHeader &&
                     m.LoggerName == "System.Net.Http.HttpClient.test.ClientHandler";
             }));
-            Assert.StartsWith(
+            Assert.StartsWith(LineEndingsHelper.Normalize(
 @"Request Headers:
 Authorization: *
 Cache-Control: no-cache
-", message.Message);
+"), message.Message);
 
             message = Assert.Single(messages.Where(m =>
             {
                 return
-                    m.EventId == LoggingHttpMessageHandler.Log.EventIds.ResponseHeader &&
+                    m.EventId == EventIds.ResponseHeader &&
                     m.LoggerName == "System.Net.Http.HttpClient.test.ClientHandler";
             }));
-            Assert.StartsWith(
+            Assert.StartsWith(LineEndingsHelper.Normalize(
 @"Response Headers:
 X-Sensitive: *
 Y-Non-Sensitive: innocuous value
-", message.Message);
+"), message.Message);
 
             message = Assert.Single(messages.Where(m =>
             {
                 return
-                    m.EventId == LoggingScopeHttpMessageHandler.Log.EventIds.ResponseHeader &&
+                    m.EventId == EventIds.RequestPipelineResponseHeader &&
                     m.LoggerName == "System.Net.Http.HttpClient.test.LogicalHandler";
             }));
-            Assert.StartsWith(
+            Assert.StartsWith(LineEndingsHelper.Normalize(
 @"Response Headers:
 X-Sensitive: *
 Y-Non-Sensitive: innocuous value
-", message.Message);
+"), message.Message);
         }
 
         [Fact]
@@ -128,50 +138,50 @@ Y-Non-Sensitive: innocuous value
             var message = Assert.Single(messages.Where(m =>
             {
                 return
-                    m.EventId == LoggingScopeHttpMessageHandler.Log.EventIds.RequestHeader &&
+                    m.EventId == EventIds.RequestPipelineRequestHeader &&
                     m.LoggerName == "System.Net.Http.HttpClient.test.LogicalHandler";
             }));
-            Assert.StartsWith(
+            Assert.StartsWith(LineEndingsHelper.Normalize(
 @"Request Headers:
 Authorization: *
 Cache-Control: no-cache
-", message.Message);
+"), message.Message);
 
             message = Assert.Single(messages.Where(m =>
             {
                 return
-                    m.EventId == LoggingHttpMessageHandler.Log.EventIds.RequestHeader &&
+                    m.EventId == EventIds.RequestHeader &&
                     m.LoggerName == "System.Net.Http.HttpClient.test.ClientHandler";
             }));
-            Assert.StartsWith(
+            Assert.StartsWith(LineEndingsHelper.Normalize(
 @"Request Headers:
 Authorization: *
 Cache-Control: no-cache
-", message.Message);
+"), message.Message);
 
             message = Assert.Single(messages.Where(m =>
             {
                 return
-                    m.EventId == LoggingHttpMessageHandler.Log.EventIds.ResponseHeader &&
+                    m.EventId == EventIds.ResponseHeader &&
                     m.LoggerName == "System.Net.Http.HttpClient.test.ClientHandler";
             }));
-            Assert.StartsWith(
+            Assert.StartsWith(LineEndingsHelper.Normalize(
 @"Response Headers:
 X-Sensitive: *
 Y-Non-Sensitive: innocuous value
-", message.Message);
+"), message.Message);
 
             message = Assert.Single(messages.Where(m =>
             {
                 return
-                    m.EventId == LoggingScopeHttpMessageHandler.Log.EventIds.ResponseHeader &&
+                    m.EventId == EventIds.RequestPipelineResponseHeader &&
                     m.LoggerName == "System.Net.Http.HttpClient.test.LogicalHandler";
             }));
-            Assert.StartsWith(
+            Assert.StartsWith(LineEndingsHelper.Normalize(
 @"Response Headers:
 X-Sensitive: *
 Y-Non-Sensitive: innocuous value
-", message.Message);
+"), message.Message);
         }
 
         private class TestMessageHandler : HttpClientHandler

@@ -3,6 +3,7 @@
 //
 
 using System;
+using Xunit;
 
 public interface IFoo
 {
@@ -40,7 +41,7 @@ public struct GenStruct<T> where T : IFoo
         return (t.InterfaceMethod().Equals(typeof(T)));
     }
 }
-public class Test
+public class Test_Call_static01
 {
     public static int counter = 0;
     public static bool result = true;
@@ -55,7 +56,8 @@ public class Test
 
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         Eval(GenClass<FooClass>.CallOnConstraint(new FooClass()));
         Eval(GenClass<FooStruct>.CallOnConstraint(new FooStruct()));

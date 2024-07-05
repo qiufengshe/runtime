@@ -11,7 +11,7 @@ namespace System.Net.WebSockets.Client.Tests
 {
     public static class LoopbackHelper
     {
-        public static async Task<Dictionary<string, string>> WebSocketHandshakeAsync(LoopbackServer.Connection connection)
+        public static async Task<Dictionary<string, string>> WebSocketHandshakeAsync(LoopbackServer.Connection connection, string? extensions = null)
         {
             string serverResponse = null;
             List<string> headers = await connection.ReadRequestHeaderAsync().ConfigureAwait(false);
@@ -28,13 +28,7 @@ namespace System.Net.WebSockets.Client.Tests
                     if (headerName == "Sec-WebSocket-Key")
                     {
                         string headerValue = tokens[1].Trim();
-                        string responseSecurityAcceptValue = ComputeWebSocketHandshakeSecurityAcceptValue(headerValue);
-                        serverResponse =
-                            "HTTP/1.1 101 Switching Protocols\r\n" +
-                            "Content-Length: 0\r\n" +
-                            "Upgrade: websocket\r\n" +
-                            "Connection: Upgrade\r\n" +
-                            "Sec-WebSocket-Accept: " + responseSecurityAcceptValue + "\r\n\r\n";
+                        serverResponse = GetServerResponseString(headerValue, extensions);
                     }
                 }
             }
@@ -42,11 +36,23 @@ namespace System.Net.WebSockets.Client.Tests
             if (serverResponse != null)
             {
                 // We received a valid WebSocket opening handshake. Send the appropriate response.
-                await connection.Writer.WriteAsync(serverResponse).ConfigureAwait(false);
+                await connection.WriteStringAsync(serverResponse).ConfigureAwait(false);
                 return results;
             }
 
             return null;
+        }
+
+        public static string GetServerResponseString(string secWebSocketKey, string? extensions = null)
+        {
+            var responseSecurityAcceptValue = ComputeWebSocketHandshakeSecurityAcceptValue(secWebSocketKey);
+            return
+                "HTTP/1.1 101 Switching Protocols\r\n" +
+                "Content-Length: 0\r\n" +
+                "Upgrade: websocket\r\n" +
+                "Connection: Upgrade\r\n" +
+                (extensions is null ? null : $"Sec-WebSocket-Extensions: {extensions}\r\n") +
+                "Sec-WebSocket-Accept: " + responseSecurityAcceptValue + "\r\n\r\n";
         }
 
         private static string ComputeWebSocketHandshakeSecurityAcceptValue(string secWebSocketKey)
@@ -56,8 +62,7 @@ namespace System.Net.WebSockets.Client.Tests
             string combinedKey = secWebSocketKey + Rfc6455Guid;
 
             // Use of SHA1 hash is required by RFC 6455.
-            SHA1 sha1Provider = new SHA1CryptoServiceProvider();
-            byte[] sha1Hash = sha1Provider.ComputeHash(Encoding.UTF8.GetBytes(combinedKey));
+            byte[] sha1Hash = SHA1.HashData(Encoding.UTF8.GetBytes(combinedKey));
             return Convert.ToBase64String(sha1Hash);
         }
     }

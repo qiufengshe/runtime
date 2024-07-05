@@ -3,6 +3,7 @@
 
 using System;
 using System.Threading;
+using Xunit;
 
 interface IFoo<T> 
 {	
@@ -17,7 +18,7 @@ struct Foo<T> : IFoo<T>
 	}		
 }
 
-public class Test
+public class Test_method010
 {
 	public static int counter = 0;
 	public static bool result = true;
@@ -32,7 +33,8 @@ public class Test
 	
 	}
 	
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		IFoo<int> IFooInt = new Foo<int>();
 		IFoo<string> IFooString = new Foo<string>();

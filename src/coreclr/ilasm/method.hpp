@@ -236,7 +236,7 @@ public:
     // Method body (header+code+EH)
     BinStr* m_pbsBody;
     mdToken m_Tok;
-    Method(Assembler *pAssembler, Class *pClass, __in __nullterminated char *pszName, BinStr* pbsSig, DWORD Attr);
+    Method(Assembler *pAssembler, Class *pClass, _In_ __nullterminated char *pszName, BinStr* pbsSig, DWORD Attr);
     ~Method()
     {
         m_lstFixup.RESET(true);
@@ -337,6 +337,8 @@ public:
     unsigned m_LineNum;
     // debug info
     LinePCList m_LinePCList;
+    Document* m_FirstDocument;
+    BOOL m_HasMultipleDocuments;
     // custom values
     CustomDescrList m_CustomDescrList;
     // token relocs (used for OBJ generation only)
@@ -354,24 +356,24 @@ public:
     Label *FindLabel(LPCUTF8 pszName);
     Label *FindLabel(DWORD PC);
 
-    int FindTyPar(__in __nullterminated WCHAR* wz)
+    int FindTyPar(_In_ __nullterminated WCHAR* wz)
     {
         int i,retval=-1;
         for(i=0; i < (int)m_NumTyPars; i++)
         {
-            if(!wcscmp(wz,m_TyPars[i].Name()))
+            if(!u16_strcmp(wz,m_TyPars[i].Name()))
             {
                 retval = i;
             }
         }
         return retval;
     };
-    int FindTyPar(__in __nullterminated char* sz)
+    int FindTyPar(_In_ __nullterminated char* sz)
     {
         if(sz)
         {
             wzUniBuf[0] = 0;
-            WszMultiByteToWideChar(g_uCodePage,0,sz,-1,wzUniBuf,dwUniBuf);
+            MultiByteToWideChar(g_uCodePage,0,sz,-1,wzUniBuf,dwUniBuf);
             return FindTyPar(wzUniBuf);
         }
         else return -1;

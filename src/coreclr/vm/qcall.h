@@ -7,7 +7,7 @@
 #ifndef __QCall_h__
 #define __QCall_h__
 
-#include "clr_std/type_traits"
+#include <type_traits>
 
 //
 // QCALLS
@@ -45,8 +45,7 @@
 // class Foo {
 //
 //  // All QCalls should have the following DllImport and SuppressUnmanagedCodeSecurity attributes
-//  [DllImport(JitHelpers.QCall, CharSet = CharSet.Unicode)]
-//  [SuppressUnmanagedCodeSecurity]
+//  [DllImport(JitHelpers.QCall, EntryPoint = "FooNative_Bar", CharSet = CharSet.Unicode)]
 //  // QCalls should always be static extern.
 //  private static extern bool Bar(int flags, string inString, StringHandleOnStack retString);
 //
@@ -69,17 +68,10 @@
 // QCall example - unmanaged part (do not replicate the comments into your actual QCall implementation):
 // -----------------------------------------------------------------------------------------------------
 //
-// The entrypoints of all QCalls has to be registered in tables in vm\ecall.cpp using QCFuncEntry macro,
-// For example: QCFuncElement("Bar", FooNative::Bar)
+// The entrypoints of all QCalls has to be registered in tables in vm\qcallentrypoints.cpp using the DllImportEntry macro,
+// For example: DllImportEntry(FooNative_Bar)
 //
-// class FooNative {
-// public:
-//      // All QCalls should be static and should be tagged with QCALLTYPE
-//      static
-//      BOOL QCALLTYPE Bar(int flags, LPCWSTR wszString, QCall::StringHandleOnStack retString);
-// };
-//
-// BOOL QCALLTYPE FooNative::Bar(int flags, LPCWSTR wszString, QCall::StringHandleOnStack retString)
+// extern "C" BOOL QCALLTYPE FooNative_Bar(int flags, LPCWSTR wszString, QCall::StringHandleOnStack retString)
 // {
 //      // All QCalls should have QCALL_CONTRACT. It is alias for THROWS; GC_TRIGGERS; MODE_PREEMPTIVE.
 //      QCALL_CONTRACT;
@@ -103,7 +95,7 @@
 //          COMPlusThrow(kArgumentException, L"InvalidFlags");
 //
 //      // No need to worry about GC moving strings passed into QCall. Marshaling pins them for us.
-//      printf("%S", wszString);
+//      wprintf("%s", wszString);
 //
 //      // This is the most efficient way to return strings back to managed code. No need to use StringBuilder.
 //      retString.Set(L"Hello");
@@ -167,6 +159,12 @@ public:
     {
         StringObject ** m_ppStringObject;
 
+        STRINGREF Get()
+        {
+            LIMITED_METHOD_CONTRACT;
+            return ObjectToSTRINGREF(*m_ppStringObject);
+        }
+
 #ifndef DACCESS_COMPILE
         //
         // Helpers for returning managed string from QCall
@@ -229,7 +227,6 @@ public:
        // Do not add operator overloads to convert this object into a stack reference to a specific object type
        // such as OBJECTREF *. While such things are correct, our debug checking logic is unable to verify that
        // the object reference is actually protected from access and therefore will assert.
-       // See bug 254159 for details.
 
 #endif // !DACCESS_COMPILE
     };
@@ -342,5 +339,7 @@ public:
 };
 
 typedef void* EnregisteredTypeHandle;
+
+extern const void* QCallResolveDllImport(const char* name);
 
 #endif //__QCall_h__

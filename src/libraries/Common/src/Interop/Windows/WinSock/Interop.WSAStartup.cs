@@ -2,8 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 internal static partial class Interop
@@ -39,11 +39,11 @@ internal static partial class Interop
             }
         }
 
-        [DllImport(Libraries.Ws2_32)]
-        private static extern unsafe SocketError WSAStartup(short wVersionRequested, WSAData* lpWSAData);
+        [LibraryImport(Libraries.Ws2_32)]
+        private static unsafe partial SocketError WSAStartup(short wVersionRequested, WSAData* lpWSAData);
 
-        [DllImport(Libraries.Ws2_32)]
-        private static extern SocketError WSACleanup();
+        [LibraryImport(Libraries.Ws2_32)]
+        private static partial SocketError WSACleanup();
 
         [StructLayout(LayoutKind.Sequential, Size = 408)]
         private struct WSAData

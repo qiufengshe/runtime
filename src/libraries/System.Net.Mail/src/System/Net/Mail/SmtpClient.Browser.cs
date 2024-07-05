@@ -3,6 +3,7 @@
 
 using System;
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Versioning;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
@@ -47,11 +48,12 @@ namespace System.Net.Mail
             Initialize();
         }
 
-        private void Initialize()
+        private static void Initialize()
         {
             throw new PlatformNotSupportedException();
         }
 
+        [DisallowNull]
         public string? Host
         {
             get => throw new PlatformNotSupportedException();
@@ -125,7 +127,7 @@ namespace System.Net.Mail
             set => throw new PlatformNotSupportedException();
         }
 
-        private bool ServerSupportsEai => throw new PlatformNotSupportedException();
+        private static bool ServerSupportsEai => throw new PlatformNotSupportedException();
 
         public void Send(string from, string recipients, string? subject, string? body) => throw new PlatformNotSupportedException();
 
@@ -135,7 +137,7 @@ namespace System.Net.Mail
 
         public void SendAsync(MailMessage message, object? userToken) => throw new PlatformNotSupportedException();
 
-        public void SendAsyncCancel()  => throw new PlatformNotSupportedException();
+        public void SendAsyncCancel() => throw new PlatformNotSupportedException();
 
         //************* Task-based async public methods *************************
         public Task SendMailAsync(string from, string recipients, string? subject, string? body) => throw new PlatformNotSupportedException();

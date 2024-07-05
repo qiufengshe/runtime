@@ -35,11 +35,11 @@ namespace System
 
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Atan2(float y, float x);
+        public static extern float Atanh(float x);
 
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Atanh(float x);
+        public static extern float Atan2(float y, float x);
 
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
@@ -69,12 +69,11 @@ namespace System
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern float FusedMultiplyAdd(float x, float y, float z);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern int ILogB(float x);
-
+        [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern float Log(float x);
 
+        [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern float Log2(float x);
 
@@ -86,12 +85,22 @@ namespace System
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern float Pow(float x, float y);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float ScaleB(float x, int n);
-
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern float Sin(float x);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe (float Sin, float Cos) SinCos(float x)
+        {
+            if (RuntimeHelpers.IsKnownConstant(x))
+            {
+                return (Sin(x), Cos(x));
+            }
+
+            float sin, cos;
+            SinCos(x, &sin, &cos);
+            return (sin, cos);
+        }
 
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
@@ -110,9 +119,9 @@ namespace System
         public static extern float Tanh(float x);
 
         [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern float FMod(float x, float y);
+        private static extern unsafe float ModF(float x, float* intptr);
 
         [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern unsafe float ModF(float x, float* intptr);
+        private static extern unsafe void SinCos(float x, float* sin, float* cos);
     }
 }

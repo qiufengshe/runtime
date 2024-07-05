@@ -1,83 +1,35 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using System.Text;
-using Internal.Runtime.CompilerServices;
 
 namespace System
 {
     public partial class String
     {
-        // The Empty constant holds the empty string value. It is initialized by the EE during startup.
-        // It is treated as intrinsic by the JIT as so the static constructor would never run.
-        // Leaving it uninitialized would confuse debuggers.
-        //
-        // We need to call the String constructor so that the compiler doesn't mark this as a literal.
-        // Marking this as a literal would mean that it doesn't show up as a field which we can access
-        // from native.
-#pragma warning disable CS8618 // compiler sees this non-nullable static string as uninitialized
-        [Intrinsic]
-        public static readonly string Empty;
-#pragma warning restore CS8618
-
-        // Gets the character at a specified position.
-        //
-        [IndexerName("Chars")]
-        public extern char this[int index]
-        {
-            [Intrinsic]
-            [MethodImpl(MethodImplOptions.InternalCall)]
-            get;
-        }
-
-        // Gets the length of this string
-        //
-        // This is a EE implemented function so that the JIT can recognise it specially
-        // and eliminate checks on character fetches in a loop like:
-        //        for(int i = 0; i < str.Length; i++) str[i]
-        // The actual code generated for this will be one instruction and will be inlined.
-        //
-        public extern int Length
-        {
-            [Intrinsic]
-            [MethodImpl(MethodImplOptions.InternalCall)]
-            get;
-        }
-
         [MethodImpl(MethodImplOptions.InternalCall)]
         internal static extern string FastAllocateString(int length);
 
-        // Set extra byte for odd-sized strings that came from interop as BSTR.
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal extern void SetTrailByte(byte data);
-        // Try to retrieve the extra byte - returns false if not present.
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal extern bool TryGetTrailByte(out byte data);
-
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private extern string Intern();
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private extern string? IsInterned();
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "String_Intern")]
+        private static partial void Intern(StringHandleOnStack src);
 
         public static string Intern(string str)
         {
-            if (str == null)
-            {
-                throw new ArgumentNullException(nameof(str));
-            }
-
-            return str.Intern();
+            ArgumentNullException.ThrowIfNull(str);
+            Intern(new StringHandleOnStack(ref str!));
+            return str!;
         }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "String_IsInterned")]
+        private static partial void IsInterned(StringHandleOnStack src);
 
         public static string? IsInterned(string str)
         {
-            if (str == null)
-            {
-                throw new ArgumentNullException(nameof(str));
-            }
-
-            return str.IsInterned();
+            ArgumentNullException.ThrowIfNull(str);
+            IsInterned(new StringHandleOnStack(ref str!));
+            return str;
         }
 
         // Copies the source String (byte buffer) to the destination IntPtr memory allocated with len bytes.
@@ -86,7 +38,7 @@ namespace System
         {
             if (len != 0)
             {
-                Buffer.Memmove(ref *(byte*)dest, ref Unsafe.As<char, byte>(ref src.GetRawStringData()), (nuint)len);
+                SpanHelpers.Memmove(ref *(byte*)dest, ref Unsafe.As<char, byte>(ref src.GetRawStringData()), (nuint)len);
             }
         }
 

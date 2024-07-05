@@ -10,12 +10,15 @@ using System.Threading.Tasks;
 
 namespace Profiler.Tests
 {
+    public delegate void ProfilerCallback();
+
     [Flags]
     public enum ProfileeOptions
     {
         None = 0,
         OptimizationSensitive,
-        NoStartupAttach
+        NoStartupAttach,
+        ReverseDiagnosticsMode
     }
 
     public class ProfilerTestRunner
@@ -24,12 +27,20 @@ namespace Profiler.Tests
                               string testName,
                               Guid profilerClsid,
                               string profileeArguments = "",
-                              ProfileeOptions profileeOptions = ProfileeOptions.None)
+                              ProfileeOptions profileeOptions = ProfileeOptions.None,
+                              Dictionary<string, string> envVars = null,
+                              string reverseServerName = null,
+                              bool loadAsNotification = false,
+                              int notificationCopies = 1)
         {
             string arguments;
             string program;
-            Dictionary<string, string> envVars = new Dictionary<string, string>();
             string profileeAppDir = Path.GetDirectoryName(profileePath);
+
+            if (envVars == null)
+            {
+                envVars = new Dictionary<string, string>();
+            }
 
             arguments = profileePath + " RunTest " + profileeArguments;
             program = GetCorerunPath();
@@ -37,26 +48,56 @@ namespace Profiler.Tests
             if (!profileeOptions.HasFlag(ProfileeOptions.NoStartupAttach))
             {
                 envVars.Add("CORECLR_ENABLE_PROFILING", "1");
-                envVars.Add("CORECLR_PROFILER_PATH", profilerPath);
-                envVars.Add("CORECLR_PROFILER", "{" + profilerClsid + "}");
+
+                if (loadAsNotification)
+                {
+                    StringBuilder builder = new StringBuilder();
+                    for (int i = 0; i < notificationCopies; ++i)
+                    {
+                        builder.Append(profilerPath);
+                        builder.Append("=");
+                        builder.Append("{");
+                        builder.Append(profilerClsid.ToString());
+                        builder.Append("}");
+                        builder.Append(";");
+                    }
+
+                    envVars.Add("CORECLR_ENABLE_NOTIFICATION_PROFILERS", "1");
+                    envVars.Add("CORECLR_NOTIFICATION_PROFILERS", builder.ToString());
+
+                }
+                else
+                {
+                    envVars.Add("CORECLR_PROFILER", "{" + profilerClsid + "}");
+                    envVars.Add("CORECLR_PROFILER_PATH", profilerPath);
+                }
             }
 
             if (profileeOptions.HasFlag(ProfileeOptions.OptimizationSensitive))
             {
                 Console.WriteLine("Disabling tiered compilation, jitstress, and minopts.");
-                envVars.Add("COMPlus_TieredCompilation", "0");
-                envVars.Add("COMPlus_JitStress", "0");
-                envVars.Add("COMPlus_JITMinOpts", "0");
+                envVars.Add("DOTNET_TieredCompilation", "0");
+                envVars.Add("DOTNET_JitStress", "0");
+                envVars.Add("DOTNET_JITMinOpts", "0");
+            }
+
+            if (profileeOptions.HasFlag(ProfileeOptions.ReverseDiagnosticsMode))
+            {
+                Console.WriteLine("Launching profilee in reverse diagnostics port mode.");
+                if (String.IsNullOrEmpty(reverseServerName))
+                {
+                    throw new ArgumentException();
+                }
+
+                envVars.Add("DOTNET_DiagnosticPorts", reverseServerName);
             }
 
             envVars.Add("Profiler_Test_Name", testName);
 
-            if(!File.Exists(profilerPath))
+            if (!File.Exists(profilerPath))
             {
                 FailFastWithMessage("Profiler library not found at expected path: " + profilerPath);
             }
-
-            ProfileeOutputVerifier verifier = new ProfileeOutputVerifier();
 
             Process process = new Process();
             process.StartInfo.FileName = program;
@@ -74,14 +115,10 @@ namespace Profiler.Tests
                 process.StartInfo.EnvironmentVariables[key] = envVars[key];
             }
 
-            process.OutputDataReceived += (sender, args) =>
-            {
-                Console.WriteLine(args.Data);
-                verifier.WriteLine(args.Data);
-            };
             process.Start();
-            process.BeginOutputReadLine();
+            ProfileeOutputVerifier verifier = new ProfileeOutputVerifier(process.StandardOutput);
 
+            verifier.VerifyOutput();
             process.WaitForExit();
 
             // There are two conditions for profiler tests to pass, the output of the profiled program
@@ -91,9 +128,9 @@ namespace Profiler.Tests
 
             if (!verifier.HasPassingOutput)
             {
-                FailFastWithMessage("Profiler tests are expected to contain the text \'" + verifier.SuccessPhrase + "\' in the console output " +
-                    "of the profilee app to indicate a passing test. Usually it is printed from the Shutdown() method of the profiler implementation. This " +
-                    "text was not found in the output above.");
+                FailFastWithMessage($"Profiler tests are expected to contain the text '{verifier.SuccessPhrase}' in the console output " +
+                    $"of the profilee app to indicate a passing test. Usually it is printed from the Shutdown() method of the profiler implementation. This " +
+                    $"text was not found in the output above. Profilee returned exit code {process.ExitCode}.");
             }
 
             if (process.ExitCode != 100)
@@ -104,7 +141,7 @@ namespace Profiler.Tests
             return 100;
         }
 
-        private static string GetProfilerPath()
+        public static string GetProfilerPath()
         {
             string profilerName;
             if (TestLibrary.Utilities.IsWindows)
@@ -151,22 +188,29 @@ namespace Profiler.Tests
         /// </summary>
         class ProfileeOutputVerifier
         {
-            public string SuccessPhrase = "PROFILER TEST PASSES";
-            public bool HasPassingOutput { get; private set; }
+            private volatile bool _hasPassingOutput;
 
-            public void WriteLine(string message)
+            public string SuccessPhrase = "PROFILER TEST PASSES";
+            private StreamReader standardOutput;
+
+            public ProfileeOutputVerifier(StreamReader standardOutput)
             {
-                if (message != null && message.Contains(SuccessPhrase))
-                {
-                    HasPassingOutput = true;
-                }
+                this.standardOutput = standardOutput;
             }
 
-            public void WriteLine(string format, params object[] args)
+            public bool HasPassingOutput => _hasPassingOutput;
+
+            internal void VerifyOutput()
             {
-                if (string.Format(format,args).Contains(SuccessPhrase))
+                string line;
+                while ((line = standardOutput.ReadLine()) != null)
                 {
-                    HasPassingOutput = true;
+                    if (line.Contains(SuccessPhrase))
+                    {
+                        _hasPassingOutput = true;
+                    }
+
+                    Console.WriteLine($"Profilee STDOUT: {line}");
                 }
             }
         }

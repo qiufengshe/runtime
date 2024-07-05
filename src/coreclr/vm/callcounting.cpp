@@ -118,6 +118,7 @@ PTR_CallCount CallCountingManager::CallCountingInfo::GetRemainingCallCountCell()
 {
     WRAPPER_NO_CONTRACT;
     _ASSERTE(m_stage != Stage::Disabled);
+    //_ASSERTE(m_callCountingStub != nullptr);
 
     return &m_remainingCallCount;
 }
@@ -251,54 +252,96 @@ const CallCountingStub *CallCountingManager::CallCountingStubAllocator::Allocate
     }
     CONTRACTL_END;
 
-#if defined(HOST_OSX) && defined(HOST_ARM64)
-    auto jitWriteEnableHolder = PAL_JITWriteEnable(true);
-#endif // defined(HOST_OSX) && defined(HOST_ARM64)
-
     LoaderHeap *heap = m_heap;
     if (heap == nullptr)
     {
         heap = AllocateHeap();
     }
 
-    SIZE_T sizeInBytes;
-    const CallCountingStub *stub;
-    do
-    {
-        bool forceLongStub = false;
-    #if defined(_DEBUG) && defined(TARGET_AMD64)
-        if (s_callCountingStubCount % 2 == 0)
-        {
-            forceLongStub = true;
-        }
-    #endif
+    SIZE_T sizeInBytes = sizeof(CallCountingStub);
+    AllocMemHolder<void> allocationAddressHolder(heap->AllocAlignedMem(sizeInBytes, 1));
+    CallCountingStub *stub = (CallCountingStub*)(void*)allocationAddressHolder;
+    allocationAddressHolder.SuppressRelease();
+    stub->Initialize(targetForMethod, remainingCallCountCell);
 
-        if (!forceLongStub)
-        {
-            sizeInBytes = sizeof(CallCountingStubShort);
-            AllocMemHolder<void> allocationAddressHolder(heap->AllocAlignedMem(sizeInBytes, CallCountingStub::Alignment));
-        #ifdef TARGET_AMD64
-            if (CallCountingStubShort::CanUseFor(allocationAddressHolder, targetForMethod))
-        #endif
-            {
-                stub = new(allocationAddressHolder) CallCountingStubShort(remainingCallCountCell, targetForMethod);
-                allocationAddressHolder.SuppressRelease();
-                break;
-            }
-        }
-
-    #ifdef TARGET_AMD64
-        sizeInBytes = sizeof(CallCountingStubLong);
-        void *allocationAddress = (void *)heap->AllocAlignedMem(sizeInBytes, CallCountingStub::Alignment);
-        stub = new(allocationAddress) CallCountingStubLong(remainingCallCountCell, targetForMethod);
-    #else
-        UNREACHABLE();
-    #endif
-    } while (false);
-
-    ClrFlushInstructionCache(stub, sizeInBytes);
     return stub;
 }
+
+#if defined(TARGET_ARM64) && defined(TARGET_UNIX)
+    #define ENUM_PAGE_SIZE(size) \
+        extern "C" void CallCountingStubCode##size(); \
+        extern "C" void CallCountingStubCode##size##_End();
+
+    ENUM_PAGE_SIZES
+    #undef ENUM_PAGE_SIZE
+#else
+extern "C" void CallCountingStubCode();
+extern "C" void CallCountingStubCode_End();
+#endif
+
+#ifdef TARGET_X86
+extern "C" size_t CallCountingStubCode_RemainingCallCountCell_Offset;
+extern "C" size_t CallCountingStubCode_TargetForMethod_Offset;
+extern "C" size_t CallCountingStubCode_TargetForThresholdReached_Offset;
+
+#define SYMBOL_VALUE(name) ((size_t)&name)
+
+#endif
+
+#if defined(TARGET_ARM64) && defined(TARGET_UNIX)
+void (*CallCountingStub::CallCountingStubCode)();
+#endif
+
+#ifndef DACCESS_COMPILE
+
+void CallCountingStub::StaticInitialize()
+{
+#if defined(TARGET_ARM64) && defined(TARGET_UNIX)
+    int pageSize = GetStubCodePageSize();
+    #define ENUM_PAGE_SIZE(size) \
+        case size: \
+            CallCountingStubCode = CallCountingStubCode##size; \
+            _ASSERTE((SIZE_T)((BYTE*)CallCountingStubCode##size##_End - (BYTE*)CallCountingStubCode##size) <= CallCountingStub::CodeSize); \
+            break;
+
+    switch (pageSize)
+    {
+        ENUM_PAGE_SIZES
+        default:
+            EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("Unsupported OS page size"));
+    }
+    #undef ENUM_PAGE_SIZE
+#else
+    _ASSERTE((SIZE_T)((BYTE*)CallCountingStubCode_End - (BYTE*)CallCountingStubCode) <= CallCountingStub::CodeSize);
+#endif
+}
+
+#endif // DACCESS_COMPILE
+
+void CallCountingStub::GenerateCodePage(BYTE* pageBase, BYTE* pageBaseRX, SIZE_T pageSize)
+{
+#ifdef TARGET_X86
+    int totalCodeSize = (pageSize / CallCountingStub::CodeSize) * CallCountingStub::CodeSize;
+
+    for (int i = 0; i < totalCodeSize; i += CallCountingStub::CodeSize)
+    {
+        memcpy(pageBase + i, (const void*)CallCountingStubCode, CallCountingStub::CodeSize);
+
+        // Set absolute addresses of the slots in the stub
+        BYTE* pCounterSlot = pageBaseRX + i + pageSize + offsetof(CallCountingStubData, RemainingCallCountCell);
+        *(BYTE**)(pageBase + i + SYMBOL_VALUE(CallCountingStubCode_RemainingCallCountCell_Offset)) = pCounterSlot;
+
+        BYTE* pTargetSlot = pageBaseRX + i + pageSize + offsetof(CallCountingStubData, TargetForMethod);
+        *(BYTE**)(pageBase + i + SYMBOL_VALUE(CallCountingStubCode_TargetForMethod_Offset)) = pTargetSlot;
+
+        BYTE* pCountReachedZeroSlot = pageBaseRX + i + pageSize + offsetof(CallCountingStubData, TargetForThresholdReached);
+        *(BYTE**)(pageBase + i + SYMBOL_VALUE(CallCountingStubCode_TargetForThresholdReached_Offset)) = pCountReachedZeroSlot;
+    }
+#else // TARGET_X86
+    FillStubCodePage(pageBase, (const void*)PCODEToPINSTR((PCODE)CallCountingStubCode), CallCountingStub::CodeSize, pageSize);
+#endif
+}
+
 
 NOINLINE LoaderHeap *CallCountingManager::CallCountingStubAllocator::AllocateHeap()
 {
@@ -312,7 +355,7 @@ NOINLINE LoaderHeap *CallCountingManager::CallCountingStubAllocator::AllocateHea
 
     _ASSERTE(m_heap == nullptr);
 
-    LoaderHeap *heap = new LoaderHeap(0, 0, &m_heapRangeList, true /* fMakeExecutable */, true /* fUnlocked */);
+    LoaderHeap *heap = new LoaderHeap(0, 0, &m_heapRangeList, UnlockedLoaderHeap::HeapKind::Interleaved, true /* fUnlocked */, CallCountingStub::GenerateCodePage, CallCountingStub::CodeSize);
     m_heap = heap;
     return heap;
 }
@@ -322,7 +365,7 @@ NOINLINE LoaderHeap *CallCountingManager::CallCountingStubAllocator::AllocateHea
 bool CallCountingManager::CallCountingStubAllocator::IsStub(TADDR entryPoint)
 {
     WRAPPER_NO_CONTRACT;
-    _ASSERTE(entryPoint != NULL);
+    _ASSERTE(entryPoint != (TADDR)NULL);
 
     return !!m_heapRangeList.IsInRange(entryPoint);
 }
@@ -437,6 +480,7 @@ void CallCountingManager::StaticInitialize()
 {
     WRAPPER_NO_CONTRACT;
     s_callCountingManagers = PTR_CallCountingManagerHash(new CallCountingManagerHash());
+    CallCountingStub::StaticInitialize();
 }
 #endif
 
@@ -501,26 +545,14 @@ bool CallCountingManager::SetCodeEntryPoint(
     NativeCodeVersion activeCodeVersion,
     PCODE codeEntryPoint,
     bool wasMethodCalled,
-    bool *scheduleTieringBackgroundWorkRef)
+    bool *createTieringBackgroundWorkerRef)
 {
     CONTRACTL
     {
         THROWS;
         GC_NOTRIGGER;
-
-        // Backpatching entry point slots requires cooperative GC mode, see MethodDescBackpatchInfoTracker::Backpatch_Locked().
-        // The code version manager's table lock is an unsafe lock that may be taken in any GC mode. The lock is taken in
-        // cooperative GC mode on other paths, so the caller must use the same ordering to prevent deadlock (switch to
-        // cooperative GC mode before taking the lock).
         PRECONDITION(!activeCodeVersion.IsNull());
-        if (activeCodeVersion.GetMethodDesc()->MayHaveEntryPointSlotsToBackpatch())
-        {
-            MODE_COOPERATIVE;
-        }
-        else
-        {
-            MODE_ANY;
-        }
+        MODE_ANY;
     }
     CONTRACTL_END;
 
@@ -530,17 +562,17 @@ bool CallCountingManager::SetCodeEntryPoint(
     _ASSERTE(
         activeCodeVersion ==
         methodDesc->GetCodeVersionManager()->GetActiveILCodeVersion(methodDesc).GetActiveNativeCodeVersion(methodDesc));
-    _ASSERTE(codeEntryPoint != NULL);
+    _ASSERTE(codeEntryPoint != (PCODE)NULL);
     _ASSERTE(codeEntryPoint == activeCodeVersion.GetNativeCode());
-    _ASSERTE(!wasMethodCalled || scheduleTieringBackgroundWorkRef != nullptr);
-    _ASSERTE(scheduleTieringBackgroundWorkRef == nullptr || !*scheduleTieringBackgroundWorkRef);
+    _ASSERTE(!wasMethodCalled || createTieringBackgroundWorkerRef != nullptr);
+    _ASSERTE(createTieringBackgroundWorkerRef == nullptr || !*createTieringBackgroundWorkerRef);
 
     if (!methodDesc->IsEligibleForTieredCompilation() ||
         (
             // For a default code version that is not tier 0, call counting will have been disabled by this time (checked
             // below). Avoid the redundant and not-insignificant expense of GetOptimizationTier() on a default code version.
             !activeCodeVersion.IsDefaultVersion() &&
-            activeCodeVersion.GetOptimizationTier() != NativeCodeVersion::OptimizationTier0
+            activeCodeVersion.IsFinalTier()
         ) ||
         !g_pConfig->TieredCompilation_CallCounting())
     {
@@ -568,7 +600,7 @@ bool CallCountingManager::SetCodeEntryPoint(
                 return true;
             }
 
-            _ASSERTE(activeCodeVersion.GetOptimizationTier() == NativeCodeVersion::OptimizationTier0);
+            _ASSERTE(!activeCodeVersion.IsFinalTier());
 
             // If the tiering delay is active, postpone further work
             if (GetAppDomain()
@@ -600,7 +632,7 @@ bool CallCountingManager::SetCodeEntryPoint(
                 {
                     GetAppDomain()
                         ->GetTieredCompilationManager()
-                        ->AsyncPromoteToTier1(activeCodeVersion, scheduleTieringBackgroundWorkRef);
+                        ->AsyncPromoteToTier1(activeCodeVersion, createTieringBackgroundWorkerRef);
                 }
                 methodDesc->SetCodeEntryPoint(codeEntryPoint);
                 callCountingInfo->SetStage(CallCountingInfo::Stage::Complete);
@@ -615,7 +647,7 @@ bool CallCountingManager::SetCodeEntryPoint(
         }
         else
         {
-            _ASSERTE(activeCodeVersion.GetOptimizationTier() == NativeCodeVersion::OptimizationTier0);
+            _ASSERTE(!activeCodeVersion.IsFinalTier());
 
             // If the tiering delay is active, postpone further work
             if (GetAppDomain()
@@ -625,8 +657,15 @@ bool CallCountingManager::SetCodeEntryPoint(
                 return true;
             }
 
-            CallCount callCountThreshold = (CallCount)g_pConfig->TieredCompilation_CallCountThreshold();
+            CallCount callCountThreshold = g_pConfig->TieredCompilation_CallCountThreshold();
             _ASSERTE(callCountThreshold != 0);
+
+            // Let's tier up all cast helpers faster than other methods. This is because we want to import them as
+            // direct calls in codegen and they need to be promoted earlier than their callers.
+            if (methodDesc->GetMethodTable() == g_pCastHelpers)
+            {
+                callCountThreshold = max<CallCount>(1, (CallCount)(callCountThreshold / 2));
+            }
 
             NewHolder<CallCountingInfo> callCountingInfoHolder = new CallCountingInfo(activeCodeVersion, callCountThreshold);
             callCountingInfoByCodeVersionHash.Add(callCountingInfoHolder);
@@ -670,7 +709,7 @@ bool CallCountingManager::SetCodeEntryPoint(
         //   may cause many methods that are currently fully interruptible to have to be partially interruptible and record
         //   extra GC info instead. This would be nontrivial and there would be tradeoffs.
         // - For any method that may have an entry point slot that would be backpatched with the call counting stub's entry
-        //   point, a small forwarder stub (precode) is created. The forwarder stub has loader allocator lifetime and fowards to
+        //   point, a small forwarder stub (precode) is created. The forwarder stub has loader allocator lifetime and forwards to
         //   the larger call counting stub. This is a simple solution for now and seems to have negligible impact.
         // - Reusing FuncPtrStubs was considered. FuncPtrStubs are currently not used as a code entry point for a virtual or
         //   interface method and may be bypassed. For example, a call may call through the vtable slot, or a devirtualized call
@@ -715,14 +754,13 @@ extern "C" PCODE STDCALL OnCallCountThresholdReached(TransitionBlock *transition
 
 PCODE CallCountingManager::OnCallCountThresholdReached(TransitionBlock *transitionBlock, TADDR stubIdentifyingToken)
 {
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        PRECONDITION(CheckPointer(transitionBlock));
-    }
-    CONTRACTL_END;
+    STATIC_CONTRACT_THROWS;
+    STATIC_CONTRACT_GC_TRIGGERS;
+    STATIC_CONTRACT_MODE_COOPERATIVE;
+
+    PCODE codeEntryPoint = 0;
+
+    BEGIN_PRESERVE_LAST_ERROR;
 
     MAKE_CURRENT_THREAD_AVAILABLE();
 
@@ -740,8 +778,6 @@ PCODE CallCountingManager::OnCallCountThresholdReached(TransitionBlock *transiti
     CallCountingHelperFrame *frame = &frameWithCookie;
     frame->Push(CURRENT_THREAD);
 
-    PCODE codeEntryPoint;
-
     INSTALL_MANAGED_EXCEPTION_DISPATCHER;
     INSTALL_UNWIND_AND_CONTINUE_HANDLER;
 
@@ -749,7 +785,7 @@ PCODE CallCountingManager::OnCallCountThresholdReached(TransitionBlock *transiti
     // used going forward under appropriate locking to synchronize further with deletion.
     GCX_PREEMP_THREAD_EXISTS(CURRENT_THREAD);
 
-    _ASSERTE(codeVersion.GetOptimizationTier() == NativeCodeVersion::OptimizationTier0);
+    _ASSERTE(!codeVersion.IsFinalTier());
 
     codeEntryPoint = codeVersion.GetNativeCode();
     do
@@ -786,6 +822,9 @@ PCODE CallCountingManager::OnCallCountThresholdReached(TransitionBlock *transiti
     UNINSTALL_MANAGED_EXCEPTION_DISPATCHER;
 
     frame->Pop(CURRENT_THREAD);
+
+    END_PRESERVE_LAST_ERROR;
+
     return codeEntryPoint;
 }
 
@@ -822,118 +861,108 @@ void CallCountingManager::CompleteCallCounting()
     }
     CONTRACTL_END;
 
+    _ASSERTE(GetThreadNULLOk() == TieredCompilationManager::GetBackgroundWorkerThread());
+
     AppDomain *appDomain = GetAppDomain();
     TieredCompilationManager *tieredCompilationManager = appDomain->GetTieredCompilationManager();
-    bool scheduleTieringBackgroundWork = false;
+    CodeVersionManager *codeVersionManager = appDomain->GetCodeVersionManager();
+
+    MethodDescBackpatchInfoTracker::ConditionalLockHolder slotBackpatchLockHolder;
+    CodeVersionManager::LockHolder codeVersioningLockHolder;
+
+    for (auto itEnd = s_callCountingManagers->End(), it = s_callCountingManagers->Begin(); it != itEnd; ++it)
     {
-        CodeVersionManager *codeVersionManager = appDomain->GetCodeVersionManager();
-
-        MethodDescBackpatchInfoTracker::ConditionalLockHolderForGCCoop slotBackpatchLockHolder;
-
-        // Backpatching entry point slots requires cooperative GC mode, see
-        // MethodDescBackpatchInfoTracker::Backpatch_Locked(). The code version manager's table lock is an unsafe lock that
-        // may be taken in any GC mode. The lock is taken in cooperative GC mode on some other paths, so the same ordering
-        // must be used here to prevent deadlock.
-        GCX_COOP();
-        CodeVersionManager::LockHolder codeVersioningLockHolder;
-
-        for (auto itEnd = s_callCountingManagers->End(), it = s_callCountingManagers->Begin(); it != itEnd; ++it)
+        CallCountingManager *callCountingManager = *it;
+        SArray<CallCountingInfo *> &callCountingInfosPendingCompletion =
+            callCountingManager->m_callCountingInfosPendingCompletion;
+        COUNT_T callCountingInfoCount = callCountingInfosPendingCompletion.GetCount();
+        if (callCountingInfoCount == 0)
         {
-            CallCountingManager *callCountingManager = *it;
-            SArray<CallCountingInfo *> &callCountingInfosPendingCompletion =
-                callCountingManager->m_callCountingInfosPendingCompletion;
-            COUNT_T callCountingInfoCount = callCountingInfosPendingCompletion.GetCount();
-            if (callCountingInfoCount == 0)
+            continue;
+        }
+
+        CallCountingInfo **callCountingInfos = callCountingInfosPendingCompletion.GetElements();
+        for (COUNT_T i = 0; i < callCountingInfoCount; ++i)
+        {
+            CallCountingInfo *callCountingInfo = callCountingInfos[i];
+            CallCountingInfo::Stage callCountingStage = callCountingInfo->GetStage();
+            if (callCountingStage != CallCountingInfo::Stage::PendingCompletion)
             {
                 continue;
             }
 
-            CallCountingInfo **callCountingInfos = callCountingInfosPendingCompletion.GetElements();
-            for (COUNT_T i = 0; i < callCountingInfoCount; ++i)
+            NativeCodeVersion codeVersion = callCountingInfo->GetCodeVersion();
+            MethodDesc *methodDesc = codeVersion.GetMethodDesc();
+            _ASSERTE(codeVersionManager == methodDesc->GetCodeVersionManager());
+            EX_TRY
             {
-                CallCountingInfo *callCountingInfo = callCountingInfos[i];
-                CallCountingInfo::Stage callCountingStage = callCountingInfo->GetStage();
-                if (callCountingStage != CallCountingInfo::Stage::PendingCompletion)
+                if (!codeVersion.GetILCodeVersion().HasAnyOptimizedNativeCodeVersion(codeVersion))
                 {
-                    continue;
+                    bool createTieringBackgroundWorker = false;
+                    tieredCompilationManager->AsyncPromoteToTier1(codeVersion, &createTieringBackgroundWorker);
+                    _ASSERTE(!createTieringBackgroundWorker); // the current thread is the background worker thread
                 }
 
-                NativeCodeVersion codeVersion = callCountingInfo->GetCodeVersion();
-                MethodDesc *methodDesc = codeVersion.GetMethodDesc();
-                _ASSERTE(codeVersionManager == methodDesc->GetCodeVersionManager());
-                EX_TRY
+                // The active code version may have changed externally after the call counting stub was activated,
+                // deactivating the call counting stub without our knowledge. Check the active code version and determine
+                // what needs to be done.
+                NativeCodeVersion activeCodeVersion =
+                    codeVersionManager->GetActiveILCodeVersion(methodDesc).GetActiveNativeCodeVersion(methodDesc);
+                do
                 {
-                    if (!codeVersion.GetILCodeVersion().HasAnyOptimizedNativeCodeVersion(codeVersion))
+                    if (activeCodeVersion == codeVersion)
                     {
-                        tieredCompilationManager->AsyncPromoteToTier1(codeVersion, &scheduleTieringBackgroundWork);
+                        methodDesc->SetCodeEntryPoint(activeCodeVersion.GetNativeCode());
+                        break;
                     }
 
-                    // The active code version may have changed externally after the call counting stub was activated,
-                    // deactivating the call counting stub without our knowledge. Check the active code version and determine
-                    // what needs to be done.
-                    NativeCodeVersion activeCodeVersion =
-                        codeVersionManager->GetActiveILCodeVersion(methodDesc).GetActiveNativeCodeVersion(methodDesc);
-                    do
+                    // There is at least one case where the IL code version is changed inside the code versioning lock, the
+                    // lock is released and reacquired, then the method's code entry point is reset. So if this path is
+                    // reached between those locks, the method would still be pointing to the call counting stub. Once the
+                    // stub is marked as complete, it may be deleted, so in all cases update the method's code entry point
+                    // to ensure that the method is no longer pointing to the call counting stub.
+
+                    if (!activeCodeVersion.IsNull())
                     {
-                        if (activeCodeVersion == codeVersion)
+                        PCODE activeNativeCode = activeCodeVersion.GetNativeCode();
+                        if (activeNativeCode != 0)
                         {
-                            methodDesc->SetCodeEntryPoint(activeCodeVersion.GetNativeCode());
+                            methodDesc->SetCodeEntryPoint(activeNativeCode);
                             break;
                         }
+                    }
 
-                        // There is at least one case where the IL code version is changed inside the code versioning lock, the
-                        // lock is released and reacquired, then the method's code entry point is reset. So if this path is
-                        // reached between those locks, the method would still be pointing to the call counting stub. Once the
-                        // stub is marked as complete, it may be deleted, so in all cases update the method's code entry point
-                        // to ensure that the method is no longer pointing to the call counting stub.
+                    methodDesc->ResetCodeEntryPoint();
+                } while (false);
 
-                        if (!activeCodeVersion.IsNull())
-                        {
-                            PCODE activeNativeCode = activeCodeVersion.GetNativeCode();
-                            if (activeNativeCode != NULL)
-                            {
-                                methodDesc->SetCodeEntryPoint(activeNativeCode);
-                                break;
-                            }
-                        }
-
-                        methodDesc->ResetCodeEntryPoint();
-                    } while (false);
-
-                    callCountingInfo->SetStage(CallCountingInfo::Stage::Complete);
-                }
-                EX_CATCH
-                {
-                    // Avoid abandoning call counting completion for all recorded call counting infos on exception. Since this
-                    // is happening on a background thread, following the general policy so far, the exception will be caught,
-                    // logged, and ignored anyway, so make an attempt to complete call counting for each item. Individual items
-                    // that fail will result in those code versions not getting promoted (similar to elsewhere).
-                    STRESS_LOG1(LF_TIEREDCOMPILATION, LL_WARNING, "CallCountingManager::CompleteCallCounting: "
-                        "Exception, hr=0x%x\n",
-                        GET_EXCEPTION()->GetHR());
-                }
-                EX_END_CATCH(RethrowTerminalExceptions);
+                callCountingInfo->SetStage(CallCountingInfo::Stage::Complete);
             }
-
-            callCountingInfosPendingCompletion.Clear();
-            if (callCountingInfosPendingCompletion.GetAllocation() > 64)
+            EX_CATCH
             {
-                callCountingInfosPendingCompletion.Trim();
-                EX_TRY
-                {
-                    callCountingInfosPendingCompletion.Preallocate(64);
-                }
-                EX_CATCH
-                {
-                }
-                EX_END_CATCH(RethrowTerminalExceptions);
+                // Avoid abandoning call counting completion for all recorded call counting infos on exception. Since this
+                // is happening on a background thread, following the general policy so far, the exception will be caught,
+                // logged, and ignored anyway, so make an attempt to complete call counting for each item. Individual items
+                // that fail will result in those code versions not getting promoted (similar to elsewhere).
+                STRESS_LOG1(LF_TIEREDCOMPILATION, LL_WARNING, "CallCountingManager::CompleteCallCounting: "
+                    "Exception, hr=0x%x\n",
+                    GET_EXCEPTION()->GetHR());
             }
+            EX_END_CATCH(RethrowTerminalExceptions);
         }
-    }
 
-    if (scheduleTieringBackgroundWork)
-    {
-        tieredCompilationManager->ScheduleBackgroundWork(); // requires GC_TRIGGERS
+        callCountingInfosPendingCompletion.Clear();
+        if (callCountingInfosPendingCompletion.GetAllocation() > 64)
+        {
+            callCountingInfosPendingCompletion.Trim();
+            EX_TRY
+            {
+                callCountingInfosPendingCompletion.Preallocate(64);
+            }
+            EX_CATCH
+            {
+            }
+            EX_END_CATCH(RethrowTerminalExceptions);
+        }
     }
 }
 
@@ -947,6 +976,8 @@ void CallCountingManager::StopAndDeleteAllCallCountingStubs()
     }
     CONTRACTL_END;
 
+    _ASSERTE(GetThreadNULLOk() == TieredCompilationManager::GetBackgroundWorkerThread());
+
     // If a number of call counting stubs have completed, we can try to delete them to reclaim some memory. Deleting
     // involves suspending the runtime and will delete all call counting stubs, and after that some call counting stubs may
     // be recreated in the foreground. The threshold is to decrease the impact of both of those overheads.
@@ -957,52 +988,37 @@ void CallCountingManager::StopAndDeleteAllCallCountingStubs()
     }
 
     TieredCompilationManager *tieredCompilationManager = GetAppDomain()->GetTieredCompilationManager();
-    bool scheduleTieringBackgroundWork = false;
-    {
-        MethodDescBackpatchInfoTracker::ConditionalLockHolderForGCCoop slotBackpatchLockHolder;
 
-        ThreadSuspend::SuspendEE(ThreadSuspend::SUSPEND_OTHER);
-        struct AutoRestartEE
+    ThreadSuspend::SuspendEE(ThreadSuspend::SUSPEND_OTHER);
+    struct AutoRestartEE
+    {
+        ~AutoRestartEE()
         {
-            ~AutoRestartEE()
-            {
-                WRAPPER_NO_CONTRACT;
-                ThreadSuspend::RestartEE(false, true);
-            }
-        } autoRestartEE;
+            WRAPPER_NO_CONTRACT;
+            ThreadSuspend::RestartEE(false, true);
+        }
+    } autoRestartEE;
 
-        // Backpatching entry point slots requires cooperative GC mode, see
-        // MethodDescBackpatchInfoTracker::Backpatch_Locked(). The code version manager's table lock is an unsafe lock that
-        // may be taken in any GC mode. The lock is taken in cooperative GC mode on some other paths, so the same ordering
-        // must be used here to prevent deadlock.
-        GCX_COOP();
-        CodeVersionManager::LockHolder codeVersioningLockHolder;
+    MethodDescBackpatchInfoTracker::ConditionalLockHolder slotBackpatchLockHolder;
+    CodeVersionManager::LockHolder codeVersioningLockHolder;
 
-        // After the following, no method's entry point would be pointing to a call counting stub
-        StopAllCallCounting(tieredCompilationManager, &scheduleTieringBackgroundWork);
+    // After the following, no method's entry point would be pointing to a call counting stub
+    StopAllCallCounting(tieredCompilationManager);
 
-        // Call counting has been stopped above and call counting stubs will soon be deleted. Ensure that call counting stubs
-        // will not be used after resuming the runtime. The following ensures that other threads will not use an old cached
-        // entry point value that will not be valid. Do this here in case of exception later.
-        MemoryBarrier(); // flush writes from this thread first to guarantee ordering
-        FlushProcessWriteBuffers();
+    // Call counting has been stopped above and call counting stubs will soon be deleted. Ensure that call counting stubs
+    // will not be used after resuming the runtime. The following ensures that other threads will not use an old cached
+    // entry point value that will not be valid. Do this here in case of exception later.
+    MemoryBarrier(); // flush writes from this thread first to guarantee ordering
+    FlushProcessWriteBuffers();
 
-        // At this point, allocated call counting stubs won't be used anymore. Call counting stubs and corresponding infos may
-        // now be safely deleted. Note that call counting infos may not be deleted prior to this point because call counting
-        // stubs refer to the remaining call count in the info, and the call counting info is necessary to get a code version
-        // from a call counting stub address.
-        DeleteAllCallCountingStubs();
-    }
-
-    if (scheduleTieringBackgroundWork)
-    {
-        tieredCompilationManager->ScheduleBackgroundWork(); // requires GC_TRIGGERS
-    }
+    // At this point, allocated call counting stubs won't be used anymore. Call counting stubs and corresponding infos may
+    // now be safely deleted. Note that call counting infos may not be deleted prior to this point because call counting
+    // stubs refer to the remaining call count in the info, and the call counting info is necessary to get a code version
+    // from a call counting stub address.
+    DeleteAllCallCountingStubs();
 }
 
-void CallCountingManager::StopAllCallCounting(
-    TieredCompilationManager *tieredCompilationManager,
-    bool *scheduleTieringBackgroundWorkRef)
+void CallCountingManager::StopAllCallCounting(TieredCompilationManager *tieredCompilationManager)
 {
     CONTRACTL
     {
@@ -1012,11 +1028,10 @@ void CallCountingManager::StopAllCallCounting(
     }
     CONTRACTL_END;
 
+    _ASSERTE(GetThreadNULLOk() == TieredCompilationManager::GetBackgroundWorkerThread());
     _ASSERTE(MethodDescBackpatchInfoTracker::IsLockOwnedByCurrentThread());
     _ASSERTE(CodeVersionManager::IsLockOwnedByCurrentThread());
     _ASSERTE(tieredCompilationManager != nullptr);
-    _ASSERTE(scheduleTieringBackgroundWorkRef != nullptr);
-    _ASSERTE(!*scheduleTieringBackgroundWorkRef);
 
     for (auto itEnd = s_callCountingManagers->End(), it = s_callCountingManagers->Begin(); it != itEnd; ++it)
     {
@@ -1047,7 +1062,9 @@ void CallCountingManager::StopAllCallCounting(
                 _ASSERTE(callCountingStage == CallCountingInfo::Stage::PendingCompletion);
                 if (!codeVersion.GetILCodeVersion().HasAnyOptimizedNativeCodeVersion(codeVersion))
                 {
-                    tieredCompilationManager->AsyncPromoteToTier1(codeVersion, scheduleTieringBackgroundWorkRef);
+                    bool createTieringBackgroundWorker = false;
+                    tieredCompilationManager->AsyncPromoteToTier1(codeVersion, &createTieringBackgroundWorker);
+                    _ASSERTE(!createTieringBackgroundWorker); // the current thread is the background worker thread
                 }
 
                 newCallCountingStage = CallCountingInfo::Stage::Complete;
@@ -1236,7 +1253,7 @@ bool CallCountingManager::IsCallCountingStub(PCODE entryPoint)
     CONTRACTL_END;
 
     TADDR entryAddress = PCODEToPINSTR(entryPoint);
-    _ASSERTE(entryAddress != NULL);
+    _ASSERTE(entryAddress != (PCODE)NULL);
 
     CodeVersionManager::LockHolder codeVersioningLockHolder;
 

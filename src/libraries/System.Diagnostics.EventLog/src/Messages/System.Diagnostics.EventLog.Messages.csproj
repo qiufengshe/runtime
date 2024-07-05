@@ -1,7 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>netstandard2.0</TargetFrameworks>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <Nullable>disable</Nullable>
     <Win32Resource>EventLogMessages.res</Win32Resource>
-    <IncludePlatformAttributes>false</IncludePlatformAttributes>
+    <!-- Override the parent Directory.Build.props -->
+    <SupportedOSPlatforms />
+    <EnableLibraryImportGenerator>false</EnableLibraryImportGenerator>
   </PropertyGroup>
 </Project>

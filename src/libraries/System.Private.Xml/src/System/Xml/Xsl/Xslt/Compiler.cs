@@ -22,7 +22,7 @@ namespace System.Xml.Xsl.Xslt
     // One more reason to for this design is to normolize apply-templates and apply-imports to one concept:
     // apply-templates is apply-imports(compiler.Root).
     // For now I don't create new files for these new classes to simplify integrations WebData <-> WebData_xsl
-    internal class RootLevel : StylesheetLevel
+    internal sealed class RootLevel : StylesheetLevel
     {
         public RootLevel(Stylesheet principal)
         {
@@ -30,7 +30,7 @@ namespace System.Xml.Xsl.Xslt
         }
     }
 
-    internal class Compiler
+    internal sealed class Compiler
     {
         public XsltSettings Settings;
         public bool IsDebug;
@@ -70,12 +70,12 @@ namespace System.Xml.Xsl.Xslt
             Scripts = new Scripts(this);
         }
 
-        public CompilerErrorCollection Compile(object stylesheet, XmlResolver? xmlResolver, out QilExpression qil)
+        public CompilerErrorCollection Compile(object stylesheet, XmlResolver? xmlResolver, XmlResolver? origResolver, out QilExpression qil)
         {
             Debug.Assert(stylesheet != null);
             Debug.Assert(Root == null, "Compiler cannot be reused");
 
-            new XsltLoader().Load(this, stylesheet, xmlResolver);
+            new XsltLoader().Load(this, stylesheet, xmlResolver, origResolver);
             qil = QilGenerator.CompileStylesheet(this);
             SortErrors();
             return CompilerErrorColl;
@@ -192,7 +192,7 @@ namespace System.Xml.Xsl.Xslt
             }
             else
             {
-                return prefix + ':' + localName;
+                return $"{prefix}:{localName}";
             }
         }
 
@@ -230,7 +230,7 @@ namespace System.Xml.Xsl.Xslt
             }
         }
 
-        public void ValidatePiName(string name, IErrorHelper errorHelper)
+        public static void ValidatePiName(string name, IErrorHelper errorHelper)
         {
             Debug.Assert(name != null);
             try
@@ -252,15 +252,15 @@ namespace System.Xml.Xsl.Xslt
         public string CreatePhantomNamespace()
         {
             // Prepend invalid XmlChar to ensure this name would not clash with any namespace name in the stylesheet
-            return "\0namespace" + _phantomNsCounter++;
+            return $"\0namespace{_phantomNsCounter++}";
         }
 
-        public bool IsPhantomNamespace(string namespaceName)
+        public static bool IsPhantomNamespace(string namespaceName)
         {
             return namespaceName.Length > 0 && namespaceName[0] == '\0';
         }
 
-        public bool IsPhantomName(QilName qname)
+        public static bool IsPhantomName(QilName qname)
         {
             string nsUri = qname.NamespaceUri;
             return nsUri.Length > 0 && nsUri[0] == '\0';
@@ -355,7 +355,7 @@ namespace System.Xml.Xsl.Xslt
             }
         }
 
-        private class CompilerErrorComparer : IComparer<CompilerError>
+        private sealed class CompilerErrorComparer : IComparer<CompilerError>
         {
             private readonly Dictionary<string, int> _moduleOrder;
 
@@ -400,7 +400,7 @@ namespace System.Xml.Xsl.Xslt
         }
     }
 
-    internal class Output
+    internal sealed class Output
     {
         public XmlWriterSettings Settings;
         public string? Version;
@@ -430,7 +430,7 @@ namespace System.Xml.Xsl.Xslt
         }
     }
 
-    internal class DecimalFormats : KeyedCollection<XmlQualifiedName, DecimalFormatDecl>
+    internal sealed class DecimalFormats : KeyedCollection<XmlQualifiedName, DecimalFormatDecl>
     {
         protected override XmlQualifiedName GetKeyForItem(DecimalFormatDecl format)
         {
@@ -438,14 +438,14 @@ namespace System.Xml.Xsl.Xslt
         }
     }
 
-    internal class DecimalFormatDecl
+    internal sealed class DecimalFormatDecl
     {
         public readonly XmlQualifiedName Name;
         public readonly string InfinitySymbol;
         public readonly string NanSymbol;
         public readonly char[] Characters;
 
-        public static DecimalFormatDecl Default = new DecimalFormatDecl(new XmlQualifiedName(), "Infinity", "NaN", ".,%\u20300#;-");
+        public static readonly DecimalFormatDecl Default = new DecimalFormatDecl(new XmlQualifiedName(), "Infinity", "NaN", ".,%\u20300#;-");
 
         public DecimalFormatDecl(XmlQualifiedName name, string infinitySymbol, string nanSymbol, string characters)
         {
@@ -457,7 +457,7 @@ namespace System.Xml.Xsl.Xslt
         }
     }
 
-    internal class NsAlias
+    internal sealed class NsAlias
     {
         public readonly string ResultNsUri;
         public readonly string? ResultPrefix;

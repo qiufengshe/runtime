@@ -2,8 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Buffers;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Net.Security;
 using System.Security.Authentication;
 using System.Security.Authentication.ExtendedProtection;
 using System.Security.Cryptography.X509Certificates;
@@ -20,7 +22,7 @@ namespace System.Net.Security
             return status.Exception ?? new Win32Exception((int)status.ErrorCode);
         }
 
-        internal const bool StartMutualAuthAsAnonymous = false;
+        internal const bool StartMutualAuthAsAnonymous = true;
 
         // SecureTransport is okay with a 0 byte input, but it produces a 0 byte output.
         // Since ST is not producing the framed empty message just call this false and avoid the
@@ -31,60 +33,106 @@ namespace System.Net.Security
         {
         }
 
-        public static SecurityStatusPal AcceptSecurityContext(
+        public static SecurityStatusPal SelectApplicationProtocol(
+            SafeFreeCredentials? _,
+            SafeDeleteSslContext context,
+            SslAuthenticationOptions sslAuthenticationOptions,
+            ReadOnlySpan<byte> clientProtocols)
+        {
+            // Client did not provide ALPN or APLN is not needed
+            if (clientProtocols.Length == 0 ||
+                sslAuthenticationOptions.ApplicationProtocols == null || sslAuthenticationOptions.ApplicationProtocols.Count == 0)
+            {
+                return new SecurityStatusPal(SecurityStatusPalErrorCode.OK);
+            }
+
+            // We do server side ALPN e.g. walk the intersect in server order
+            foreach (SslApplicationProtocol applicationProtocol in sslAuthenticationOptions.ApplicationProtocols)
+            {
+                ReadOnlySpan<byte> protocols = clientProtocols;
+
+                while (protocols.Length > 0)
+                {
+                    byte length = protocols[0];
+                    if (protocols.Length < length + 1)
+                    {
+                        break;
+                    }
+                    ReadOnlySpan<byte> protocol = protocols.Slice(1, length);
+                    if (protocol.SequenceCompareTo<byte>(applicationProtocol.Protocol.Span) == 0)
+                    {
+                        int osStatus = Interop.AppleCrypto.SslCtxSetAlpnProtocol(context.SslContext, applicationProtocol);
+                        if (osStatus == 0)
+                        {
+                            context.SelectedApplicationProtocol = applicationProtocol;
+                            if (NetEventSource.Log.IsEnabled())
+                                NetEventSource.Info(context, $"Selected '{applicationProtocol}' ALPN");
+                        }
+                        else
+                        {
+                            if (NetEventSource.Log.IsEnabled())
+                                NetEventSource.Error(context, $"Failed to set ALPN: {osStatus}");
+                        }
+
+                        // We ignore failure and we will move on with ALPN
+                        return new SecurityStatusPal(SecurityStatusPalErrorCode.OK);
+                    }
+
+                    protocols = protocols.Slice(protocol.Length + 1);
+                }
+            }
+
+            return new SecurityStatusPal(SecurityStatusPalErrorCode.ApplicationProtocolMismatch);
+        }
+
+#pragma warning disable IDE0060
+        public static ProtocolToken AcceptSecurityContext(
             ref SafeFreeCredentials credential,
             ref SafeDeleteSslContext? context,
             ReadOnlySpan<byte> inputBuffer,
-            ref byte[]? outputBuffer,
             SslAuthenticationOptions sslAuthenticationOptions)
         {
-            return HandshakeInternal(credential, ref context, inputBuffer, ref outputBuffer, sslAuthenticationOptions);
+            return HandshakeInternal(ref context, inputBuffer, sslAuthenticationOptions);
         }
 
-        public static SecurityStatusPal InitializeSecurityContext(
+        public static ProtocolToken InitializeSecurityContext(
             ref SafeFreeCredentials credential,
             ref SafeDeleteSslContext? context,
-            string? targetName,
+            string? _ /*targetName*/,
             ReadOnlySpan<byte> inputBuffer,
-            ref byte[]? outputBuffer,
             SslAuthenticationOptions sslAuthenticationOptions)
         {
-            return HandshakeInternal(credential, ref context, inputBuffer, ref outputBuffer, sslAuthenticationOptions);
+            return HandshakeInternal(ref context, inputBuffer, sslAuthenticationOptions);
         }
 
-        public static SafeFreeCredentials AcquireCredentialsHandle(
-            SslStreamCertificateContext? certificateContext,
-            SslProtocols protocols,
-            EncryptionPolicy policy,
-            bool isServer)
+        public static ProtocolToken Renegotiate(
+            ref SafeFreeCredentials? credentialsHandle,
+            ref SafeDeleteSslContext? context,
+            SslAuthenticationOptions sslAuthenticationOptions)
         {
-            return new SafeFreeSslCredentials(certificateContext, protocols, policy);
+            throw new PlatformNotSupportedException();
         }
 
-        internal static byte[]? GetNegotiatedApplicationProtocol(SafeDeleteContext? context)
+        public static SafeFreeCredentials? AcquireCredentialsHandle(SslAuthenticationOptions _1, bool _2)
         {
-            if (context == null)
-                return null;
-
-            return Interop.AppleCrypto.SslGetAlpnSelected(((SafeDeleteSslContext)context).SslContext);
+            return null;
         }
 
-        public static SecurityStatusPal EncryptMessage(
-            SafeDeleteContext securityContext,
+#pragma warning restore IDE0060
+
+        public static ProtocolToken EncryptMessage(
+            SafeDeleteSslContext securityContext,
             ReadOnlyMemory<byte> input,
-            int headerSize,
-            int trailerSize,
-            ref byte[] output,
-            out int resultSize)
+            int _ /*headerSize*/,
+            int _1 /*trailerSize*/)
         {
-            resultSize = 0;
+            ProtocolToken token = default;
 
             Debug.Assert(input.Length > 0, $"{nameof(input.Length)} > 0 since {nameof(CanEncryptEmptyMessage)} is false");
 
             try
             {
-                SafeDeleteSslContext sslContext = (SafeDeleteSslContext)securityContext;
-                SafeSslHandle sslHandle = sslContext.SslContext;
+                SafeSslHandle sslHandle = securityContext.SslContext;
 
                 unsafe
                 {
@@ -99,31 +147,27 @@ namespace System.Net.Security
 
                         if (status < 0)
                         {
-                            return new SecurityStatusPal(
+                            token.Status = new SecurityStatusPal(
                                 SecurityStatusPalErrorCode.InternalError,
                                 Interop.AppleCrypto.CreateExceptionForOSStatus((int)status));
-                        }
-
-                        if (sslContext.BytesReadyForConnection <= output?.Length)
-                        {
-                            resultSize = sslContext.ReadPendingWrites(output, 0, output.Length);
-                        }
-                        else
-                        {
-                            output = sslContext.ReadPendingWrites()!;
-                            resultSize = output.Length;
+                            return token;
                         }
 
                         switch (status)
                         {
                             case PAL_TlsIo.Success:
-                                return new SecurityStatusPal(SecurityStatusPalErrorCode.OK);
+                                token.Status = new SecurityStatusPal(SecurityStatusPalErrorCode.OK);
+                                break;
                             case PAL_TlsIo.WouldBlock:
-                                return new SecurityStatusPal(SecurityStatusPalErrorCode.ContinueNeeded);
+                                token.Status = new SecurityStatusPal(SecurityStatusPalErrorCode.ContinueNeeded);
+                                break;
                             default:
                                 Debug.Fail($"Unknown status value: {status}");
-                                return new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError);
+                                token.Status = new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError);
+                                break;
                         }
+
+                        securityContext.ReadPendingWrites(ref token);
                     }
                     finally
                     {
@@ -133,29 +177,31 @@ namespace System.Net.Security
             }
             catch (Exception e)
             {
-                return new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError, e);
+                token.Status = new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError, e);
             }
+
+            return token;
         }
 
         public static SecurityStatusPal DecryptMessage(
-            SafeDeleteContext securityContext,
-            byte[] buffer,
-            ref int offset,
-            ref int count)
+            SafeDeleteSslContext securityContext,
+            Span<byte> buffer,
+            out int offset,
+            out int count)
         {
+            offset = 0;
+            count = 0;
+
             try
             {
-                SafeDeleteSslContext sslContext = (SafeDeleteSslContext)securityContext;
-                SafeSslHandle sslHandle = sslContext.SslContext;
-
-                sslContext.Write(buffer.AsSpan(offset, count));
+                SafeSslHandle sslHandle = securityContext.SslContext;
+                securityContext.Write(buffer);
 
                 unsafe
                 {
-                    fixed (byte* offsetInput = &buffer[offset])
+                    fixed (byte* ptr = buffer)
                     {
-                        PAL_TlsIo status = Interop.AppleCrypto.SslRead(sslHandle, offsetInput, count, out int written);
-
+                        PAL_TlsIo status = Interop.AppleCrypto.SslRead(sslHandle, ptr, buffer.Length, out int written);
                         if (status < 0)
                         {
                             return new SecurityStatusPal(
@@ -164,6 +210,7 @@ namespace System.Net.Security
                         }
 
                         count = written;
+                        offset = 0;
 
                         switch (status)
                         {
@@ -205,46 +252,48 @@ namespace System.Net.Security
         }
 
         public static void QueryContextStreamSizes(
-            SafeDeleteContext? securityContext,
+            SafeDeleteContext? _ /*securityContext*/,
             out StreamSizes streamSizes)
         {
             streamSizes = StreamSizes.Default;
         }
 
         public static void QueryContextConnectionInfo(
-            SafeDeleteContext securityContext,
-            out SslConnectionInfo connectionInfo)
+            SafeDeleteSslContext securityContext,
+            ref SslConnectionInfo connectionInfo)
         {
-            connectionInfo = new SslConnectionInfo(((SafeDeleteSslContext)securityContext).SslContext);
+            connectionInfo.UpdateSslConnectionInfo(securityContext);
         }
 
-        private static SecurityStatusPal HandshakeInternal(
-            SafeFreeCredentials credential,
-            ref SafeDeleteSslContext? context,
-            ReadOnlySpan<byte> inputBuffer,
-            ref byte[]? outputBuffer,
+        public static bool TryUpdateClintCertificate(
+            SafeFreeCredentials? _,
+            SafeDeleteSslContext? context,
             SslAuthenticationOptions sslAuthenticationOptions)
         {
-            Debug.Assert(!credential.IsInvalid);
+            SafeDeleteSslContext? sslContext = ((SafeDeleteSslContext?)context);
 
+            if (sslAuthenticationOptions.CertificateContext != null)
+            {
+                SafeDeleteSslContext.SetCertificate(sslContext!.SslContext, sslAuthenticationOptions.CertificateContext);
+            }
+
+            return true;
+        }
+
+        private static ProtocolToken HandshakeInternal(
+            ref SafeDeleteSslContext? context,
+            ReadOnlySpan<byte> inputBuffer,
+            SslAuthenticationOptions sslAuthenticationOptions)
+        {
+            ProtocolToken token = default;
             try
             {
                 SafeDeleteSslContext? sslContext = ((SafeDeleteSslContext?)context);
 
                 if ((null == context) || context.IsInvalid)
                 {
-                    sslContext = new SafeDeleteSslContext((credential as SafeFreeSslCredentials)!, sslAuthenticationOptions);
+                    sslContext = new SafeDeleteSslContext(sslAuthenticationOptions);
                     context = sslContext;
-
-                    if (!string.IsNullOrEmpty(sslAuthenticationOptions.TargetHost) && !sslAuthenticationOptions.IsServer)
-                    {
-                        Interop.AppleCrypto.SslSetTargetName(sslContext.SslContext, sslAuthenticationOptions.TargetHost);
-                    }
-
-                    if (sslAuthenticationOptions.IsServer && sslAuthenticationOptions.RemoteCertRequired)
-                    {
-                        Interop.AppleCrypto.SslSetAcceptClientCert(sslContext.SslContext);
-                    }
                 }
 
                 if (inputBuffer.Length > 0)
@@ -253,14 +302,22 @@ namespace System.Net.Security
                 }
 
                 SafeSslHandle sslHandle = sslContext!.SslContext;
-                SecurityStatusPal status = PerformHandshake(sslHandle);
+                token.Status = PerformHandshake(sslHandle);
 
-                outputBuffer = sslContext.ReadPendingWrites();
-                return status;
+                if (token.Status.ErrorCode == SecurityStatusPalErrorCode.CredentialsNeeded)
+                {
+                    // this should happen only for clients
+                    Debug.Assert(sslAuthenticationOptions.IsClient);
+                    return token;
+                }
+
+                sslContext.ReadPendingWrites(ref token);
+                return token;
             }
             catch (Exception exc)
             {
-                return new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError, exc);
+                token.Status = new SecurityStatusPal(SecurityStatusPalErrorCode.InternalError, exc);
+                return token;
             }
         }
 
@@ -285,6 +342,10 @@ namespace System.Net.Security
                         // So, call SslHandshake again to indicate to Secure Transport that we've
                         // accepted this handshake and it should go into the ready state.
                         break;
+                    case PAL_TlsHandshakeState.ClientCertRequested:
+                        return new SecurityStatusPal(SecurityStatusPalErrorCode.CredentialsNeeded);
+                    case PAL_TlsHandshakeState.ClientHelloReceived:
+                        return new SecurityStatusPal(SecurityStatusPalErrorCode.HandshakeStarted);
                     default:
                         return new SecurityStatusPal(
                             SecurityStatusPalErrorCode.InternalError,
@@ -293,8 +354,8 @@ namespace System.Net.Security
             }
         }
 
+#pragma warning disable IDE0060
         public static SecurityStatusPal ApplyAlertToken(
-            ref SafeFreeCredentials? credentialsHandle,
             SafeDeleteContext? securityContext,
             TlsAlertType alertType,
             TlsAlertMessage alertMessage)
@@ -304,13 +365,12 @@ namespace System.Net.Security
             // SSLHandshake.
             return new SecurityStatusPal(SecurityStatusPalErrorCode.OK);
         }
+#pragma warning restore IDE0060
 
         public static SecurityStatusPal ApplyShutdownToken(
-            ref SafeFreeCredentials? credentialsHandle,
-            SafeDeleteContext securityContext)
+            SafeDeleteSslContext securityContext)
         {
-            SafeDeleteSslContext sslContext = ((SafeDeleteSslContext)securityContext);
-            SafeSslHandle sslHandle = sslContext.SslContext;
+            SafeSslHandle sslHandle = securityContext.SslContext;
 
             int osStatus = Interop.AppleCrypto.SslShutdown(sslHandle);
 

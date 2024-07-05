@@ -3,9 +3,10 @@
 
 using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography.X509Certificates;
 using Internal.Cryptography;
-using System.Diagnostics.CodeAnalysis;
 
 namespace System.Security.Cryptography.Pkcs
 {
@@ -13,17 +14,22 @@ namespace System.Security.Cryptography.Pkcs
     {
         static partial void PrepareRegistrationDsa(Dictionary<string, CmsSignature> lookup)
         {
-            lookup.Add(Oids.DsaWithSha1, new DSACmsSignature(Oids.DsaWithSha1, HashAlgorithmName.SHA1));
-            lookup.Add(Oids.DsaWithSha256, new DSACmsSignature(Oids.DsaWithSha256, HashAlgorithmName.SHA256));
-            lookup.Add(Oids.DsaWithSha384, new DSACmsSignature(Oids.DsaWithSha384, HashAlgorithmName.SHA384));
-            lookup.Add(Oids.DsaWithSha512, new DSACmsSignature(Oids.DsaWithSha512, HashAlgorithmName.SHA512));
-            lookup.Add(Oids.Dsa, new DSACmsSignature(null, default));
+            if (Helpers.IsDSASupported)
+            {
+                lookup.Add(Oids.DsaWithSha1, new DSACmsSignature(Oids.DsaWithSha1, HashAlgorithmName.SHA1));
+                lookup.Add(Oids.DsaWithSha256, new DSACmsSignature(Oids.DsaWithSha256, HashAlgorithmName.SHA256));
+                lookup.Add(Oids.DsaWithSha384, new DSACmsSignature(Oids.DsaWithSha384, HashAlgorithmName.SHA384));
+                lookup.Add(Oids.DsaWithSha512, new DSACmsSignature(Oids.DsaWithSha512, HashAlgorithmName.SHA512));
+                lookup.Add(Oids.Dsa, new DSACmsSignature(null, default));
+            }
         }
 
-        private class DSACmsSignature : CmsSignature
+        private sealed class DSACmsSignature : CmsSignature
         {
             private readonly HashAlgorithmName _expectedDigest;
             private readonly string? _signatureAlgorithm;
+
+            internal override RSASignaturePadding? SignaturePadding => null;
 
             internal DSACmsSignature(string? signatureAlgorithm, HashAlgorithmName expectedDigest)
             {
@@ -37,7 +43,7 @@ namespace System.Security.Cryptography.Pkcs
             }
 
             internal override bool VerifySignature(
-#if NETCOREAPP || NETSTANDARD2_1
+#if NET || NETSTANDARD2_1
                 ReadOnlySpan<byte> valueHash,
                 ReadOnlyMemory<byte> signature,
 #else
@@ -58,6 +64,8 @@ namespace System.Security.Cryptography.Pkcs
                             _signatureAlgorithm));
                 }
 
+                Debug.Assert(Helpers.IsDSASupported);
+
                 DSA? dsa = certificate.GetDSAPublicKey();
 
                 if (dsa == null)
@@ -68,7 +76,7 @@ namespace System.Security.Cryptography.Pkcs
                 DSAParameters dsaParameters = dsa.ExportParameters(false);
                 int bufSize = 2 * dsaParameters.Q!.Length;
 
-#if NETCOREAPP || NETSTANDARD2_1
+#if NET || NETSTANDARD2_1
                 byte[] rented = CryptoPool.Rent(bufSize);
                 Span<byte> ieee = new Span<byte>(rented, 0, bufSize);
 
@@ -83,7 +91,7 @@ namespace System.Security.Cryptography.Pkcs
                     }
 
                     return dsa.VerifySignature(valueHash, ieee);
-#if NETCOREAPP || NETSTANDARD2_1
+#if NET || NETSTANDARD2_1
                 }
                 finally
                 {
@@ -93,7 +101,7 @@ namespace System.Security.Cryptography.Pkcs
             }
 
             protected override bool Sign(
-#if NETCOREAPP || NETSTANDARD2_1
+#if NET || NETSTANDARD2_1
                 ReadOnlySpan<byte> dataHash,
 #else
                 byte[] dataHash,
@@ -103,8 +111,12 @@ namespace System.Security.Cryptography.Pkcs
                 AsymmetricAlgorithm? key,
                 bool silent,
                 [NotNullWhen(true)] out string? signatureAlgorithm,
-                [NotNullWhen(true)] out byte[]? signatureValue)
+                [NotNullWhen(true)] out byte[]? signatureValue,
+                out byte[]? signatureParameters)
             {
+                Debug.Assert(Helpers.IsDSASupported);
+                signatureParameters = null;
+
                 // If there's no private key, fall back to the public key for a "no private key" exception.
                 DSA? dsa = key as DSA ??
                     PkcsPal.Instance.GetPrivateKeyForSigning<DSA>(certificate, silent) ??
@@ -133,7 +145,7 @@ namespace System.Security.Cryptography.Pkcs
 
                 signatureAlgorithm = oidValue;
 
-#if NETCOREAPP || NETSTANDARD2_1
+#if NET || NETSTANDARD2_1
                 // The Q size cannot be bigger than the KeySize.
                 byte[] rented = CryptoPool.Rent(dsa.KeySize / 8);
                 int bytesWritten = 0;

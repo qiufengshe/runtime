@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using Xunit;
 namespace NetClient
 {
     using System;
@@ -10,10 +11,11 @@ namespace NetClient
     using System.Runtime.InteropServices;
 
     using TestLibrary;
+    using Xunit;
     using Server.Contract;
     using Server.Contract.Servers;
 
-    class Program
+    public class Program
     {
         static readonly string DefaultLicKey = "__MOCK_LICENSE_KEY__";
         static void ActivateLicensedObject()
@@ -33,7 +35,7 @@ namespace NetClient
             catch (COMException e)
             {
                 const int CLASS_E_NOTLICENSED = unchecked((int)0x80040112);
-                Assert.AreEqual(CLASS_E_NOTLICENSED, e.HResult);
+                Assert.Equal(CLASS_E_NOTLICENSED, e.HResult);
             }
             finally
             {
@@ -87,10 +89,10 @@ namespace NetClient
                 var licenseTesting = (LicenseTesting)new LicenseTestingClass();
 
                 // During design time the IClassFactory::CreateInstance will be called - no license
-                Assert.AreEqual(null, licenseTesting.GetLicense());
+                Assert.Null(licenseTesting.GetLicense());
 
                 // Verify the value retrieved from the IClassFactory2::RequestLicKey was what was set
-                Assert.AreEqual(DefaultLicKey, LicenseManager.CurrentContext.GetSavedLicenseKey(typeof(LicenseTestingClass), resourceAssembly: null));
+                Assert.Equal(DefaultLicKey, LicenseManager.CurrentContext.GetSavedLicenseKey(typeof(LicenseTestingClass), resourceAssembly: null));
             }
             finally
             {
@@ -112,7 +114,7 @@ namespace NetClient
                 var licenseTesting = (LicenseTesting)new LicenseTestingClass();
 
                 // During runtime the IClassFactory::CreateInstance2 will be called with license from context
-                Assert.AreEqual(licKey, licenseTesting.GetLicense());
+                Assert.Equal(licKey, licenseTesting.GetLicense());
             }
             finally
             {
@@ -120,7 +122,8 @@ namespace NetClient
             }
         }
 
-        static int Main(string[] doNotUse)
+        [Fact]
+        public static int TestEntryPoint()
         {
             // RegFree COM is not supported on Windows Nano
             if (Utilities.IsWindowsNanoServer)

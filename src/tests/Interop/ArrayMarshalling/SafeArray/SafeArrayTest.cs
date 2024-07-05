@@ -5,41 +5,44 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Runtime.InteropServices;
-using TestLibrary;
+using Xunit;
 
 #pragma warning disable CS0612, CS0618
 
-public class Tester
+[ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
+public class SafeArrayMarshallingTest
 {
-    public static int Main()
+    [ConditionalFact(typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.IsBuiltInComEnabled))]
+    [SkipOnMono("Requires COM support")]
+    public static int TestEntryPoint()
     {
         try
         {
             var boolArray = new bool[] { true, false, true, false, false, true };
             SafeArrayNative.XorBoolArray(boolArray, out var xorResult);
-            Assert.AreEqual(XorArray(boolArray), xorResult);
+            Assert.Equal(XorArray(boolArray), xorResult);
 
             var decimalArray = new decimal[] { 1.5M, 30.2M, 6432M, 12.5832M };
             SafeArrayNative.MeanDecimalArray(decimalArray, out var meanDecimalValue);
-            Assert.AreEqual(decimalArray.Average(), meanDecimalValue);
+            Assert.Equal(decimalArray.Average(), meanDecimalValue);
 
             SafeArrayNative.SumCurrencyArray(decimalArray, out var sumCurrencyValue);
-            Assert.AreEqual(decimalArray.Sum(), sumCurrencyValue);
+            Assert.Equal(decimalArray.Sum(), sumCurrencyValue);
 
             var strings = new [] {"ABCDE", "12345", "Microsoft"};
             var reversedStrings = strings.Select(str => Reverse(str)).ToArray();
 
             var ansiTest = strings.ToArray();
             SafeArrayNative.ReverseStringsAnsi(ansiTest);
-            Assert.AreAllEqual(reversedStrings, ansiTest);
+            AssertExtensions.CollectionEqual(reversedStrings, ansiTest);
 
             var unicodeTest = strings.ToArray();
             SafeArrayNative.ReverseStringsUnicode(unicodeTest);
-            Assert.AreAllEqual(reversedStrings, unicodeTest);
+            AssertExtensions.CollectionEqual(reversedStrings, unicodeTest);
 
             var bstrTest = strings.ToArray();
             SafeArrayNative.ReverseStringsBSTR(bstrTest);
-            Assert.AreAllEqual(reversedStrings, bstrTest);
+            AssertExtensions.CollectionEqual(reversedStrings, bstrTest);
 
             var blittableRecords = new SafeArrayNative.BlittableRecord[]
             {
@@ -50,23 +53,23 @@ public class Tester
                 new SafeArrayNative.BlittableRecord { a = 9 },
                 new SafeArrayNative.BlittableRecord { a = 15 },
             };
-            Assert.AreAllEqual(blittableRecords, SafeArrayNative.CreateSafeArrayOfRecords(blittableRecords));
+            AssertExtensions.CollectionEqual(blittableRecords, SafeArrayNative.CreateSafeArrayOfRecords(blittableRecords));
 
             var nonBlittableRecords = boolArray.Select(b => new SafeArrayNative.NonBlittableRecord{ b = b }).ToArray();
-            Assert.AreAllEqual(nonBlittableRecords, SafeArrayNative.CreateSafeArrayOfRecords(nonBlittableRecords));
+            AssertExtensions.CollectionEqual(nonBlittableRecords, SafeArrayNative.CreateSafeArrayOfRecords(nonBlittableRecords));
 
             var objects = new object[] { new object(), new object(), new object() };
             SafeArrayNative.VerifyIUnknownArray(objects);
             SafeArrayNative.VerifyIDispatchArray(objects);
 
             var variantInts = new object[] {1, 2, 3, 4, 5, 6, 7, 8, 9};
-            
+
             SafeArrayNative.MeanVariantIntArray(variantInts, out var variantMean);
-            Assert.AreEqual(variantInts.OfType<int>().Average(), variantMean);
+            Assert.Equal(variantInts.OfType<int>().Average(), variantMean);
 
             var dates = new DateTime[] { new DateTime(2008, 5, 1), new DateTime(2010, 1, 1) };
             SafeArrayNative.DistanceBetweenDates(dates, out var numDays);
-            Assert.AreEqual((dates[1] - dates[0]).TotalDays, numDays);
+            Assert.Equal((dates[1] - dates[0]).TotalDays, numDays);
 
             SafeArrayNative.XorBoolArrayInStruct(
                 new SafeArrayNative.StructWithSafeArray
@@ -75,7 +78,7 @@ public class Tester
                 },
                 out var structXor);
 
-            Assert.AreEqual(XorArray(boolArray), structXor);
+            Assert.Equal(XorArray(boolArray), structXor);
         }
         catch (Exception e)
         {
@@ -114,11 +117,14 @@ class SafeArrayNative
     public struct BlittableRecord
     {
         public int a;
+
+        public override string ToString() => $"BlittableRecord: {a}";
     }
 
     public struct NonBlittableRecord
     {
         public bool b;
+        public override string ToString() => $"NonBlittableRecord: {b}";
     }
 
     [DllImport(nameof(SafeArrayNative))]

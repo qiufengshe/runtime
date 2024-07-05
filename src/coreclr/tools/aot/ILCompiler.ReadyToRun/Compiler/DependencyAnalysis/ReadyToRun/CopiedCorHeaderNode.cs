@@ -22,7 +22,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             _module = sourceModule;
         }
 
-        public override ObjectNodeSection Section => ObjectNodeSection.TextSection;
+        public override ObjectNodeSection GetSection(NodeFactory factory) => ObjectNodeSection.TextSection;
 
         public override bool IsShareable => false;
 
@@ -53,7 +53,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             if (_module != null)
                 sb.Append($"__CorHeader_{_module.Assembly.GetName().Name}");
             else
-                sb.Append("__CompositeCorHeader_");
+                sb.Append("__CompositeCorHeader_"u8);
         }
 
         protected override string GetName(NodeFactory factory) => this.GetMangledName(factory.NameMangler);
@@ -150,7 +150,15 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 builder.EmitReloc(factory.ManifestMetadataTable, RelocType.IMAGE_REL_SYMBOL_SIZE);
 
                 // Flags
-                builder.EmitUInt(0);
+                if (factory.CompositeImageSettings.PublicKey != null)
+                {
+                    const uint COMIMAGE_FLAGS_STRONGNAMESIGNED = 8;
+                    builder.EmitUInt(COMIMAGE_FLAGS_STRONGNAMESIGNED);
+                }
+                else
+                {
+                    builder.EmitUInt(0);
+                }
 
                 // Entrypoint
                 builder.EmitInt(0);

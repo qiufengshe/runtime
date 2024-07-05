@@ -17,13 +17,12 @@ class CrawlFrame;
 struct EE_ILEXCEPTION_CLAUSE;
 struct TransitionBlock;
 struct VASigCookie;
-struct CORCOMPILE_EXTERNAL_METHOD_THUNK;
-class ComPlusCallMethodDesc;
+class CLRToCOMCallMethodDesc;
 
 #include <cgencpu.h>
 
 
-#ifdef EnC_SUPPORTED
+#ifdef FEATURE_METADATA_UPDATER
 void ResumeAtJit(PT_CONTEXT pContext, LPVOID oldFP);
 #endif
 
@@ -34,8 +33,8 @@ void CallJitEHFinally(CrawlFrame* pCf, BYTE* startPC, EE_ILEXCEPTION_CLAUSE *EHC
 #endif // TARGET_X86
 
 #ifdef FEATURE_COMINTEROP
-extern "C" UINT32 STDCALL CLRToCOMWorker(TransitionBlock * pTransitionBlock, ComPlusCallMethodDesc * pMD);
-extern "C" void GenericComPlusCallStub(void);
+extern "C" UINT32 STDCALL CLRToCOMWorker(TransitionBlock * pTransitionBlock, CLRToCOMCallMethodDesc * pMD);
+extern "C" void GenericCLRToCOMCallStub(void);
 
 extern "C" void GenericComCallStub(void);
 #endif // FEATURE_COMINTEROP
@@ -59,15 +58,10 @@ extern "C" void STDCALL GenericPInvokeCalliStubWorker(TransitionBlock * pTransit
 extern "C" void STDCALL GenericPInvokeCalliHelper(void);
 
 extern "C" PCODE STDCALL ExternalMethodFixupWorker(TransitionBlock * pTransitionBlock, TADDR pIndirection, DWORD sectionIndex, Module * pModule);
-extern "C" void STDCALL ExternalMethodFixupStub(void);
 extern "C" void STDCALL ExternalMethodFixupPatchLabel(void);
 
 extern "C" void STDCALL VirtualMethodFixupStub(void);
 extern "C" void STDCALL VirtualMethodFixupPatchLabel(void);
-
-extern "C" void STDCALL TransparentProxyStub(void);
-extern "C" void STDCALL TransparentProxyStub_CrossContext();
-extern "C" void STDCALL TransparentProxyStubPatchLabel(void);
 
 #ifdef FEATURE_READYTORUN
 extern "C" void STDCALL DelayLoad_MethodCall();
@@ -77,64 +71,9 @@ extern "C" void STDCALL DelayLoad_Helper_Obj();
 extern "C" void STDCALL DelayLoad_Helper_ObjObj();
 #endif
 
-// Returns information about the CPU processor.
-// Note that this information may be the least-common-denominator in the
-// case of a multi-proc machine.
-
-#ifdef TARGET_X86
-void GetSpecificCpuInfo(CORINFO_CPU * cpuInfo);
-#else
-inline void GetSpecificCpuInfo(CORINFO_CPU * cpuInfo)
-{
-    LIMITED_METHOD_CONTRACT;
-    cpuInfo->dwCPUType = 0;
-    cpuInfo->dwFeatures = 0;
-    cpuInfo->dwExtendedFeatures = 0;
-}
-
-#endif // !TARGET_X86
-
-#if (defined(TARGET_X86) || defined(TARGET_AMD64)) && !defined(CROSSGEN_COMPILE)
-#ifdef TARGET_UNIX
-// MSVC directly defines intrinsics for __cpuid and __cpuidex matching the below signatures
-// We define matching signatures for use on Unix platforms.
-
-extern "C" void __stdcall __cpuid(int cpuInfo[4], int function_id);
-extern "C" void __stdcall __cpuidex(int cpuInfo[4], int function_id, int subFunction_id);
-#endif // TARGET_UNIX
-extern "C" DWORD __stdcall xmmYmmStateSupport();
-#endif
-
-const int CPUID_EAX = 0;
-const int CPUID_EBX = 1;
-const int CPUID_ECX = 2;
-const int CPUID_EDX = 3;
-
-inline bool TargetHasAVXSupport()
-{
-#if (defined(TARGET_X86) || defined(TARGET_AMD64)) && !defined(CROSSGEN_COMPILE)
-    int cpuInfo[4];
-    __cpuid(cpuInfo, 0x00000001);           // All x86/AMD64 targets support cpuid.
-    return ((cpuInfo[CPUID_ECX] & (1 << 28)) != 0); // The AVX feature is ECX bit 28.
-#endif // (defined(TARGET_X86) || defined(TARGET_AMD64)) && !defined(CROSSGEN_COMPILE)
-    return false;
-}
-
-#ifdef FEATURE_PREJIT
-// Can code compiled for "minReqdCpuType" be used on "actualCpuType"
-inline BOOL IsCompatibleCpuInfo(const CORINFO_CPU * actualCpuInfo,
-                                const CORINFO_CPU * minReqdCpuInfo)
-{
-    LIMITED_METHOD_CONTRACT;
-    return ((minReqdCpuInfo->dwFeatures & actualCpuInfo->dwFeatures) ==
-             minReqdCpuInfo->dwFeatures);
-}
-#endif // FEATURE_PREJIT
-
-
-#ifndef DACCESS_COMPILE
-// Given an address in a slot, figure out if the prestub will be called
-BOOL DoesSlotCallPrestub(PCODE pCode);
+#if (defined(TARGET_X86) || defined(TARGET_AMD64))
+extern "C" DWORD xmmYmmStateSupport();
+extern "C" DWORD avx512StateSupport();
 #endif
 
 #ifdef DACCESS_COMPILE
@@ -144,8 +83,6 @@ BOOL DoesSlotCallPrestub(PCODE pCode);
 BOOL GetAnyThunkTarget (T_CONTEXT *pctx, TADDR *pTarget, TADDR *pTargetMethodDesc);
 
 #endif // DACCESS_COMPILE
-
-
 
 //
 // ResetProcessorStateHolder saves/restores processor state around calls to

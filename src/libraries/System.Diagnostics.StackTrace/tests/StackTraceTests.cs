@@ -1,11 +1,16 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
+using Microsoft.DotNet.RemoteExecutor;
 using Xunit;
 
 namespace System.Diagnostics
@@ -38,22 +43,25 @@ namespace System.Diagnostics.Tests
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/50957", typeof(PlatformDetection), nameof(PlatformDetection.IsBrowser), nameof(PlatformDetection.IsMonoAOT))]
         public void Ctor_Default()
         {
             var stackTrace = new StackTrace();
-            VerifyFrames(stackTrace, false);
+            VerifyFrames(stackTrace, false, 0);
         }
 
         [Theory]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/50957", typeof(PlatformDetection), nameof(PlatformDetection.IsBrowser), nameof(PlatformDetection.IsMonoAOT))]
         [InlineData(true)]
         [InlineData(false)]
         public void Ctor_FNeedFileInfo(bool fNeedFileInfo)
         {
             var stackTrace = new StackTrace(fNeedFileInfo);
-            VerifyFrames(stackTrace, fNeedFileInfo);
+            VerifyFrames(stackTrace, fNeedFileInfo, 0);
         }
 
         [Theory]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/50957", typeof(PlatformDetection), nameof(PlatformDetection.IsBrowser), nameof(PlatformDetection.IsMonoAOT))]
         [InlineData(0)]
         [InlineData(1)]
         public void Ctor_SkipFrames(int skipFrames)
@@ -65,11 +73,11 @@ namespace System.Diagnostics.Tests
             Assert.Equal(emptyStackTrace.FrameCount - skipFrames, stackTrace.FrameCount);
             Assert.Equal(expectedMethods, stackTrace.GetFrames().Select(f => f.GetMethod()));
 
-            VerifyFrames(stackTrace, false);
+            VerifyFrames(stackTrace, false, skipFrames);
         }
 
         [Fact]
-        public void Ctor_LargeSkipFrames_GetFramesReturnsEmtpy()
+        public void Ctor_LargeSkipFrames_GetFramesReturnsEmpty()
         {
             var stackTrace = new StackTrace(int.MaxValue);
             Assert.Equal(0, stackTrace.FrameCount);
@@ -77,6 +85,7 @@ namespace System.Diagnostics.Tests
         }
 
         [Theory]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/50957", typeof(PlatformDetection), nameof(PlatformDetection.IsBrowser), nameof(PlatformDetection.IsMonoAOT))]
         [InlineData(0, true)]
         [InlineData(1, true)]
         [InlineData(0, false)]
@@ -90,7 +99,7 @@ namespace System.Diagnostics.Tests
             Assert.Equal(emptyStackTrace.FrameCount - skipFrames, stackTrace.FrameCount);
             Assert.Equal(expectedMethods, stackTrace.GetFrames().Select(f => f.GetMethod()));
 
-            VerifyFrames(stackTrace, fNeedFileInfo);
+            VerifyFrames(stackTrace, fNeedFileInfo, skipFrames);
         }
 
         [Theory]
@@ -104,10 +113,11 @@ namespace System.Diagnostics.Tests
         }
 
         [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/50957", typeof(PlatformDetection), nameof(PlatformDetection.IsBrowser), nameof(PlatformDetection.IsMonoAOT))]
         public void Ctor_ThrownException_GetFramesReturnsExpected()
         {
             var stackTrace = new StackTrace(InvokeException());
-            VerifyFrames(stackTrace, false);
+            VerifyFrames(stackTrace, false, 0);
         }
 
         [Fact]
@@ -121,12 +131,13 @@ namespace System.Diagnostics.Tests
         }
 
         [Theory]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/50957", typeof(PlatformDetection), nameof(PlatformDetection.IsBrowser), nameof(PlatformDetection.IsMonoAOT))]
         [InlineData(true)]
         [InlineData(false)]
         public void Ctor_Bool_ThrownException_GetFramesReturnsExpected(bool fNeedFileInfo)
         {
             var stackTrace = new StackTrace(InvokeException(), fNeedFileInfo);
-            VerifyFrames(stackTrace, fNeedFileInfo);
+            VerifyFrames(stackTrace, fNeedFileInfo, 0);
         }
 
         [Theory]
@@ -143,6 +154,7 @@ namespace System.Diagnostics.Tests
 
         [Theory]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/31796", TestRuntimes.Mono)]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/50957", typeof(PlatformDetection), nameof(PlatformDetection.IsBrowser), nameof(PlatformDetection.IsMonoAOT))]
         [InlineData(0)]
         [InlineData(1)]
         public void Ctor_Exception_SkipFrames(int skipFrames)
@@ -159,7 +171,7 @@ namespace System.Diagnostics.Tests
             Assert.Equal(expectedMethods, frames.Select(f => f.GetMethod()));
             if (frames != null)
             {
-                VerifyFrames(stackTrace, false);
+                VerifyFrames(stackTrace, false, skipFrames);
             }
         }
 
@@ -199,7 +211,7 @@ namespace System.Diagnostics.Tests
             Assert.Equal(expectedMethods, frames.Select(f => f.GetMethod()));
             if (frames != null)
             {
-                VerifyFrames(stackTrace, fNeedFileInfo);
+                VerifyFrames(stackTrace, fNeedFileInfo, skipFrames);
             }
         }
 
@@ -232,6 +244,12 @@ namespace System.Diagnostics.Tests
             AssertExtensions.Throws<ArgumentNullException>("e", () => new StackTrace(null, 1));
         }
 
+        [Fact]
+        public void Ctor_NullMultiFrame_ThrowsArgumentNullException()
+        {
+            AssertExtensions.Throws<ArgumentNullException>("frames", () => new StackTrace((IEnumerable<StackFrame>)null));
+        }
+
         public static IEnumerable<object[]> Ctor_Frame_TestData()
         {
             yield return new object[] { new StackFrame() };
@@ -245,6 +263,19 @@ namespace System.Diagnostics.Tests
             var stackTrace = new StackTrace(stackFrame);
             Assert.Equal(1, stackTrace.FrameCount);
             Assert.Equal(new StackFrame[] { stackFrame }, stackTrace.GetFrames());
+        }
+
+        [Fact]
+        public void Ctor_MultiFrame()
+        {
+            var stackFrames = new[] { new StackFrame(), new StackFrame() };
+            var stackTrace = new StackTrace(stackFrames);
+            Assert.Equal(stackFrames.Length, stackTrace.FrameCount);
+
+            for (var i = 0; i < stackFrames.Length; ++i)
+            {
+                Assert.Equal(stackFrames[i], stackTrace.GetFrame(i));
+            }
         }
 
         public static IEnumerable<object[]> ToString_TestData()
@@ -300,12 +331,90 @@ namespace System.Diagnostics.Tests
             Assert.Equal(Environment.NewLine, stackTrace.ToString());
         }
 
+        [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/11354", TestRuntimes.Mono)]
+        public unsafe void ToString_FunctionPointerSignature()
+        {
+            // This is separate from ToString_Invoke_ReturnsExpected since unsafe cannot be used for iterators
+            var stackTrace = FunctionPointerParameter(null);
+            // Function pointers have no Name.
+            Assert.Contains("System.Diagnostics.Tests.StackTraceTests.FunctionPointerParameter( x)", stackTrace.ToString());
+        }
+
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        public void ToString_ShowILOffset()
+        {
+            string AssemblyName = "ExceptionTestAssembly.dll";
+            string SourceTestAssemblyPath = Path.Combine(Environment.CurrentDirectory, AssemblyName);
+            string regPattern = @":token 0x([a-f0-9]*)\+0x([a-f0-9]*)";
+
+            // Normal loading case
+            RemoteExecutor.Invoke((asmPath, asmName, p) =>
+            {
+                AppContext.SetSwitch("Switch.System.Diagnostics.StackTrace.ShowILOffsets", true);
+                var asm = Assembly.LoadFrom(asmPath);
+                try
+                {
+                    asm.GetType("Program").GetMethod("Foo").Invoke(null, null);
+                }
+                catch (Exception e)
+                {
+                    Assert.Contains(asmName, e.InnerException.StackTrace);
+                    Assert.Matches(p, e.InnerException.StackTrace);
+                }
+            }, SourceTestAssemblyPath, AssemblyName, regPattern).Dispose();
+
+            // Assembly.Load(Byte[]) case
+            RemoteExecutor.Invoke((asmPath, asmName, p) =>
+            {
+                AppContext.SetSwitch("Switch.System.Diagnostics.StackTrace.ShowILOffsets", true);
+                var inMemBlob = File.ReadAllBytes(asmPath);
+                var asm2 = Assembly.Load(inMemBlob);
+                try
+                {
+                    asm2.GetType("Program").GetMethod("Foo").Invoke(null, null);
+                }
+                catch (Exception e)
+                {
+                    Assert.Contains(asmName, e.InnerException.StackTrace);
+                    Assert.Matches(p, e.InnerException.StackTrace);
+                }
+            }, SourceTestAssemblyPath, AssemblyName, regPattern).Dispose();
+
+            // AssmblyBuilder.DefineDynamicAssembly() case
+            RemoteExecutor.Invoke((p) =>
+            {
+                AppContext.SetSwitch("Switch.System.Diagnostics.StackTrace.ShowILOffsets", true);
+                AssemblyName asmName = new AssemblyName("ExceptionTestAssembly");
+                AssemblyBuilder asmBldr = AssemblyBuilder.DefineDynamicAssembly(asmName, AssemblyBuilderAccess.Run);
+                ModuleBuilder modBldr = asmBldr.DefineDynamicModule(asmName.Name);
+                TypeBuilder tBldr = modBldr.DefineType("Program");
+                MethodBuilder mBldr = tBldr.DefineMethod("Foo", MethodAttributes.Public | MethodAttributes.Static, null, null);
+                ILGenerator ilGen = mBldr.GetILGenerator();
+                ilGen.ThrowException(typeof(NullReferenceException));
+                ilGen.Emit(OpCodes.Ret);
+                Type t = tBldr.CreateType();
+                try
+                {
+                    t.InvokeMember("Foo", BindingFlags.InvokeMethod, null, null, null);
+                }
+                catch (Exception e)
+                {
+                    Assert.Contains("RefEmit_InMemoryManifestModule", e.InnerException.StackTrace);
+                    Assert.Matches(p, e.InnerException.StackTrace);
+                }
+            }, regPattern).Dispose();
+        }
+
         [MethodImpl(MethodImplOptions.NoOptimization | MethodImplOptions.NoInlining)]
         private static StackTrace NoParameters() => new StackTrace();
         [MethodImpl(MethodImplOptions.NoOptimization | MethodImplOptions.NoInlining)]
         private static StackTrace OneParameter(int x) => new StackTrace();
         [MethodImpl(MethodImplOptions.NoOptimization | MethodImplOptions.NoInlining)]
         private static StackTrace TwoParameters(int x, string y) => new StackTrace();
+
+        [MethodImpl(MethodImplOptions.NoOptimization | MethodImplOptions.NoInlining)]
+        private unsafe static StackTrace FunctionPointerParameter(delegate*<void> x) => new StackTrace();
 
         [MethodImpl(MethodImplOptions.NoOptimization | MethodImplOptions.NoInlining)]
         private static StackTrace Generic<T>() => new StackTrace();
@@ -341,7 +450,7 @@ namespace System.Diagnostics.Tests
             public ClassWithConstructor() => StackTrace = new StackTrace();
         }
 
-        private static void VerifyFrames(StackTrace stackTrace, bool hasFileInfo)
+        private static void VerifyFrames(StackTrace stackTrace, bool hasFileInfo, int skippedFrames)
         {
             Assert.True(stackTrace.FrameCount > 0);
 
@@ -358,7 +467,11 @@ namespace System.Diagnostics.Tests
                     Assert.Equal(0, stackFrame.GetFileLineNumber());
                     Assert.Equal(0, stackFrame.GetFileColumnNumber());
                 }
-                Assert.NotNull(stackFrame.GetMethod());
+
+                // On native AOT, the reflection invoke infrastructure uses compiler-generated code
+                // that doesn't have a reflection method associated. Limit the checks.
+                if (!PlatformDetection.IsNativeAot || (i + skippedFrames) == 0)
+                    Assert.NotNull(stackFrame.GetMethod());
             }
         }
     }

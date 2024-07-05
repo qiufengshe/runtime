@@ -7,6 +7,7 @@
 //
 
 .assembly extern System.Runtime { }
+.assembly extern xunit.core {}
 
 .assembly nonvirtualcall { }
 
@@ -33,11 +34,11 @@
   }
 }
 
-.class private auto ansi beforefieldinit Fooer
+.class public auto ansi beforefieldinit Fooer
        extends [System.Runtime]System.Object
        implements IBar
 {
-  .method public hidebysig specialname rtspecialname 
+  .method public hidebysig specialname rtspecialname
           instance void .ctor() cil managed
   {
     ldarg.0
@@ -53,19 +54,26 @@
   ret
 }
 
-.method public hidebysig static int32 Main() cil managed
+.class public auto ansi abstract sealed beforefieldinit nonvirtualcall
+    extends [System.Runtime]System.Object
 {
-  .entrypoint
+  .method public hidebysig static int32 Main() cil managed
+  {
+    .custom instance void [xunit.core]Xunit.FactAttribute::.ctor() = (
+        01 00 00 00
+    )
+    .entrypoint
 
-  ldstr "DefaultImplementationsOfInterfaces"
-  call bool [System.Runtime]System.Runtime.CompilerServices.RuntimeFeature::IsSupported(string)
+    ldstr "DefaultImplementationsOfInterfaces"
+    call bool [System.Runtime]System.Runtime.CompilerServices.RuntimeFeature::IsSupported(string)
 
-  // If default interfaces are not supported, consider the test successful.
-  brtrue DoRunTest
-  ldc.i4 100
-  ret
+    // If default interfaces are not supported, consider the test successful.
+    brtrue DoRunTest
+    ldc.i4 100
+    ret
 
-DoRunTest:
-  call int32 RunTest()
-  ret
+  DoRunTest:
+    call int32 RunTest()
+    ret
+  }
 }

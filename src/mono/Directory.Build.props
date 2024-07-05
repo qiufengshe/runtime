@@ -8,27 +8,16 @@
   <PropertyGroup>
     <BaseIntermediateOutputPath>$([MSBuild]::NormalizeDirectory('$(ArtifactsObjDir)', 'mono', '$(MSBuildProjectName)'))</BaseIntermediateOutputPath>
     <IntermediateOutputPath Condition="'$(PlatformName)' == 'AnyCPU'">$(BaseIntermediateOutputPath)$(Configuration)\</IntermediateOutputPath>
-    <IntermediateOutputPath Condition="'$(PlatformName)' != 'AnyCPU'">$(BaseIntermediateOutputPath)$(PlatformName)\$(Configuration)\</IntermediateOutputPath>
+    <IntermediateOutputPath Condition="'$(PlatformName)' != 'AnyCPU'">$(BaseIntermediateOutputPath)$(TargetOS).$(TargetArchitecture).$(Configuration)\</IntermediateOutputPath>
   </PropertyGroup>
 
   <PropertyGroup>
-    <!-- Minimum target OS version, keep in sync with src/libraries/Native/build-native.sh -->
-    <iOSVersionMin>8.0</iOSVersionMin>
-    <tvOSVersionMin>9.0</tvOSVersionMin>
-    <watchOSVersionMin>2.0</watchOSVersionMin>
-    <watchOS64_32VersionMin>5.1</watchOS64_32VersionMin>
-    <macOSVersionMin>10.13</macOSVersionMin>
-    <macOSVersionMin Condition="'$(TargetOS)' == 'OSX' and '$(TargetArchitecture)' == 'arm64'">11.0</macOSVersionMin>
-
-    <!-- Version of the OS SDK we target -->
+    <!-- Version of the Apple OS SDKs we target. Usually empty so the latest version is used but can be overriden externally. -->
     <iOSVersion></iOSVersion>
     <tvOSVersion></tvOSVersion>
     <watchOSVersion></watchOSVersion>
     <watchOS64_32Version></watchOS64_32Version>
     <macOSVersion></macOSVersion>
-
-    <!-- Version of the Android SDK we target, keep in sync with src/libraries/Native/build-native.sh -->
-    <AndroidApiVersion>21</AndroidApiVersion>
   </PropertyGroup>
 
   <!-- Output paths -->
@@ -36,13 +25,45 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
 
+  <!-- Directory to provision and use emscripten if EMSDK_PATH env variable is not set -->
+  <PropertyGroup Condition="'$(TargetsBrowser)' == 'true'">
+    <ProvisionEmscriptenDir>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', 'browser', 'emsdk'))</ProvisionEmscriptenDir>
+    <ShouldProvisionEmscripten Condition="'$(EMSDK_PATH)' == '' and !Exists('$(ProvisionEmscriptenDir)')">true</ShouldProvisionEmscripten>
+    <EMSDK_PATH Condition="Exists('$(ProvisionEmscriptenDir)') and '$(EMSDK_PATH)' == ''">$(ProvisionEmscriptenDir.Replace('\', '/'))</EMSDK_PATH>
+  </PropertyGroup>
+
+  <!-- Directory to provision and use WASI sdk if WASI_SDK_PATH env variable is not set -->
+  <PropertyGroup Condition="'$(TargetsWasi)' == 'true'">
+    <!-- force download temmporarily https://github.com/dotnet/runtime/issues/101528
+    <WASI_SDK_PATH Condition="'$(WASI_SDK_PATH)' == ''">$([MSBuild]::NormalizeDirectory($(MSBuildThisFileDirectory), 'wasi', 'wasi-sdk'))</WASI_SDK_PATH>
+    -->
+    <WASI_SDK_PATH>$([MSBuild]::NormalizeDirectory($(MSBuildThisFileDirectory), 'wasi', 'wasi-sdk'))</WASI_SDK_PATH>
+    <WASI_SDK_PATH>$([MSBuild]::EnsureTrailingSlash('$(WASI_SDK_PATH)').Replace('\', '/'))</WASI_SDK_PATH>
+    <ShouldProvisionWasiSdk Condition="!Exists($(_ProvisionWasiSdkDir))">true</ShouldProvisionWasiSdk>
+  </PropertyGroup>
+
   <PropertyGroup>
     <PlatformConfigPathPart>$(TargetOS).$(Platform).$(Configuration)</PlatformConfigPathPart>
     <RuntimeBinDir>$([MSBuild]::NormalizeDirectory('$(ArtifactsBinDir)', 'mono', '$(TargetOS).$(Platform).$(Configuration)'))</RuntimeBinDir>
     <MonoObjDir>$([MSBuild]::NormalizeDirectory('$(ArtifactsObjDir)', 'mono', '$(PlatformConfigPathPart)'))</MonoObjDir>
-    <MonoLLVMDir Condition="'$(MonoLLVMDir)' == ''">$([MSBuild]::NormalizeDirectory('$(MonoObjDir)', 'llvm'))</MonoLLVMDir>
-    <MonoAOTLLVMDir Condition="'$(MonoAOTLLVMDir)' == ''">$([MSBuild]::NormalizeDirectory('$(MonoObjDir)', 'cross', 'llvm'))</MonoAOTLLVMDir>
+    <MonoAOTEnableLLVM Condition="'$(TargetsiOS)' == 'true'">true</MonoAOTEnableLLVM>
+    <MonoAOTEnableLLVM Condition="'$(TargetstvOS)' == 'true'">true</MonoAOTEnableLLVM>
+    <MonoAOTEnableLLVM Condition="'$(TargetsMacCatalyst)' == 'true'">true</MonoAOTEnableLLVM>
+    <MonoAOTEnableLLVM Condition="'$(TargetsBrowser)' == 'true'">true</MonoAOTEnableLLVM>
+    <MonoAOTEnableLLVM Condition="'$(TargetsAndroid)' == 'true'">true</MonoAOTEnableLLVM>
+    <MonoAOTEnableLLVM Condition="'$(TargetsWasi)' == 'true'">true</MonoAOTEnableLLVM>
+    <MonoUseLLVMPackage Condition="'$(MonoLLVMDir)' == '' and ('$(MonoEnableLLVM)' == 'true' or $(MonoAOTEnableLLVM) == 'true')">true</MonoUseLLVMPackage>
+    <MonoLLVMDir Condition="'$(MonoLLVMDir)' == '' or '$(MonoUseLLVMPackage)' == 'true'">$([MSBuild]::NormalizeDirectory('$(MonoObjDir)', 'llvm'))</MonoLLVMDir>
   </PropertyGroup>
+
+  <PropertyGroup>
+    <MonoAotCrossDir>$([MSBuild]::NormalizePath($(RuntimeBinDir), 'cross', '$(TargetOS)-$(TargetArchitecture.ToLowerInvariant())'))</MonoAotCrossDir>
+    <_MonoAotCrossCompilerPath>$([MSBuild]::NormalizePath($(MonoAotCrossDir), 'mono-aot-cross'))</_MonoAotCrossCompilerPath>
+    <_MonoAotCrossCompilerPath Condition="$([MSBuild]::IsOSPlatform('WINDOWS'))">$(_MonoAotCrossCompilerPath).exe</_MonoAotCrossCompilerPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <MonoAotCrossCompiler Include="$(_MonoAotCrossCompilerPath)" RuntimeIdentifier="$(TargetOS)-$(TargetArchitecture.ToLowerInvariant())" />
+  </ItemGroup>
 
   <!-- Paths for Mobile App Projects  -->
   <PropertyGroup>
@@ -52,4 +73,5 @@
     <AndroidTestRunnerProjDirectory>$([MSBuild]::NormalizeDirectory('$(LibrariesProjectRoot)', 'Common', tests, 'AndroidTestRunner'))</AndroidTestRunnerProjDirectory>
     <MonoAOTCompilerProjDirectory>$([MSBuild]::NormalizeDirectory('$(RepoTasksDir)', 'AotCompilerTask'))</MonoAOTCompilerProjDirectory>
   </PropertyGroup>
+
 </Project>

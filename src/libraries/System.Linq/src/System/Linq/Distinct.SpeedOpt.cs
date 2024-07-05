@@ -7,20 +7,15 @@ namespace System.Linq
 {
     public static partial class Enumerable
     {
-        private sealed partial class DistinctIterator<TSource> : IIListProvider<TSource>
+        private sealed partial class DistinctIterator<TSource>
         {
-            private Set<TSource> FillSet()
-            {
-                var set = new Set<TSource>(_comparer);
-                set.UnionWith(_source);
-                return set;
-            }
+            public override TSource[] ToArray() => ICollectionToArray(new HashSet<TSource>(_source, _comparer));
 
-            public TSource[] ToArray() => FillSet().ToArray();
+            public override List<TSource> ToList() => new List<TSource>(new HashSet<TSource>(_source, _comparer));
 
-            public List<TSource> ToList() => FillSet().ToList();
+            public override int GetCount(bool onlyIfCheap) => onlyIfCheap ? -1 : new HashSet<TSource>(_source, _comparer).Count;
 
-            public int GetCount(bool onlyIfCheap) => onlyIfCheap ? -1 : FillSet().Count;
+            public override TSource? TryGetFirst(out bool found) => _source.TryGetFirst(out found);
         }
     }
 }

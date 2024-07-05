@@ -28,7 +28,6 @@
 #include "dllimportcallback.h"
 #include "eventtrace.h"
 
-#include "win32threadpool.h"
 #include "eventtrace.h"
 #include "finalizerthread.h"
 #include "threadsuspend.h"
@@ -37,11 +36,13 @@
 #include "dwreport.h"
 #endif // !TARGET_UNIX
 
+#include "nativelibrary.h"
+
 #ifndef DACCESS_COMPILE
 
+#include <corehost/host_runtime_contract.h>
+
 extern void STDMETHODCALLTYPE EEShutDown(BOOL fIsDllUnloading);
-extern void PrintToStdOutA(const char *pszString);
-extern void PrintToStdOutW(const WCHAR *pwzString);
 
 //***************************************************************************
 
@@ -66,8 +67,6 @@ STDMETHODIMP CorHost2::Start()
 
     HRESULT hr;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     // Ensure that only one thread at a time gets in here
     DangerousNonHostedSpinLockHolder lockHolder(&lockOnlyOneToInvokeStart);
 
@@ -90,7 +89,7 @@ STDMETHODIMP CorHost2::Start()
         else
         {
             // Increment the global (and dynamic) refCount...
-            FastInterlockIncrement(&m_RefCount);
+            InterlockedIncrement(&m_RefCount);
 
             // And set our flag that this host has invoked the Start...
             m_fStarted = TRUE;
@@ -113,11 +112,10 @@ STDMETHODIMP CorHost2::Start()
             // So, if you want to do that, just make sure you are the first host to load the
             // specific version of CLR in memory AND start it.
             m_fFirstToLoadCLR = TRUE;
-            FastInterlockIncrement(&m_RefCount);
+            InterlockedIncrement(&m_RefCount);
         }
     }
 
-    END_ENTRYPOINT_NOTHROW;
     return hr;
 }
 
@@ -129,7 +127,7 @@ HRESULT CorHost2::Stop()
     {
         NOTHROW;
         ENTRY_POINT;    // We're bringing the EE down, so no point in probing
-        if (GetThread()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
+        if (GetThreadNULLOk()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
     }
     CONTRACTL_END;
     if (!g_fEEStarted)
@@ -137,7 +135,6 @@ HRESULT CorHost2::Stop()
         return E_UNEXPECTED;
     }
     HRESULT hr=S_OK;
-    BEGIN_ENTRYPOINT_NOTHROW;
 
     // Is this host eligible to invoke the Stop method?
     if ((!m_fStarted) && (!m_fFirstToLoadCLR))
@@ -159,7 +156,7 @@ HRESULT CorHost2::Stop()
                 break;
             }
             else
-            if (FastInterlockCompareExchange(&m_RefCount, refCount - 1, refCount) == refCount)
+            if (InterlockedCompareExchange(&m_RefCount, refCount - 1, refCount) == refCount)
             {
                 // Indicate that we have got a Stop for a corresponding Start call from the
                 // Host. Semantically, CoreCLR has stopped for them.
@@ -177,8 +174,6 @@ HRESULT CorHost2::Stop()
             }
         }
     }
-    END_ENTRYPOINT_NOTHROW;
-
 
     return hr;
 }
@@ -200,30 +195,15 @@ HRESULT CorHost2::GetCurrentAppDomainId(DWORD *pdwAppDomainId)
         return HOST_E_CLRNOTAVAILABLE;
     }
 
-    HRESULT hr = S_OK;
+    if (pdwAppDomainId == NULL)
+        return E_POINTER;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
+    Thread *pThread = GetThreadNULLOk();
+    if (!pThread)
+        return E_UNEXPECTED;
 
-    if(pdwAppDomainId == NULL)
-    {
-        hr = E_POINTER;
-    }
-    else
-    {
-        Thread *pThread = GetThread();
-        if (!pThread)
-        {
-            hr = E_UNEXPECTED;
-        }
-        else
-        {
-            *pdwAppDomainId = DefaultADID;
-        }
-    }
-
-    END_ENTRYPOINT_NOTHROW;
-
-    return hr;
+    *pdwAppDomainId = DefaultADID;
+    return S_OK;
 }
 
 HRESULT CorHost2::ExecuteApplication(LPCWSTR   pwzAppFullName,
@@ -249,7 +229,7 @@ HRESULT CorHost2::ExecuteApplication(LPCWSTR   pwzAppFullName,
  * ActualCmdLine - Foo arg1 arg2.
  * (Host1)       - Full_path_to_Foo arg1 arg2
 */
-void SetCommandLineArgs(LPCWSTR pwzAssemblyPath, int argc, LPCWSTR* argv)
+static PTRARRAYREF SetCommandLineArgs(PCWSTR pwzAssemblyPath, int argc, PCWSTR* argv)
 {
     CONTRACTL
     {
@@ -262,34 +242,17 @@ void SetCommandLineArgs(LPCWSTR pwzAssemblyPath, int argc, LPCWSTR* argv)
     // Record the command line.
     SaveManagedCommandLine(pwzAssemblyPath, argc, argv);
 
-    // Send the command line to System.Environment.
-    struct _gc
-    {
-        PTRARRAYREF cmdLineArgs;
-    } gc;
+    PCWSTR exePath = Bundle::AppIsBundle() ? static_cast<PCWSTR>(Bundle::AppBundle->Path()) : pwzAssemblyPath;
 
-    ZeroMemory(&gc, sizeof(gc));
-    GCPROTECT_BEGIN(gc);
+    PTRARRAYREF result;
+    PREPARE_NONVIRTUAL_CALLSITE(METHOD__ENVIRONMENT__INITIALIZE_COMMAND_LINE_ARGS);
+    DECLARE_ARGHOLDER_ARRAY(args, 3);
+    args[ARGNUM_0] = PTR_TO_ARGHOLDER(exePath);
+    args[ARGNUM_1] = DWORD_TO_ARGHOLDER(argc);
+    args[ARGNUM_2] = PTR_TO_ARGHOLDER(argv);
+    CALL_MANAGED_METHOD_RETREF(result, PTRARRAYREF, args);
 
-    gc.cmdLineArgs = (PTRARRAYREF)AllocateObjectArray(argc + 1 /* arg[0] should be the exe name*/, g_pStringClass);
-    OBJECTREF orAssemblyPath = StringObject::NewString(Bundle::AppIsBundle() ? static_cast<LPCWSTR>(Bundle::AppBundle->Path()) : pwzAssemblyPath);
-    gc.cmdLineArgs->SetAt(0, orAssemblyPath);
-
-    for (int i = 0; i < argc; ++i)
-    {
-        OBJECTREF argument = StringObject::NewString(argv[i]);
-        gc.cmdLineArgs->SetAt(i + 1, argument);
-    }
-
-    MethodDescCallSite setCmdLineArgs(METHOD__ENVIRONMENT__SET_COMMAND_LINE_ARGS);
-
-    ARG_SLOT args[] =
-    {
-        ObjToArgSlot(gc.cmdLineArgs),
-    };
-    setCmdLineArgs.Call(args);
-
-    GCPROTECT_END();
+    return result;
 }
 
 HRESULT CorHost2::ExecuteAssembly(DWORD dwAppDomainId,
@@ -332,7 +295,7 @@ HRESULT CorHost2::ExecuteAssembly(DWORD dwAppDomainId,
 
     AppDomain *pCurDomain = SystemDomain::GetCurrentDomain();
 
-    Thread *pThread = GetThread();
+    Thread *pThread = GetThreadNULLOk();
     if (pThread == NULL)
     {
         pThread = SetupThreadNoThrow(&hr);
@@ -347,6 +310,15 @@ HRESULT CorHost2::ExecuteAssembly(DWORD dwAppDomainId,
 
     _ASSERTE (!pThread->PreemptiveGCDisabled());
 
+    if (g_EntryAssemblyPath == NULL)
+    {
+        // Store the entry assembly path for diagnostic purposes (for example, dumps)
+        size_t len = u16_strlen(pwzAssemblyPath) + 1;
+        NewArrayHolder<WCHAR> path { new WCHAR[len] };
+        wcscpy_s(path, len, pwzAssemblyPath);
+        g_EntryAssemblyPath = path.Extract();
+    }
+
     Assembly *pAssembly = AssemblySpec::LoadAssembly(pwzAssemblyPath);
 
 #if defined(FEATURE_MULTICOREJIT)
@@ -356,18 +328,11 @@ HRESULT CorHost2::ExecuteAssembly(DWORD dwAppDomainId,
     {
         GCX_COOP();
 
-        // Here we call the managed method that gets the cmdLineArgs array.
-        SetCommandLineArgs(pwzAssemblyPath, argc, argv);
-
         PTRARRAYREF arguments = NULL;
         GCPROTECT_BEGIN(arguments);
 
-        arguments = (PTRARRAYREF)AllocateObjectArray(argc, g_pStringClass);
-        for (int i = 0; i < argc; ++i)
-        {
-            STRINGREF argument = StringObject::NewString(argv[i]);
-            arguments->SetAt(i, argument);
-        }
+        // Here we call the managed method that gets the cmdLineArgs array.
+        arguments = SetCommandLineArgs(pwzAssemblyPath, argc, argv);
 
         if(CLRConfig::GetConfigValue(CLRConfig::INTERNAL_Corhost_Swallow_Uncaught_Exceptions))
         {
@@ -393,6 +358,11 @@ HRESULT CorHost2::ExecuteAssembly(DWORD dwAppDomainId,
 
     UNINSTALL_UNWIND_AND_CONTINUE_HANDLER;
     UNINSTALL_UNHANDLED_MANAGED_EXCEPTION_TRAP;
+
+#ifdef LOG_EXECUTABLE_ALLOCATOR_STATISTICS
+    ExecutableAllocator::DumpHolderUsage();
+    ExecutionManager::DumpExecutionManagerUsage();
+#endif
 
 ErrExit:
 
@@ -423,9 +393,7 @@ HRESULT CorHost2::ExecuteInDefaultAppDomain(LPCWSTR pwzAssemblyPath,
 
     HRESULT hr = S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
-    Thread *pThread = GetThread();
+    Thread *pThread = GetThreadNULLOk();
     if (pThread == NULL)
     {
         pThread = SetupThreadNoThrow(&hr);
@@ -445,15 +413,13 @@ HRESULT CorHost2::ExecuteInDefaultAppDomain(LPCWSTR pwzAssemblyPath,
         Assembly *pAssembly = AssemblySpec::LoadAssembly(pwzAssemblyPath);
 
         SString szTypeName(pwzTypeName);
-        StackScratchBuffer buff1;
-        const char* szTypeNameUTF8 = szTypeName.GetUTF8(buff1);
+        const char* szTypeNameUTF8 = szTypeName.GetUTF8();
         MethodTable *pMT = ClassLoader::LoadTypeByNameThrowing(pAssembly,
                                                             NULL,
                                                             szTypeNameUTF8).AsMethodTable();
 
         SString szMethodName(pwzMethodName);
-        StackScratchBuffer buff;
-        const char* szMethodNameUTF8 = szMethodName.GetUTF8(buff);
+        const char* szMethodNameUTF8 = szMethodName.GetUTF8();
         MethodDesc *pMethodMD = MemberLoader::FindMethod(pMT, szMethodNameUTF8, &gsig_SM_Str_RetInt);
 
         if (!pMethodMD)
@@ -491,9 +457,6 @@ HRESULT CorHost2::ExecuteInDefaultAppDomain(LPCWSTR pwzAssemblyPath,
     UNINSTALL_UNHANDLED_MANAGED_EXCEPTION_TRAP;
 
 ErrExit:
-
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 }
 
@@ -528,14 +491,13 @@ HRESULT CorHost2::ExecuteInAppDomain(DWORD dwAppDomainId,
     CONTRACTL
     {
         NOTHROW;
-        if (GetThread()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
+        if (GetThreadNULLOk()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
         ENTRY_POINT;  // This is called by a host.
     }
     CONTRACTL_END;
 
     HRESULT hr = S_OK;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
     BEGIN_EXTERNAL_ENTRYPOINT(&hr);
     GCX_COOP_THREAD_EXISTS(GET_THREAD());
 
@@ -546,7 +508,6 @@ HRESULT CorHost2::ExecuteInAppDomain(DWORD dwAppDomainId,
         hr=ExecuteInAppDomainHelper (pCallback, cookie);
     }
     END_EXTERNAL_ENTRYPOINT;
-    END_ENTRYPOINT_NOTHROW;
 
     return hr;
 }
@@ -566,7 +527,7 @@ HRESULT CorHost2::CreateAppDomainWithManager(
     CONTRACTL
     {
         NOTHROW;
-        if (GetThread()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
+        if (GetThreadNULLOk()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
         ENTRY_POINT;  // This is called by a host.
     }
     CONTRACTL_END;
@@ -596,8 +557,6 @@ HRESULT CorHost2::CreateAppDomainWithManager(
     if ((wszAppDomainManagerAssemblyName != NULL) || (wszAppDomainManagerTypeName != NULL))
         return E_INVALIDARG;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     BEGIN_EXTERNAL_ENTRYPOINT(&hr);
 
     AppDomain* pDomain = SystemDomain::System()->DefaultDomain();
@@ -611,8 +570,6 @@ HRESULT CorHost2::CreateAppDomainWithManager(
 
     if (dwFlags & APPDOMAIN_FORCE_TRIVIAL_WAIT_OPERATIONS)
         pDomain->SetForceTrivialWaitOperations();
-
-    pDomain->CreateBinderContext();
 
     {
         GCX_COOP();
@@ -631,42 +588,36 @@ HRESULT CorHost2::CreateAppDomainWithManager(
     LPCWSTR pwzTrustedPlatformAssemblies = NULL;
     LPCWSTR pwzPlatformResourceRoots = NULL;
     LPCWSTR pwzAppPaths = NULL;
-    LPCWSTR pwzAppNiPaths = NULL;
 
     for (int i = 0; i < nProperties; i++)
     {
-        if (wcscmp(pPropertyNames[i], W("NATIVE_DLL_SEARCH_DIRECTORIES")) == 0)
+        if (u16_strcmp(pPropertyNames[i], _T(HOST_PROPERTY_NATIVE_DLL_SEARCH_DIRECTORIES)) == 0)
         {
             pwzNativeDllSearchDirectories = pPropertyValues[i];
         }
         else
-        if (wcscmp(pPropertyNames[i], W("TRUSTED_PLATFORM_ASSEMBLIES")) == 0)
+        if (u16_strcmp(pPropertyNames[i], _T(HOST_PROPERTY_TRUSTED_PLATFORM_ASSEMBLIES)) == 0)
         {
             pwzTrustedPlatformAssemblies = pPropertyValues[i];
         }
         else
-        if (wcscmp(pPropertyNames[i], W("PLATFORM_RESOURCE_ROOTS")) == 0)
+        if (u16_strcmp(pPropertyNames[i], _T(HOST_PROPERTY_PLATFORM_RESOURCE_ROOTS)) == 0)
         {
             pwzPlatformResourceRoots = pPropertyValues[i];
         }
         else
-        if (wcscmp(pPropertyNames[i], W("APP_PATHS")) == 0)
+        if (u16_strcmp(pPropertyNames[i], _T(HOST_PROPERTY_APP_PATHS)) == 0)
         {
             pwzAppPaths = pPropertyValues[i];
         }
         else
-        if (wcscmp(pPropertyNames[i], W("APP_NI_PATHS")) == 0)
-        {
-            pwzAppNiPaths = pPropertyValues[i];
-        }
-        else
-        if (wcscmp(pPropertyNames[i], W("DEFAULT_STACK_SIZE")) == 0)
+        if (u16_strcmp(pPropertyNames[i], W("DEFAULT_STACK_SIZE")) == 0)
         {
             extern void ParseDefaultStackSize(LPCWSTR value);
             ParseDefaultStackSize(pPropertyValues[i]);
         }
         else
-        if (wcscmp(pPropertyNames[i], W("USE_ENTRYPOINT_FILTER")) == 0)
+        if (u16_strcmp(pPropertyNames[i], W("USE_ENTRYPOINT_FILTER")) == 0)
         {
             extern void ParseUseEntryPointFilter(LPCWSTR value);
             ParseUseEntryPointFilter(pPropertyValues[i]);
@@ -679,24 +630,41 @@ HRESULT CorHost2::CreateAppDomainWithManager(
         SString sTrustedPlatformAssemblies(pwzTrustedPlatformAssemblies);
         SString sPlatformResourceRoots(pwzPlatformResourceRoots);
         SString sAppPaths(pwzAppPaths);
-        SString sAppNiPaths(pwzAppNiPaths);
 
-        CLRPrivBinderCoreCLR *pBinder = pDomain->GetTPABinderContext();
+        DefaultAssemblyBinder *pBinder = pDomain->GetDefaultBinder();
         _ASSERTE(pBinder != NULL);
         IfFailThrow(pBinder->SetupBindingPaths(
             sTrustedPlatformAssemblies,
             sPlatformResourceRoots,
-            sAppPaths,
-            sAppNiPaths));
+            sAppPaths));
     }
+
+#if defined(TARGET_UNIX)
+    if (!g_coreclr_embedded)
+    {
+        // Check if the current code is executing in the single file host or in libcoreclr.so. The libSystem.Native is linked
+        // into the single file host, so we need to check only when this code is in libcoreclr.so.
+        // Preload the libSystem.Native.so/dylib to detect possible problems with loading it early
+        EX_TRY
+        {
+            NativeLibrary::LoadLibraryByName(W("libSystem.Native"), SystemDomain::SystemAssembly(), FALSE, 0, TRUE);
+        }
+        EX_HOOK
+        {
+            Exception *ex = GET_EXCEPTION();
+            SString err;
+            ex->GetMessage(err);
+            LogErrorToHost("Error message: %s", err.GetUTF8());
+        }
+        EX_END_HOOK;
+    }
+#endif // TARGET_UNIX
 
     *pAppDomainID=DefaultADID;
 
     m_fAppDomainCreated = TRUE;
 
     END_EXTERNAL_ENTRYPOINT;
-
-    END_ENTRYPOINT_NOTHROW;
 
     return hr;
 }
@@ -712,7 +680,7 @@ HRESULT CorHost2::CreateDelegate(
     CONTRACTL
     {
         NOTHROW;
-        if (GetThread()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
+        if (GetThreadNULLOk()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
         ENTRY_POINT;  // This is called by a host.
     }
     CONTRACTL_END;
@@ -723,9 +691,9 @@ HRESULT CorHost2::CreateDelegate(
     EMPTY_STRING_TO_NULL(wszClassName);
     EMPTY_STRING_TO_NULL(wszMethodName);
 
-    if (fnPtr == NULL)
+    if (fnPtr == 0)
        return E_POINTER;
-    *fnPtr = NULL;
+    *fnPtr = 0;
 
     if(wszAssemblyName == NULL)
         return E_INVALIDARG;
@@ -740,12 +708,9 @@ HRESULT CorHost2::CreateDelegate(
     if (appDomainID != DefaultADID)
         return HOST_E_INVALIDOPERATION;
 
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     BEGIN_EXTERNAL_ENTRYPOINT(&hr);
     GCX_COOP_THREAD_EXISTS(GET_THREAD());
 
-    MAKE_UTF8PTR_FROMWIDE(szAssemblyName, wszAssemblyName);
     MAKE_UTF8PTR_FROMWIDE(szClassName, wszClassName);
     MAKE_UTF8PTR_FROMWIDE(szMethodName, wszMethodName);
 
@@ -753,7 +718,8 @@ HRESULT CorHost2::CreateDelegate(
         GCX_PREEMP();
 
         AssemblySpec spec;
-        spec.Init(szAssemblyName);
+        SString ssAssemblyName(wszAssemblyName);
+        spec.Init(ssAssemblyName);
         Assembly* pAsm=spec.LoadAssembly(FILE_ACTIVE);
 
         TypeHandle th=pAsm->GetLoader()->LoadTypeByNameThrowing(pAsm,NULL,szClassName);
@@ -779,11 +745,7 @@ HRESULT CorHost2::CreateDelegate(
 
         if (pMD->HasUnmanagedCallersOnlyAttribute())
         {
-#ifdef TARGET_X86
-            *fnPtr = (INT_PTR)COMDelegate::ConvertToUnmanagedCallback(pMD);
-#else
             *fnPtr = pMD->GetMultiCallableAddrOfCode();
-#endif
         }
         else
         {
@@ -794,8 +756,6 @@ HRESULT CorHost2::CreateDelegate(
 
     END_EXTERNAL_ENTRYPOINT;
 
-    END_ENTRYPOINT_NOTHROW;
-
     return hr;
 }
 
@@ -804,7 +764,7 @@ HRESULT CorHost2::Authenticate(ULONGLONG authKey)
     CONTRACTL
     {
         NOTHROW;
-        if (GetThread()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
+        if (GetThreadNULLOk()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
         ENTRY_POINT;  // This is called by a host.
     }
     CONTRACTL_END;
@@ -818,7 +778,7 @@ HRESULT CorHost2::RegisterMacEHPort()
     CONTRACTL
     {
         NOTHROW;
-        if (GetThread()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
+        if (GetThreadNULLOk()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
         ENTRY_POINT;  // This is called by a host.
     }
     CONTRACTL_END;
@@ -831,7 +791,7 @@ HRESULT CorHost2::SetStartupFlags(STARTUP_FLAGS flag)
     CONTRACTL
     {
         NOTHROW;
-        if (GetThread()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
+        if (GetThreadNULLOk()) {GC_TRIGGERS;} else {DISABLED(GC_NOTRIGGER);}
         ENTRY_POINT;  // This is called by a host.
     }
     CONTRACTL_END;
@@ -895,7 +855,6 @@ STDMETHODIMP CorHost2::UnloadAppDomain2(DWORD dwDomainId, BOOL fWaitUntilDone, i
     }
 
     HRESULT hr=S_OK;
-    BEGIN_ENTRYPOINT_NOTHROW;
 
     if (!m_fFirstToLoadCLR)
     {
@@ -921,7 +880,6 @@ STDMETHODIMP CorHost2::UnloadAppDomain2(DWORD dwDomainId, BOOL fWaitUntilDone, i
             hr = S_FALSE;
         }
     }
-    END_ENTRYPOINT_NOTHROW;
 
     if (pLatchedExitCode)
     {
@@ -1013,18 +971,11 @@ HRESULT CorHost2::GetBucketParametersForCurrentException(BucketParameters *pPara
     }
     CONTRACTL_END;
 
-    HRESULT hr = S_OK;
-    BEGIN_ENTRYPOINT_NOTHROW;
-
     // To avoid confusion, clear the buckets.
     memset(pParams, 0, sizeof(BucketParameters));
 
     // Defer to Watson helper.
-    hr = ::GetBucketParametersForCurrentException(pParams);
-
-    END_ENTRYPOINT_NOTHROW;
-
-    return hr;
+    return ::GetBucketParametersForCurrentException(pParams);
 }
 #endif // !TARGET_UNIX
 
@@ -1075,7 +1026,7 @@ HRESULT CorHost2::GetCLRControl(ICLRControl** pCLRControl)
 // Note: Sampling profilers also use this function to initialize TLS for a unmanaged
 // sampling thread so that initialization can be done in advance to avoid deadlocks.
 // See ProfToEEInterfaceImpl::InitializeCurrentThread for more details.
-void SetupTLSForThread(Thread* pThread)
+void SetupTLSForThread()
 {
     STATIC_CONTRACT_THROWS;
     STATIC_CONTRACT_GC_NOTRIGGER;

@@ -7,7 +7,7 @@ using Xunit;
 
 namespace System.Security.Cryptography.Dsa.Tests
 {
-    [SkipOnMono("Not supported on Browser", TestPlatforms.Browser)]
+    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst, "Not supported on Browser/iOS/tvOS/MacCatalyst")]
     public sealed class DSASignVerify_Array : DSASignVerify
     {
         public override byte[] SignData(DSA dsa, byte[] data, HashAlgorithmName hashAlgorithm) =>
@@ -54,7 +54,7 @@ namespace System.Security.Cryptography.Dsa.Tests
         }
     }
 
-    [SkipOnMono("Not supported on Browser", TestPlatforms.Browser)]
+    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst, "Not supported on Browser/iOS/tvOS/MacCatalyst")]
     public sealed class DSASignVerify_Stream : DSASignVerify
     {
         public override byte[] SignData(DSA dsa, byte[] data, HashAlgorithmName hashAlgorithm) =>
@@ -75,8 +75,8 @@ namespace System.Security.Cryptography.Dsa.Tests
         }
     }
 
-#if NETCOREAPP
-    [SkipOnMono("Not supported on Browser", TestPlatforms.Browser)]
+#if NET
+    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst, "Not supported on Browser/iOS/tvOS/MacCatalyst")]
     public sealed class DSASignVerify_Span : DSASignVerify
     {
         public override byte[] SignData(DSA dsa, byte[] data, HashAlgorithmName hashAlgorithm) =>
@@ -109,7 +109,7 @@ namespace System.Security.Cryptography.Dsa.Tests
         }
     }
 #endif
-    [SkipOnMono("Not supported on Browser", TestPlatforms.Browser)]
+    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst, "Not supported on Browser/iOS/tvOS/MacCatalyst")]
     public abstract partial class DSASignVerify
     {
         public abstract byte[] SignData(DSA dsa, byte[] data, HashAlgorithmName hashAlgorithm);
@@ -143,7 +143,7 @@ namespace System.Security.Cryptography.Dsa.Tests
 
         private void UseAfterDispose(bool importKey)
         {
-            DSA key = importKey ? DSAFactory.Create(DSATestData.GetDSA1024Params()) : DSAFactory.Create(512);
+            DSA key = importKey ? DSAFactory.Create(DSATestData.GetDSA1024Params()) : DSAFactory.Create(1024);
             byte[] data = { 1 };
             byte[] sig;
 
@@ -163,7 +163,21 @@ namespace System.Security.Cryptography.Dsa.Tests
             Assert.Throws<ObjectDisposedException>(
                 () =>
                 {
-                    key.KeySize = 576;
+                    try
+                    {
+                        key.KeySize = 576;
+                    }
+                    catch (CryptographicException)
+                    {
+                        // DSACryptoServiceProvider on Android only supports 1024 and does an early check for legal
+                        // key sizes, since it is more restrictive than the wrapped implementation. It will throw
+                        // CryptographicException. SignData should still throw ObjectDisposedException.
+                        if (!PlatformDetection.IsAndroid)
+                        {
+                            throw;
+                        }
+                    }
+
                     SignData(key, data, HashAlgorithmName.SHA1);
                 });
         }
@@ -374,6 +388,25 @@ namespace System.Security.Cryptography.Dsa.Tests
                 data[0] ^= 0xFF;
                 signature[signature.Length - 1] ^= 0xFF;
                 Assert.False(VerifyData(dsa, data, signature, HashAlgorithmName.SHA1), "Tampered signature verifies");
+            }
+        }
+
+        [Fact]
+        public void SignData_NullSignature_Fails()
+        {
+            using (DSA dsa = DSAFactory.Create())
+            {
+                dsa.ImportParameters(DSATestData.GetDSA1024Params());
+
+                bool result = dsa.TrySignData(
+                    "hello"u8,
+                    (Span<byte>)null,
+                    HashAlgorithmName.SHA1,
+                    DSASignatureFormat.IeeeP1363FixedFieldConcatenation,
+                    out int bytesWritten);
+
+                Assert.False(result);
+                Assert.Equal(0, bytesWritten);
             }
         }
 

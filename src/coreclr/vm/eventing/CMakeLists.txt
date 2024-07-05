@@ -8,7 +8,11 @@ else()
   set(NEED_XPLAT_HEADER ON)
 endif()
 
-include(FindPythonInterp)
+if (CLR_CMAKE_TARGET_LINUX)
+  set(USEREVENTS_ARG "--userevents")
+endif(CLR_CMAKE_TARGET_LINUX)
+
+include(FindPython)
 
 set (EventingHeaders
   ${GENERATED_INCLUDE_DIR}/etmdummy.h
@@ -24,17 +28,24 @@ endif()
 
 set(GENEVENTING_SCRIPT ${CLR_DIR}/scripts/genEventing.py)
 
-add_custom_target(eventing_headers
-  ${PYTHON_EXECUTABLE} ${GENEVENTING_SCRIPT} --man ${EVENT_MANIFEST} --inc ${GENERATED_INCLUDE_DIR} --dummy ${GENERATED_INCLUDE_DIR}/etmdummy.h ${NONEXTERN_ARG} ${NOXPLATHEADER_ARG}
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/eventing_headers.timestamp
+  COMMAND ${Python_EXECUTABLE} ${GENEVENTING_SCRIPT} --man ${EVENT_MANIFEST} --incdir ${GENERATED_INCLUDE_DIR} --dummy ${GENERATED_INCLUDE_DIR}/etmdummy.h ${NONEXTERN_ARG} ${NOXPLATHEADER_ARG} ${USEREVENTS_ARG}
+  COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/eventing_headers.timestamp
   DEPENDS ${EVENT_MANIFEST} ${GENEVENTING_SCRIPT}
   VERBATIM
 )
 
 set_source_files_properties(${EventingHeaders} PROPERTIES GENERATED TRUE)
 
+add_custom_target(eventing_headers DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/eventing_headers.timestamp)
 add_dependencies(eventing_headers eventprovider)
 
 add_subdirectory(eventpipe)
+
+if(CLR_CMAKE_TARGET_LINUX)
+  add_subdirectory(userevents)
+endif(CLR_CMAKE_TARGET_LINUX)
 
 if(CLR_CMAKE_HOST_WIN32)
   add_subdirectory(EtwProvider)

@@ -4,8 +4,10 @@
 using Microsoft.DotNet.Cli.Build.Framework;
 using Microsoft.Win32;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 
 namespace Microsoft.DotNet.CoreSetup.Test.HostActivation
@@ -25,7 +27,7 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation
         {
             _testOnlyProductBehavior = TestOnlyProductBehavior.Enable(productBinaryPath);
 
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            if (OperatingSystem.IsWindows())
             {
                 // To test registered installs, we need a registry key which is:
                 // - writable without admin access - so that the tests don't require admin to run
@@ -34,7 +36,7 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation
                 //   product must look into the 32-bit hive.
                 //   Without the redirection we would not be able to test that the product always looks
                 //   into 32-bit only.
-                // Per this page https://docs.microsoft.com/en-us/windows/desktop/WinProg64/shared-registry-keys
+                // Per this page https://learn.microsoft.com/windows/desktop/WinProg64/shared-registry-keys
                 // a user writable redirected key is for example HKCU\Software\Classes\Interface
                 // so we're going to use that one - it's not super clean as the key stores COM interfaces,
                 // but we should not corrupt anything by adding a special subkey even if it's left behind.
@@ -54,31 +56,41 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation
                 // On Linux/macOS the install location is registered in a file which is normally
                 // located in /etc/dotnet/install_location
                 // So we need to redirect it to a different place here.
-                string directory = Path.Combine(TestArtifact.TestArtifactsPath, "installLocationOverride");
+                string directory = Path.Combine(TestContext.TestArtifactsPath, "installLocationOverride" + Process.GetCurrentProcess().Id.ToString());
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
                 Directory.CreateDirectory(directory);
-                PathValueOverride = Path.Combine(directory, "install_location." + Process.GetCurrentProcess().Id.ToString());
-                File.WriteAllText(PathValueOverride, "");
+                PathValueOverride = directory;
             }
         }
 
-        public void SetInstallLocation(string installLocation, string architecture)
+        public void SetInstallLocation(params (string Architecture, string Path)[] locations)
         {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            Debug.Assert(locations.Length >= 1);
+            if (OperatingSystem.IsWindows())
             {
-                using (RegistryKey dotnetLocationKey = key.CreateSubKey($@"Setup\InstalledVersions\{architecture}"))
+                foreach (var location in locations)
                 {
-                    dotnetLocationKey.SetValue("InstallLocation", installLocation);
+                    using (RegistryKey dotnetLocationKey = key.CreateSubKey($@"Setup\InstalledVersions\{location.Architecture}"))
+                    {
+                        dotnetLocationKey.SetValue("InstallLocation", location.Path);
+                    }
                 }
             }
             else
             {
-                File.WriteAllText(PathValueOverride, installLocation);
+                foreach (var location in locations)
+                {
+                    string installLocationFileName = "install_location" +
+                        (!string.IsNullOrWhiteSpace(location.Architecture) ? ("_" + location.Architecture) : string.Empty);
+                    File.WriteAllText(Path.Combine(PathValueOverride, installLocationFileName), location.Path);
+                }
             }
         }
 
         public void Dispose()
         {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            if (OperatingSystem.IsWindows())
             {
                 parentKey.DeleteSubKeyTree(keyName, throwOnMissingSubKey: false);
                 key.Dispose();
@@ -110,7 +122,7 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation
                 return command;
             }
 
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            if (OperatingSystem.IsWindows())
             {
                 return command.EnvironmentVariable(
                     Constants.TestOnlyEnvironmentVariables.RegistryPath,
@@ -119,7 +131,7 @@ namespace Microsoft.DotNet.CoreSetup.Test.HostActivation
             else
             {
                 return command.EnvironmentVariable(
-                    Constants.TestOnlyEnvironmentVariables.InstallLocationFilePath,
+                    Constants.TestOnlyEnvironmentVariables.InstallLocationPath,
                     registeredInstallLocationOverride.PathValueOverride);
             }
         }

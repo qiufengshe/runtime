@@ -7,9 +7,9 @@ using System.Diagnostics;
 namespace System.Threading
 {
     //
-    // Unix-specific implementation of Timer
+    // Portable implementation of Timer
     //
-    internal partial class TimerQueue : IThreadPoolWorkItem
+    internal sealed partial class TimerQueue : IThreadPoolWorkItem
     {
         private static List<TimerQueue>? s_scheduledTimers;
         private static List<TimerQueue>? s_scheduledTimersToFire;
@@ -20,12 +20,11 @@ namespace System.Threading
         /// </summary>
         private static readonly AutoResetEvent s_timerEvent = new AutoResetEvent(false);
 
+        private static readonly Lock s_timerEventLock = new Lock();
+
+        // this means that it's in the s_scheduledTimers collection, not that it's the one which would run on the next TimeoutCallback
         private bool _isScheduled;
         private long _scheduledDueTimeMs;
-
-        private TimerQueue(int id)
-        {
-        }
 
         private static List<TimerQueue> InitializeScheduledTimerManager_Locked()
         {
@@ -36,8 +35,11 @@ namespace System.Threading
 
             // The timer thread must start in the default execution context without transferring the context, so
             // using UnsafeStart() instead of Start()
-            Thread timerThread = new Thread(TimerThread);
-            timerThread.IsBackground = true;
+            Thread timerThread = new Thread(TimerThread)
+            {
+                Name = ".NET Timer",
+                IsBackground = true
+            };
             timerThread.UnsafeStart();
 
             // Do this after creating the thread in case thread creation fails so that it will try again next time
@@ -45,20 +47,18 @@ namespace System.Threading
             return timers;
         }
 
-        private bool SetTimer(uint actualDuration)
+        private bool SetTimerPortable(uint actualDuration)
         {
             Debug.Assert((int)actualDuration >= 0);
             long dueTimeMs = TickCount64 + (int)actualDuration;
             AutoResetEvent timerEvent = s_timerEvent;
-            lock (timerEvent)
+            Lock timerEventLock = s_timerEventLock;
+
+            lock (timerEventLock)
             {
                 if (!_isScheduled)
                 {
-                    List<TimerQueue>? timers = s_scheduledTimers;
-                    if (timers == null)
-                    {
-                        timers = InitializeScheduledTimerManager_Locked();
-                    }
+                    List<TimerQueue> timers = s_scheduledTimers ?? InitializeScheduledTimerManager_Locked();
 
                     timers.Add(this);
                     _isScheduled = true;
@@ -72,15 +72,17 @@ namespace System.Threading
         }
 
         /// <summary>
-        /// This method is executed on a dedicated a timer thread. Its purpose is
+        /// This method is executed on a dedicated timer thread. Its purpose is
         /// to handle timer requests and notify the TimerQueue when a timer expires.
         /// </summary>
         private static void TimerThread()
         {
             AutoResetEvent timerEvent = s_timerEvent;
+            Lock timerEventLock = s_timerEventLock;
             List<TimerQueue> timersToFire = s_scheduledTimersToFire!;
             List<TimerQueue> timers;
-            lock (timerEvent)
+
+            lock (timerEventLock)
             {
                 timers = s_scheduledTimers!;
             }
@@ -92,7 +94,7 @@ namespace System.Threading
 
                 long currentTimeMs = TickCount64;
                 shortestWaitDurationMs = int.MaxValue;
-                lock (timerEvent)
+                lock (timerEventLock)
                 {
                     for (int i = timers.Count - 1; i >= 0; --i)
                     {
@@ -123,7 +125,7 @@ namespace System.Threading
                 {
                     foreach (TimerQueue timerToFire in timersToFire)
                     {
-                        ThreadPool.UnsafeQueueTimeSensitiveWorkItem(timerToFire);
+                        ThreadPool.UnsafeQueueHighPriorityWorkItemInternal(timerToFire);
                     }
                     timersToFire.Clear();
                 }

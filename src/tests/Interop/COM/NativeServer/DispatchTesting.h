@@ -25,7 +25,7 @@ public:
     { }
 
 public: // IEnumVARIANT
-    HRESULT STDMETHODCALLTYPE Next( 
+    HRESULT STDMETHODCALLTYPE Next(
         ULONG celt,
         VARIANT *rgVar,
         ULONG *pCeltFetched)
@@ -36,7 +36,7 @@ public: // IEnumVARIANT
             V_VT(&rgVar[*pCeltFetched]) = VT_I4;
             V_I4(&(rgVar[*pCeltFetched])) = _current;
         }
-        
+
         return celt == *pCeltFetched ? S_OK : S_FALSE;
     }
 
@@ -89,31 +89,31 @@ private:
     static const int NamesCount;
 
 public: // IDispatch
-        virtual HRESULT STDMETHODCALLTYPE GetTypeInfoCount( 
-            /* [out] */ __RPC__out UINT *pctinfo)
+        virtual HRESULT STDMETHODCALLTYPE GetTypeInfoCount(
+            /* [out] */ __RPC__out uint32_t *pctinfo)
         {
             *pctinfo = 0;
             return S_OK;
         }
-        
-        virtual HRESULT STDMETHODCALLTYPE GetTypeInfo( 
-            /* [in] */ UINT iTInfo,
+
+        virtual HRESULT STDMETHODCALLTYPE GetTypeInfo(
+            /* [in] */ uint32_t iTInfo,
             /* [in] */ LCID lcid,
             /* [out] */ __RPC__deref_out_opt ITypeInfo **ppTInfo)
         {
             return E_NOTIMPL;
         }
-        
-        virtual HRESULT STDMETHODCALLTYPE GetIDsOfNames( 
+
+        virtual HRESULT STDMETHODCALLTYPE GetIDsOfNames(
             /* [in] */ __RPC__in REFIID,
             /* [size_is][in] */ __RPC__in_ecount_full(cNames) LPOLESTR *rgszNames,
-            /* [range][in] */ __RPC__in_range(0,16384) UINT cNames,
+            /* [range][in] */ __RPC__in_range(0,16384) uint32_t cNames,
             /* [in] */ LCID,
             /* [size_is][out] */ __RPC__out_ecount_full(cNames) DISPID *rgDispId)
         {
             bool containsUnknown = false;
             DISPID *curr = rgDispId;
-            for (UINT i = 0; i < cNames; ++i)
+            for (uint32_t i = 0; i < cNames; ++i)
             {
                 *curr = DISPID_UNKNOWN;
                 LPOLESTR name = rgszNames[i];
@@ -134,15 +134,15 @@ public: // IDispatch
             return (containsUnknown) ? DISP_E_UNKNOWNNAME : S_OK;
         }
 
-        virtual /* [local] */ HRESULT STDMETHODCALLTYPE Invoke( 
+        virtual /* [local] */ HRESULT STDMETHODCALLTYPE Invoke(
             /* [annotation][in] */ _In_  DISPID dispIdMember,
             /* [annotation][in] */ _In_  REFIID riid,
             /* [annotation][in] */ _In_  LCID lcid,
-            /* [annotation][in] */ _In_  WORD wFlags,
+            /* [annotation][in] */ _In_  uint16_t wFlags,
             /* [annotation][out][in] */ _In_  DISPPARAMS *pDispParams,
             /* [annotation][out] */ _Out_opt_  VARIANT *pVarResult,
             /* [annotation][out] */ _Out_opt_  EXCEPINFO *pExcepInfo,
-            /* [annotation][out] */ _Out_opt_  UINT *puArgErr)
+            /* [annotation][out] */ _Out_opt_  uint32_t *puArgErr)
         {
             //
             // Note that arguments are received in reverse order for IDispatch::Invoke()
@@ -243,6 +243,8 @@ public: // IDispatchTesting
             return DISP_E_EXCEPTION;
         case IDispatchTesting_Exception_HResult:
             return HRESULT_FROM_WIN32(errorCode);
+        case IDispatchTesting_Exception_Int:
+            return errorCode;
         default:
             return S_FALSE; // Return a success case to indicate failure to trigger a failure.
         }
@@ -278,14 +280,14 @@ private:
         __int64 *l_args[2];
         unsigned __int64 *ul_args[2];
         size_t expectedArgCount =
-            ARRAYSIZE(b_args)
-            + ARRAYSIZE(s_args)
-            + ARRAYSIZE(us_args)
-            + ARRAYSIZE(i_args)
-            + ARRAYSIZE(ui_args)
-            + ARRAYSIZE(l_args)
-            + ARRAYSIZE(ul_args);
-        RETURN_IF_FAILED(VerifyValues(UINT(expectedArgCount), pDispParams->cArgs));
+            ARRAY_SIZE(b_args)
+            + ARRAY_SIZE(s_args)
+            + ARRAY_SIZE(us_args)
+            + ARRAY_SIZE(i_args)
+            + ARRAY_SIZE(ui_args)
+            + ARRAY_SIZE(l_args)
+            + ARRAY_SIZE(ul_args);
+        RETURN_IF_FAILED(VerifyValues(uint32_t(expectedArgCount), pDispParams->cArgs));
 
         VARENUM currType;
         VARIANTARG *currArg;
@@ -371,8 +373,8 @@ private:
         HRESULT hr;
 
         float *args[2];
-        size_t expectedArgCount = ARRAYSIZE(args);
-        RETURN_IF_FAILED(VerifyValues(UINT(expectedArgCount), pDispParams->cArgs));
+        size_t expectedArgCount = ARRAY_SIZE(args);
+        RETURN_IF_FAILED(VerifyValues(uint32_t(expectedArgCount), pDispParams->cArgs));
 
         if (pVarResult == nullptr)
             return E_POINTER;
@@ -401,8 +403,8 @@ private:
         HRESULT hr;
 
         double *args[2];
-        size_t expectedArgCount = ARRAYSIZE(args);
-        RETURN_IF_FAILED(VerifyValues(UINT(expectedArgCount), pDispParams->cArgs));
+        size_t expectedArgCount = ARRAY_SIZE(args);
+        RETURN_IF_FAILED(VerifyValues(uint32_t(expectedArgCount), pDispParams->cArgs));
 
         if (pVarResult == nullptr)
             return E_POINTER;
@@ -429,13 +431,13 @@ private:
     HRESULT TriggerException_Proxy(
         _In_ DISPPARAMS *pDispParams,
         _Out_ EXCEPINFO *pExcepInfo,
-        _Out_ UINT *puArgErr)
+        _Out_ uint32_t *puArgErr)
     {
         HRESULT hr;
 
         int *args[2];
-        size_t expectedArgCount = ARRAYSIZE(args);
-        RETURN_IF_FAILED(VerifyValues(UINT(expectedArgCount), pDispParams->cArgs));
+        size_t expectedArgCount = ARRAY_SIZE(args);
+        RETURN_IF_FAILED(VerifyValues(uint32_t(expectedArgCount), pDispParams->cArgs));
 
         VARENUM currType;
         VARIANTARG *currArg;
@@ -461,8 +463,8 @@ private:
             *puArgErr = 1;
             pExcepInfo->scode = HRESULT_FROM_WIN32(*args[1]);
 
-            WCHAR buffer[ARRAYSIZE(W("4294967295"))];
-            _snwprintf_s(buffer, ARRAYSIZE(buffer), _TRUNCATE, W("%x"), *args[1]);
+            WCHAR buffer[ARRAY_SIZE(W("4294967295"))];
+            _snwprintf_s(buffer, ARRAY_SIZE(buffer), _TRUNCATE, W("%x"), *args[1]);
             pExcepInfo->bstrDescription = SysAllocString(buffer);
         }
 
@@ -474,8 +476,8 @@ private:
         HRESULT hr;
 
         HFA_4 *args[1];
-        size_t expectedArgCount = ARRAYSIZE(args);
-        RETURN_IF_FAILED(VerifyValues(UINT(expectedArgCount), pDispParams->cArgs));
+        size_t expectedArgCount = ARRAY_SIZE(args);
+        RETURN_IF_FAILED(VerifyValues(uint32_t(expectedArgCount), pDispParams->cArgs));
 
         VARENUM currType;
         VARIANTARG *currArg;
@@ -523,4 +525,4 @@ const WCHAR * const DispatchTesting::Names[] =
     W("ExplicitGetEnumerator")
 };
 
-const int DispatchTesting::NamesCount = ARRAYSIZE(DispatchTesting::Names);
+const int DispatchTesting::NamesCount = ARRAY_SIZE(DispatchTesting::Names);

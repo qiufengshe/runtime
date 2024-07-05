@@ -8,7 +8,7 @@ internal static partial class Interop
 {
     internal static partial class Ole32
     {
-        [DllImport(Interop.Libraries.Ole32)]
-        internal static extern int CoCreateGuid(out Guid guid);
+        [LibraryImport(Libraries.Ole32)]
+        internal static unsafe partial int CoCreateGuid(Guid* guid);
     }
 }

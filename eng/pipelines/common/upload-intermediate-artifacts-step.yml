@@ -1,9 +1,13 @@
 parameters:
   name: ''
+  publishPackagesCondition: always()
+  publishVSSetupCondition: false
+  isOfficialBuild: true
 
 steps:
 - task: CopyFiles@2
   displayName: Prepare job-specific intermediate artifacts subdirectory
+  condition: and(succeeded(), ${{ parameters.publishPackagesCondition }})
   inputs:
     SourceFolder: '$(Build.SourcesDirectory)/artifacts/packages/$(_BuildConfig)'
     Contents: |
@@ -12,9 +16,21 @@ steps:
     TargetFolder: '$(Build.StagingDirectory)/IntermediateArtifacts/${{ parameters.name }}'
     CleanTargetFolder: true
 
-- task: PublishBuildArtifacts@1
-  displayName: Publish intermediate artifacts
+- task: CopyFiles@2
+  displayName: Prepare job-specific intermediate artifacts subdirectory
+  condition: and(succeeded(), ${{ parameters.publishVSSetupCondition }})
   inputs:
-    pathToPublish: '$(Build.StagingDirectory)/IntermediateArtifacts'
-    artifactName: IntermediateArtifacts
-    artifactType: container
+    SourceFolder: '$(Build.SourcesDirectory)/artifacts/VSSetup/$(_BuildConfig)'
+    Contents: |
+      Insertion/**/*
+    TargetFolder: '$(Build.StagingDirectory)/IntermediateArtifacts/${{ parameters.name }}'
+    CleanTargetFolder: true
+
+- template: /eng/pipelines/common/templates/publish-build-artifacts.yml
+  parameters:
+    isOfficialBuild: ${{ parameters.isOfficialBuild }}
+    displayName: Publish intermediate artifacts
+    inputs:
+      PathtoPublish: '$(Build.StagingDirectory)/IntermediateArtifacts'
+      ArtifactName: IntermediateArtifacts
+      ArtifactType: container

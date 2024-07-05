@@ -166,7 +166,7 @@ namespace System.Speech.Synthesis.TtsEngine
 
     #region Public Types
     [StructLayout(LayoutKind.Sequential)]
-    [DebuggerDisplay("{State.Action} {TextToSpeak!=null?TextToSpeak:\"\"}")]
+    [DebuggerDisplay("{State.Action} = {TextToSpeak!=null?TextToSpeak:\"\"}")]
     public class TextFragment
     {
         public TextFragment()
@@ -286,10 +286,10 @@ namespace System.Speech.Synthesis.TtsEngine
         }
         public Prosody()
         {
-            Pitch = new ProsodyNumber((int)ProsodyPitch.Default); ;
-            Range = new ProsodyNumber((int)ProsodyRange.Default); ;
+            Pitch = new ProsodyNumber((int)ProsodyPitch.Default);
+            Range = new ProsodyNumber((int)ProsodyRange.Default);
             Rate = new ProsodyNumber((int)ProsodyRate.Default);
-            Volume = new ProsodyNumber((int)ProsodyVolume.Default); ;
+            Volume = new ProsodyNumber((int)ProsodyVolume.Default);
         }
 
         internal Prosody Clone()

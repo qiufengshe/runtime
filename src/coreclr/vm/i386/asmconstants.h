@@ -25,7 +25,7 @@
 #define ASMCONSTANTS_RUNTIME_ASSERT(cond)
 #endif
 
-// Some contants are different in _DEBUG builds.  This macro factors out ifdefs from below.
+// Some constants are different in _DEBUG builds.  This macro factors out ifdefs from below.
 #ifdef _DEBUG
 #define DBG_FRE(dbg,fre) dbg
 #else
@@ -163,40 +163,26 @@ ASMCONSTANTS_C_ASSERT(CORINFO_IndexOutOfRangeException_ASM == CORINFO_IndexOutOf
 #define CORINFO_OverflowException_ASM 4
 ASMCONSTANTS_C_ASSERT(CORINFO_OverflowException_ASM == CORINFO_OverflowException)
 
-#define CORINFO_ArrayTypeMismatchException_ASM 6
-ASMCONSTANTS_C_ASSERT(CORINFO_ArrayTypeMismatchException_ASM == CORINFO_ArrayTypeMismatchException)
-
-#define CORINFO_ArgumentNullException_ASM 8
-ASMCONSTANTS_C_ASSERT(CORINFO_ArgumentNullException_ASM == CORINFO_ArgumentNullException)
-
 #define CORINFO_ArgumentException_ASM 9
 ASMCONSTANTS_C_ASSERT(CORINFO_ArgumentException_ASM == CORINFO_ArgumentException)
 
 
-#ifndef CROSSGEN_COMPILE
 
-#define Thread_m_State      0x04
+#define Thread_m_State      0x00
 ASMCONSTANTS_C_ASSERT(Thread_m_State == offsetof(Thread, m_State))
-#endif // CROSSGEN_COMPILE
 
-#define Thread_m_fPreemptiveGCDisabled     0x08
-#ifndef CROSSGEN_COMPILE
+#define Thread_m_fPreemptiveGCDisabled     0x04
 ASMCONSTANTS_C_ASSERT(Thread_m_fPreemptiveGCDisabled == offsetof(Thread, m_fPreemptiveGCDisabled))
-#endif // CROSSGEN_COMPILE
 
-#define Thread_m_pFrame     0x0C
-#ifndef CROSSGEN_COMPILE
+#define Thread_m_pFrame     0x08
 ASMCONSTANTS_C_ASSERT(Thread_m_pFrame == offsetof(Thread, m_pFrame))
-#endif // CROSSGEN_COMPILE
 
-#ifndef CROSSGEN_COMPILE
 
 #ifdef FEATURE_HIJACK
 #define TS_Hijacked_ASM 0x80
 ASMCONSTANTS_C_ASSERT(Thread::TS_Hijacked == TS_Hijacked_ASM)
 #endif
 
-#endif // CROSSGEN_COMPILE
 
 
 // from clr/src/vm/appdomain.hpp
@@ -212,7 +198,7 @@ ASMCONSTANTS_C_ASSERT(MethodTable_m_wNumInterfaces == offsetof(MethodTable, m_wN
 ASMCONSTANTS_C_ASSERT(MethodTable_m_dwFlags == offsetof(MethodTable, m_dwFlags))
 
 #define MethodTable_m_pInterfaceMap     DBG_FRE(0x28, 0x24)
-ASMCONSTANTS_C_ASSERT(MethodTable_m_pInterfaceMap == offsetof(MethodTable, m_pMultipurposeSlot2))
+ASMCONSTANTS_C_ASSERT(MethodTable_m_pInterfaceMap == offsetof(MethodTable, m_pInterfaceMap))
 
 #define SIZEOF_MethodTable              DBG_FRE(0x2C, 0x28)
 ASMCONSTANTS_C_ASSERT(SIZEOF_MethodTable == sizeof(MethodTable))
@@ -239,25 +225,13 @@ ASMCONSTANTS_C_ASSERT(OFFSETOF__FrameHandlerExRecord__m_pEntryFrame == offsetof(
 #define STACK_OVERWRITE_BARRIER_VALUE 0xabcdefab
 #endif
 
-#define SIZEOF_FrameHandlerExRecordWithBarrier 0x5c
-ASMCONSTANTS_C_ASSERT(SIZEOF_FrameHandlerExRecordWithBarrier == sizeof(FrameHandlerExRecordWithBarrier))
 #endif
 
+#define CLRToCOMCallMethodDesc__m_pCLRToCOMCallInfo DBG_FRE(0x20, 0xC)
+ASMCONSTANTS_C_ASSERT(CLRToCOMCallMethodDesc__m_pCLRToCOMCallInfo == offsetof(CLRToCOMCallMethodDesc, m_pCLRToCOMCallInfo))
 
-#define MethodDesc_m_wFlags                   DBG_FRE(0x1a, 0x06)
-ASMCONSTANTS_C_ASSERT(MethodDesc_m_wFlags == offsetof(MethodDesc, m_wFlags))
-
-#define MethodDesc_mdcClassification          7
-ASMCONSTANTS_C_ASSERT(MethodDesc_mdcClassification == mdcClassification)
-
-#define MethodDesc_mcComInterop               6
-ASMCONSTANTS_C_ASSERT(MethodDesc_mcComInterop == mcComInterop)
-
-#define ComPlusCallMethodDesc__m_pComPlusCallInfo DBG_FRE(0x1C, 0x8)
-ASMCONSTANTS_C_ASSERT(ComPlusCallMethodDesc__m_pComPlusCallInfo == offsetof(ComPlusCallMethodDesc, m_pComPlusCallInfo))
-
-#define ComPlusCallInfo__m_pRetThunk 0x10
-ASMCONSTANTS_C_ASSERT(ComPlusCallInfo__m_pRetThunk == offsetof(ComPlusCallInfo, m_pRetThunk))
+#define CLRToCOMCallInfo__m_pRetThunk 0x10
+ASMCONSTANTS_C_ASSERT(CLRToCOMCallInfo__m_pRetThunk == offsetof(CLRToCOMCallInfo, m_pRetThunk))
 
 #endif // FEATURE_COMINTEROP
 
@@ -293,14 +267,6 @@ ASMCONSTANTS_C_ASSERT(UMEntryThunk__m_pUMThunkMarshInfo == offsetof(UMEntryThunk
 #define               UMThunkMarshInfo__m_pILStub           0x00
 ASMCONSTANTS_C_ASSERT(UMThunkMarshInfo__m_pILStub == offsetof(UMThunkMarshInfo, m_pILStub))
 
-#define               UMThunkMarshInfo__m_cbActualArgSize   0x04
-ASMCONSTANTS_C_ASSERT(UMThunkMarshInfo__m_cbActualArgSize == offsetof(UMThunkMarshInfo, m_cbActualArgSize))
-
-#ifdef FEATURE_STUBS_AS_IL
-#define               UMThunkMarshInfo__m_cbRetPop   0x08
-ASMCONSTANTS_C_ASSERT(UMThunkMarshInfo__m_cbRetPop == offsetof(UMThunkMarshInfo, m_cbRetPop))
-#endif //FEATURE_STUBS_AS_IL
-
 // For JIT_PInvokeBegin and JIT_PInvokeEnd helpers
 #define               Frame__m_Next 0x04
 ASMCONSTANTS_C_ASSERT(Frame__m_Next == offsetof(Frame, m_Next));
@@ -335,7 +301,6 @@ ASMCONSTANTS_C_ASSERT(DelegateObject___invocationCount  == offsetof(DelegateObje
 
 #endif
 
-#ifndef CROSSGEN_COMPILE
 // ResolveCacheElem from src/vm/virtualcallstub.h
 #define ResolveCacheElem__pMT               0x00
 #define ResolveCacheElem__token             0x04
@@ -347,7 +312,26 @@ ASMCONSTANTS_C_ASSERT(ResolveCacheElem__token   == offsetof(ResolveCacheElem, to
 ASMCONSTANTS_C_ASSERT(ResolveCacheElem__target  == offsetof(ResolveCacheElem, target));
 ASMCONSTANTS_C_ASSERT(ResolveCacheElem__pNext   == offsetof(ResolveCacheElem, pNext));
 
-#endif // !CROSSGEN_COMPILE
+#define FixupPrecodeData__Target 0x00
+ASMCONSTANTS_C_ASSERT(FixupPrecodeData__Target            == offsetof(FixupPrecodeData, Target))
+#define FixupPrecodeData__MethodDesc 0x04
+ASMCONSTANTS_C_ASSERT(FixupPrecodeData__MethodDesc        == offsetof(FixupPrecodeData, MethodDesc))
+#define FixupPrecodeData__PrecodeFixupThunk 0x08
+ASMCONSTANTS_C_ASSERT(FixupPrecodeData__PrecodeFixupThunk == offsetof(FixupPrecodeData, PrecodeFixupThunk))
+
+#define StubPrecodeData__Target 0x04
+ASMCONSTANTS_C_ASSERT(StubPrecodeData__Target            == offsetof(StubPrecodeData, Target))
+#define StubPrecodeData__MethodDesc 0x00
+ASMCONSTANTS_C_ASSERT(StubPrecodeData__MethodDesc        == offsetof(StubPrecodeData, MethodDesc))
+
+#define CallCountingStubData__RemainingCallCountCell 0x00
+ASMCONSTANTS_C_ASSERT(CallCountingStubData__RemainingCallCountCell == offsetof(CallCountingStubData, RemainingCallCountCell))
+
+#define CallCountingStubData__TargetForMethod 0x04
+ASMCONSTANTS_C_ASSERT(CallCountingStubData__TargetForMethod == offsetof(CallCountingStubData, TargetForMethod))
+
+#define CallCountingStubData__TargetForThresholdReached 0x08
+ASMCONSTANTS_C_ASSERT(CallCountingStubData__TargetForThresholdReached == offsetof(CallCountingStubData, TargetForThresholdReached))
 
 #undef ASMCONSTANTS_C_ASSERT
 #undef ASMCONSTANTS_RUNTIME_ASSERT

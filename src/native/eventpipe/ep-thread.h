@@ -45,6 +45,11 @@ struct _EventPipeThread_Internal {
 	// that pointer will be protected from deletion. See ep_disable () and
 	// ep_write () for more detail.
 	volatile uint32_t writing_event_in_progress;
+	// This is set to non-zero when the thread is unregistered from the global list of EventPipe threads.
+	// This should happen when a physical thread is ending.
+	// This is a convenience marker to prevent us from having to search the global list.
+	// defaults to false.
+	volatile uint32_t unregistered;
 };
 
 #if !defined(EP_INLINE_GETTER_SETTER) && !defined(EP_IMPL_THREAD_GETTER_SETTER)
@@ -70,6 +75,7 @@ EP_DEFINE_SETTER(EventPipeThread *, thread, EventPipeSession *, rundown_session)
 EP_DEFINE_GETTER_REF(EventPipeThread *, thread, ep_rt_spin_lock_handle_t *, rt_lock);
 EP_DEFINE_GETTER(EventPipeThread *, thread, uint64_t, os_thread_id);
 EP_DEFINE_GETTER_REF(EventPipeThread *, thread, int32_t *, ref_count);
+EP_DEFINE_GETTER_REF(EventPipeThread *, thread, volatile uint32_t *, unregistered);
 
 EventPipeThread *
 ep_thread_alloc (void);
@@ -86,8 +92,11 @@ ep_thread_release (EventPipeThread *thread);
 void
 ep_thread_init (void);
 
-void
-ep_thread_fini (void);
+bool
+ep_thread_register (EventPipeThread *thread);
+
+bool
+ep_thread_unregister (EventPipeThread *thread);
 
 EventPipeThread *
 ep_thread_get (void);
@@ -96,7 +105,7 @@ EventPipeThread *
 ep_thread_get_or_create (void);
 
 void
-ep_thread_get_threads (ep_rt_thread_array_t *threads);
+ep_thread_get_threads (dn_vector_ptr_t *threads);
 
 static
 inline
@@ -251,17 +260,20 @@ struct _EventPipeThreadSessionState_Internal {
 	// a buffer for this session. It is set back to null when
 	// event writing is suspended during session disable.
 	// protected by the buffer manager lock.
+	// This field can be read outside the lock when
+	// the buffer allocation logic is estimating how many
+	// buffers a given thread has used (see: ep_thread_session_state_get_buffer_count_estimate and its uses).
 	EventPipeBufferList *buffer_list;
 #ifdef EP_CHECKED_BUILD
 	// protected by the buffer manager lock.
 	EventPipeBufferManager *buffer_manager;
 #endif
 	// The number of events that were attempted to be written by this
-	// thread. Each event was either succesfully recorded in a buffer
+	// thread. Each event was either successfully recorded in a buffer
 	// or it was dropped.
 	//
 	// Only updated by the current thread under thread_holder->thread.rt_lock. Other
-	// event writer threads are allowed to do unsychronized reads when
+	// event writer threads are allowed to do unsynchronized reads when
 	// capturing a sequence point but this does not provide any consistency
 	// guarantee. In particular there is no promise that the other thread
 	// is observing the most recent sequence number, nor is there a promise
@@ -270,9 +282,9 @@ struct _EventPipeThreadSessionState_Internal {
 	// number in tandem with an event write or drop, but without a write
 	// barrier between those memory writes they might observed out-of-order
 	// by the thread capturing the sequence point. The only utility this
-	// unsychronized read has is that if some other thread observes a sequence
+	// unsynchronized read has is that if some other thread observes a sequence
 	// number X, it knows this thread must have attempted to write at least
-	// X events prior to the moment in time when the read occured. If the event
+	// X events prior to the moment in time when the read occurred. If the event
 	// buffers are later read and there are fewer than X events timestamped
 	// prior to the sequence point we can be certain the others were dropped.
 	volatile uint32_t sequence_number;
@@ -298,6 +310,9 @@ ep_thread_session_state_free (EventPipeThreadSessionState *thread_session_state)
 
 EventPipeThread *
 ep_thread_session_state_get_thread (const EventPipeThreadSessionState *thread_session_state);
+
+uint32_t
+ep_thread_session_state_get_buffer_count_estimate(const EventPipeThreadSessionState *thread_session_state);
 
 // _Requires_lock_held (thread)
 EventPipeBuffer *

@@ -4,8 +4,10 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text.RegularExpressions;
+using Microsoft.DotNet.RemoteExecutor;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Test.Console;
@@ -15,7 +17,7 @@ using Xunit;
 
 namespace Microsoft.Extensions.Logging.Console.Test
 {
-    public class ConsoleLoggerTest
+    public class ConsoleLoggerTest : ConsoleTestsBase
     {
         private const string _paddingString = "      ";
         private const string _loggerName = "test";
@@ -30,7 +32,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
             var defaultMonitor = new TestFormatterOptionsMonitor<SimpleConsoleFormatterOptions>(simpleOptions ?? new SimpleConsoleFormatterOptions());
             var systemdMonitor = new TestFormatterOptionsMonitor<ConsoleFormatterOptions>(systemdOptions ?? new ConsoleFormatterOptions());
             var jsonMonitor = new TestFormatterOptionsMonitor<JsonConsoleFormatterOptions>(jsonOptions ?? new JsonConsoleFormatterOptions());
-            var formatters = new List<ConsoleFormatter>() { 
+            var formatters = new List<ConsoleFormatter>() {
                 new SimpleConsoleFormatter(defaultMonitor),
                 new SystemdConsoleFormatter(systemdMonitor),
                 new JsonConsoleFormatter(jsonMonitor)
@@ -38,43 +40,41 @@ namespace Microsoft.Extensions.Logging.Console.Test
             return formatters;
         }
 
-        private static (ConsoleLogger Logger, ConsoleSink Sink, ConsoleSink ErrorSink, Func<LogLevel, string> GetLevelPrefix, int WritesPerMsg) SetUp(ConsoleLoggerOptions options = null)
+        private static SetupDisposeHelper SetUp(ConsoleLoggerOptions options = null)
         {
             // Arrange
             var sink = new ConsoleSink();
             var errorSink = new ConsoleSink();
             var console = new TestConsole(sink);
             var errorConsole = new TestConsole(errorSink);
-            var consoleLoggerProcessor = new TestLoggerProcessor();
-            consoleLoggerProcessor.Console = console;
-            consoleLoggerProcessor.ErrorConsole = errorConsole;
 
-            var logger = new ConsoleLogger(_loggerName, consoleLoggerProcessor);
-            logger.ScopeProvider = new LoggerExternalScopeProvider();
-            logger.Options = options ?? new ConsoleLoggerOptions();
             var formatters = new ConcurrentDictionary<string, ConsoleFormatter>(GetFormatters().ToDictionary(f => f.Name));
 
+            ConsoleFormatter? formatter = null;
+            var loggerOptions = options ?? new ConsoleLoggerOptions();
+            var consoleLoggerProcessor = new TestLoggerProcessor(console, errorConsole, loggerOptions.QueueFullMode, loggerOptions.MaxQueueLength);
             Func<LogLevel, string> levelAsString;
             int writesPerMsg;
-            switch (logger.Options.Format)
+            switch (loggerOptions.Format)
             {
                 case ConsoleLoggerFormat.Default:
                     levelAsString = LogLevelAsStringDefault;
                     writesPerMsg = 2;
-                    logger.Formatter = formatters[ConsoleFormatterNames.Simple];
+                    formatter = formatters[ConsoleFormatterNames.Simple];
                     break;
                 case ConsoleLoggerFormat.Systemd:
                     levelAsString = GetSyslogSeverityString;
                     writesPerMsg = 1;
-                    logger.Formatter = formatters[ConsoleFormatterNames.Systemd];
+                    formatter = formatters[ConsoleFormatterNames.Systemd];
                     break;
                 default:
-                    throw new ArgumentOutOfRangeException(nameof(logger.Options.Format));
+                    throw new ArgumentOutOfRangeException(nameof(loggerOptions.Format));
             }
+            var logger = new ConsoleLogger(_loggerName, consoleLoggerProcessor, formatter, new LoggerExternalScopeProvider(), loggerOptions);
 
             UpdateFormatterOptions(logger.Formatter, logger.Options);
             VerifyDeprecatedPropertiesUsedOnNullFormatterName(logger);
-            return (logger, sink, errorSink, levelAsString, writesPerMsg);
+            return new SetupDisposeHelper(logger, sink, errorSink, levelAsString, writesPerMsg, consoleLoggerProcessor);
         }
 
         private static void VerifyDeprecatedPropertiesUsedOnNullFormatterName(ConsoleLogger logger)
@@ -86,13 +86,13 @@ namespace Microsoft.Extensions.Logging.Console.Test
                 Assert.Equal(formatter.FormatterOptions.IncludeScopes, logger.Options.IncludeScopes);
                 Assert.Equal(formatter.FormatterOptions.UseUtcTimestamp, logger.Options.UseUtcTimestamp);
                 Assert.Equal(formatter.FormatterOptions.TimestampFormat, logger.Options.TimestampFormat);
-                Assert.Equal(formatter.FormatterOptions.ColorBehavior, 
-                    logger.Options.DisableColors ? LoggerColorBehavior.Disabled : LoggerColorBehavior.Enabled);   
+                Assert.Equal(formatter.FormatterOptions.ColorBehavior,
+                    logger.Options.DisableColors ? LoggerColorBehavior.Disabled : LoggerColorBehavior.Enabled);
             }
             else
             {
                 var formatter = Assert.IsType<SystemdConsoleFormatter>(logger.Formatter);
-                Assert.Equal(formatter.FormatterOptions.IncludeScopes, logger.Options.IncludeScopes);   
+                Assert.Equal(formatter.FormatterOptions.IncludeScopes, logger.Options.IncludeScopes);
                 Assert.Equal(formatter.FormatterOptions.UseUtcTimestamp, logger.Options.UseUtcTimestamp);
                 Assert.Equal(formatter.FormatterOptions.TimestampFormat, logger.Options.TimestampFormat);
             }
@@ -103,7 +103,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
             // kept for deprecated apis:
             if (formatter is SimpleConsoleFormatter defaultFormatter)
             {
-                defaultFormatter.FormatterOptions.ColorBehavior = deprecatedFromOptions.DisableColors ? 
+                defaultFormatter.FormatterOptions.ColorBehavior = deprecatedFromOptions.DisableColors ?
                     LoggerColorBehavior.Disabled : LoggerColorBehavior.Enabled;
                 defaultFormatter.FormatterOptions.IncludeScopes = deprecatedFromOptions.IncludeScopes;
                 defaultFormatter.FormatterOptions.TimestampFormat = deprecatedFromOptions.TimestampFormat;
@@ -177,7 +177,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void LogsWhenMessageIsNotProvided()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = (ILogger)t.Logger;
             var sink = t.Sink;
             var exception = new InvalidOperationException("Invalid value");
@@ -209,7 +209,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void DoesNotLog_NewLine_WhenNoExceptionIsProvided()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = (ILogger)t.Logger;
             var sink = t.Sink;
             var logMessage = "Route with name 'Simple' was not found.";
@@ -244,7 +244,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
             ConsoleLoggerFormat format = (ConsoleLoggerFormat)formatNumber;
             var options = new ConsoleLoggerOptions() { FormatterName = formatterName };
             var monitor = new TestOptionsMonitor(options);
-            var loggerProvider = new ConsoleLoggerProvider(monitor, GetFormatters());
+            using var loggerProvider = new ConsoleLoggerProvider(monitor, GetFormatters());
             var logger = (ConsoleLogger)loggerProvider.CreateLogger("Name");
 
             // Act
@@ -272,7 +272,6 @@ namespace Microsoft.Extensions.Logging.Console.Test
                 default:
                     throw new ArgumentOutOfRangeException(nameof(format));
             }
-            loggerProvider?.Dispose();
         }
 
         [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
@@ -280,7 +279,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void Writes_NewLine_WhenExceptionIsProvided(string message)
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = (ILogger)t.Logger;
             var sink = t.Sink;
             var eventId = 10;
@@ -303,7 +302,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void ThrowsException_WhenNoFormatterIsProvided()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = (ILogger)t.Logger;
 
             // Act & Assert
@@ -314,7 +313,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void LogsWhenNullFilterGiven()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = t.Logger;
             var sink = t.Sink;
             var expectedHeader = CreateHeader(ConsoleLoggerFormat.Default) + Environment.NewLine;
@@ -335,7 +334,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteCritical_LogsCorrectColors()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = t.Logger;
             var sink = t.Sink;
 
@@ -356,7 +355,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteError_LogsCorrectColors()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = t.Logger;
             var sink = t.Sink;
 
@@ -377,7 +376,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteWarning_LogsCorrectColors()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = t.Logger;
             var sink = t.Sink;
 
@@ -398,7 +397,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteInformation_LogsCorrectColors()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = t.Logger;
             var sink = t.Sink;
 
@@ -415,11 +414,41 @@ namespace Microsoft.Extensions.Logging.Console.Test
             Assert.Equal(TestConsole.DefaultForegroundColor, write.ForegroundColor);
         }
 
+        [ConditionalFact(nameof(IsThreadingAndRemoteExecutorSupported))]
+        public void AddConsole_IsOutputRedirected_ColorDisabled()
+        {
+            RemoteExecutor.Invoke(() =>
+            {
+                // Arrange
+                var sink = new ConsoleSink();
+                var console = new TestConsole(sink);
+                var loggerOptions = new ConsoleLoggerOptions();
+                var consoleLoggerProcessor = new TestLoggerProcessor(console, null!, loggerOptions.QueueFullMode, loggerOptions.MaxQueueLength);
+
+                var loggerProvider = new ServiceCollection()
+                    .AddLogging(builder => builder
+                        .AddConsole()
+                    )
+                    .BuildServiceProvider()
+                    .GetRequiredService<ILoggerProvider>();
+
+                var consoleLoggerProvider = Assert.IsType<ConsoleLoggerProvider>(loggerProvider);
+                var logger = (ConsoleLogger)consoleLoggerProvider.CreateLogger("Category");
+
+                // Assert
+                Assert.True(System.Console.IsOutputRedirected);
+                Assert.Null(logger.Options.FormatterName);
+                var formatter = Assert.IsType<SimpleConsoleFormatter>(logger.Formatter);
+                Assert.Equal(LoggerColorBehavior.Default, formatter.FormatterOptions.ColorBehavior);
+
+            }, new RemoteInvokeOptions { StartInfo = new ProcessStartInfo() { RedirectStandardOutput = true } }).Dispose();
+        }
+
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
         public void WriteDebug_LogsCorrectColors()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = t.Logger;
             var sink = t.Sink;
 
@@ -440,7 +469,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteTrace_LogsCorrectColors()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = t.Logger;
             var sink = t.Sink;
 
@@ -461,7 +490,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteAllLevelsDisabledColors_LogsNoColors()
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { DisableColors = true });
+            using var t = SetUp(new ConsoleLoggerOptions { DisableColors = true });
             var logger = t.Logger;
             var sink = t.Sink;
 
@@ -486,7 +515,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void Log_LogsCorrectTimestamp(ConsoleLoggerFormat format, LogLevel level)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { TimestampFormat = "yyyy-MM-ddTHH:mm:sszz ", Format = format, UseUtcTimestamp = false });
+            using var t = SetUp(new ConsoleLoggerOptions { TimestampFormat = "yyyy-MM-ddTHH:mm:sszz ", Format = format, UseUtcTimestamp = false });
             var levelPrefix = t.GetLevelPrefix(level);
             var logger = t.Logger;
             var sink = t.Sink;
@@ -527,7 +556,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteCore_LogsCorrectTimestampInUtc(ConsoleLoggerFormat format, LogLevel level)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { TimestampFormat = "yyyy-MM-ddTHH:mm:sszz ", Format = format, UseUtcTimestamp = true });
+            using var t = SetUp(new ConsoleLoggerOptions { TimestampFormat = "yyyy-MM-ddTHH:mm:sszz ", Format = format, UseUtcTimestamp = true });
             var levelPrefix = t.GetLevelPrefix(level);
             var logger = t.Logger;
             var sink = t.Sink;
@@ -568,7 +597,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteCore_LogsCorrectMessages(ConsoleLoggerFormat format, LogLevel level)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { Format = format });
+            using var t = SetUp(new ConsoleLoggerOptions { Format = format });
             var levelPrefix = t.GetLevelPrefix(level);
             var logger = t.Logger;
             var sink = t.Sink;
@@ -611,7 +640,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void NoLogScope_DoesNotWriteAnyScopeContentToOutput()
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true });
+            using var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true });
             var logger = t.Logger;
             var sink = t.Sink;
 
@@ -632,7 +661,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WritingScopes_LogsWithCorrectColors()
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true });
+            using var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true });
             var logger = t.Logger;
             var sink = t.Sink;
             var id = Guid.NewGuid();
@@ -659,7 +688,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WritingScopes_LogsExpectedMessage(ConsoleLoggerFormat format)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true, Format = format });
+            using var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true, Format = format });
             var logger = t.Logger;
             var sink = t.Sink;
             var level = LogLevel.Information;
@@ -710,7 +739,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WritingNestedScope_LogsNullScopeName(ConsoleLoggerFormat format)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true, Format = format });
+            using var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true, Format = format });
             var logger = t.Logger;
             var sink = t.Sink;
             var level = LogLevel.Information;
@@ -759,7 +788,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WritingNestedScopes_LogsExpectedMessage(ConsoleLoggerFormat format)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true, Format = format });
+            using var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true, Format = format });
             var logger = t.Logger;
             var sink = t.Sink;
             var level = LogLevel.Information;
@@ -817,7 +846,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WritingMultipleScopes_LogsExpectedMessage(ConsoleLoggerFormat format)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true, Format = format });
+            using var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true, Format = format });
             var logger = t.Logger;
             var sink = t.Sink;
             var level = LogLevel.Information;
@@ -885,7 +914,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void CallingBeginScopeOnLogger_AlwaysReturnsNewDisposableInstance()
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true });
+            using var t = SetUp(new ConsoleLoggerOptions { IncludeScopes = true });
             var logger = t.Logger;
             var sink = t.Sink;
 
@@ -903,7 +932,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void CallingBeginScopeOnLogger_ReturnsNonNullableInstance()
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = t.Logger;
             var sink = t.Sink;
 
@@ -919,7 +948,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void ConsoleLoggerLogsToError_WhenOverErrorLevel(ConsoleLoggerFormat format)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { LogToStandardErrorThreshold = LogLevel.Warning, Format = format });
+            using var t = SetUp(new ConsoleLoggerOptions { LogToStandardErrorThreshold = LogLevel.Warning, Format = format });
             var logger = t.Logger;
             var sink = t.Sink;
             var errorSink = t.ErrorSink;
@@ -969,7 +998,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteCore_NullMessageWithException(ConsoleLoggerFormat format, LogLevel level)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { Format = format });
+            using var t = SetUp(new ConsoleLoggerOptions { Format = format });
             var levelPrefix = t.GetLevelPrefix(level);
             var logger = t.Logger;
             var sink = t.Sink;
@@ -1013,7 +1042,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteCore_EmptyMessageWithException(ConsoleLoggerFormat format, LogLevel level)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { Format = format });
+            using var t = SetUp(new ConsoleLoggerOptions { Format = format });
             var levelPrefix = t.GetLevelPrefix(level);
             var logger = t.Logger;
             var sink = t.Sink;
@@ -1056,7 +1085,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteCore_MessageWithNullException(ConsoleLoggerFormat format, LogLevel level)
         {
             // Arrange
-            var t = SetUp(new ConsoleLoggerOptions { Format = format });
+            using var t = SetUp(new ConsoleLoggerOptions { Format = format });
             var levelPrefix = t.GetLevelPrefix(level);
             var logger = t.Logger;
             var sink = t.Sink;
@@ -1096,7 +1125,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void WriteCore_NullMessageWithNullException(LogLevel level)
         {
             // Arrange
-            var t = SetUp();
+            using var t = SetUp();
             var logger = t.Logger;
             var sink = t.Sink;
             Exception ex = null;
@@ -1107,29 +1136,6 @@ namespace Microsoft.Extensions.Logging.Console.Test
 
             // Assert
             Assert.Empty(sink.Writes);
-        }
-
-        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
-        public void LogAfterDisposeWritesLog()
-        {
-            // Arrange
-            var sink = new ConsoleSink();
-            var console = new TestConsole(sink);
-            var processor = new ConsoleLoggerProcessor();
-            processor.Console = console;
-            var formatters = new ConcurrentDictionary<string, ConsoleFormatter>(GetFormatters().ToDictionary(f => f.Name));
-
-            var logger = new ConsoleLogger(_loggerName, loggerProcessor: processor);
-            logger.Options = new ConsoleLoggerOptions();
-            Assert.Null(logger.Options.FormatterName);
-            logger.Formatter = formatters[ConsoleFormatterNames.Simple];
-            UpdateFormatterOptions(logger.Formatter, logger.Options);
-            // Act
-            processor.Dispose();
-            logger.LogInformation("Logging after dispose");
-
-            // Assert
-            Assert.True(sink.Writes.Count == 2);
         }
 
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
@@ -1151,7 +1157,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         {
             // Arrange
             var monitor = new TestOptionsMonitor(new ConsoleLoggerOptions() { DisableColors = true });
-            var loggerProvider = new ConsoleLoggerProvider(monitor);
+            using var loggerProvider = new ConsoleLoggerProvider(monitor);
             var logger = (ConsoleLogger)loggerProvider.CreateLogger("Name");
 
             // Act & Assert
@@ -1164,6 +1170,20 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void ConsoleLoggerOptions_InvalidFormat_Throws()
         {
             Assert.Throws<ArgumentOutOfRangeException>(() => new ConsoleLoggerOptions() { Format = (ConsoleLoggerFormat)10 });
+        }
+
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        [InlineData(-1)]
+        [InlineData(0)]
+        public void ConsoleLoggerOptions_SetInvalidMaxQueueLength_Throws(int invalidMaxQueueLength)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new ConsoleLoggerOptions() { MaxQueueLength = invalidMaxQueueLength });
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        public void ConsoleLoggerOptions_SetInvalidBufferMode_Throws()
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new ConsoleLoggerOptions() { QueueFullMode = (ConsoleLoggerQueueFullMode)10 });
         }
 
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
@@ -1188,7 +1208,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         {
             // Arrange
             var monitor = new TestOptionsMonitor(new ConsoleLoggerOptions());
-            var loggerProvider = new ConsoleLoggerProvider(monitor);
+            using var loggerProvider = new ConsoleLoggerProvider(monitor);
             var logger = (ConsoleLogger)loggerProvider.CreateLogger("Name");
 
             // Act & Assert
@@ -1218,7 +1238,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         public void ConsoleLoggerOptions_TimeStampFormat_MultipleReloads()
         {
             var monitor = new TestOptionsMonitor(new ConsoleLoggerOptions());
-            var loggerProvider = new ConsoleLoggerProvider(monitor);
+            using var loggerProvider = new ConsoleLoggerProvider(monitor);
             var logger = (ConsoleLogger)loggerProvider.CreateLogger("Name");
 
             Assert.Null(logger.Options.TimestampFormat);
@@ -1233,7 +1253,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         {
             // Arrange
             var monitor = new TestOptionsMonitor(new ConsoleLoggerOptions() { IncludeScopes = true });
-            var loggerProvider = new ConsoleLoggerProvider(monitor);
+            using var loggerProvider = new ConsoleLoggerProvider(monitor);
             var logger = (ConsoleLogger)loggerProvider.CreateLogger("Name");
 
             // Act & Assert
@@ -1264,7 +1284,7 @@ namespace Microsoft.Extensions.Logging.Console.Test
         {
             // Arrange
             var monitor = new TestOptionsMonitor(new ConsoleLoggerOptions());
-            var loggerProvider = new ConsoleLoggerProvider(monitor);
+            using var loggerProvider = new ConsoleLoggerProvider(monitor);
             var logger = (ConsoleLogger)loggerProvider.CreateLogger("Name");
 
             // Act & Assert
@@ -1274,11 +1294,30 @@ namespace Microsoft.Extensions.Logging.Console.Test
         }
 
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
+        public void ConsoleLoggerOptions_UpdateQueueOptions_UpdatesConsoleLoggerProcessorProperties()
+        {
+            // Arrange
+            var monitor = new TestOptionsMonitor(new ConsoleLoggerOptions());
+            using var loggerProvider = new ConsoleLoggerProvider(monitor);
+            var logger = (ConsoleLogger)loggerProvider.CreateLogger("Name");
+
+            // Act & Assert
+            Assert.Equal(ConsoleLoggerQueueFullMode.Wait, logger.Options.QueueFullMode);
+            Assert.Equal(ConsoleLoggerOptions.DefaultMaxQueueLengthValue, logger.Options.MaxQueueLength);
+            monitor.Set(new ConsoleLoggerOptions() {
+                QueueFullMode = ConsoleLoggerQueueFullMode.DropWrite,
+                MaxQueueLength = 10
+            });
+            Assert.Equal(ConsoleLoggerQueueFullMode.DropWrite, logger.Options.QueueFullMode);
+            Assert.Equal(10, logger.Options.MaxQueueLength);
+        }
+
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
         public void ConsoleLoggerOptions_UseUtcTimestamp_IsAppliedToLoggers()
         {
             // Arrange
             var monitor = new TestOptionsMonitor(new ConsoleLoggerOptions());
-            var loggerProvider = new ConsoleLoggerProvider(monitor);
+            using var loggerProvider = new ConsoleLoggerProvider(monitor);
             var logger = (ConsoleLogger)loggerProvider.CreateLogger("Name");
 
             // Act & Assert
@@ -1370,11 +1409,15 @@ namespace Microsoft.Extensions.Logging.Console.Test
                     throw new ArgumentOutOfRangeException(nameof(format));
             }
         }
+
+        public static bool IsThreadingAndRemoteExecutorSupported =>
+            PlatformDetection.IsThreadingSupported && RemoteExecutor.IsSupported;
     }
 
     internal class TestLoggerProcessor : ConsoleLoggerProcessor
     {
-        public TestLoggerProcessor()
+        public TestLoggerProcessor(IConsole console, IConsole errorConsole, ConsoleLoggerQueueFullMode fullMode, int maxQueueLength)
+            : base(console, errorConsole, fullMode, maxQueueLength)
         {
         }
 

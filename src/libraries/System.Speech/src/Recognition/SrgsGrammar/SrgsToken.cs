@@ -12,7 +12,7 @@ namespace System.Speech.Recognition.SrgsGrammar
     // Note that currently if multiple words are stored in a Token they are treated internally
     // and in the result as multiple tokens.
     [Serializable]
-    [DebuggerDisplay("{DebuggerDisplayString ()}")]
+    [DebuggerDisplay("{DebuggerDisplayString()}")]
     public class SrgsToken : SrgsElement, IToken
     {
         #region Constructors
@@ -37,7 +37,7 @@ namespace System.Speech.Recognition.SrgsGrammar
 
                 // remove all spaces if any
                 string text = value.Trim(Helpers._achTrimChars);
-                if (string.IsNullOrEmpty(text) || text.IndexOf('\"') >= 0)
+                if (string.IsNullOrEmpty(text) || text.Contains('\"'))
                 {
                     throw new ArgumentException(SR.Get(SRID.InvalidTokenString), nameof(value));
                 }
@@ -141,13 +141,13 @@ namespace System.Speech.Recognition.SrgsGrammar
 
         internal override string DebuggerDisplayString()
         {
-            StringBuilder sb = new("Token '");
+            StringBuilder sb = new("Token = '");
             sb.Append(_text);
             sb.Append('\'');
 
             if (_pronunciation != null)
             {
-                sb.Append(" Pronunciation '");
+                sb.Append(", Pronunciation = '");
                 sb.Append(_pronunciation);
                 sb.Append('\'');
             }

@@ -3,25 +3,25 @@
   "isRoot": true,
   "tools": {
     "coverlet.console": {
-      "version": "1.7.2",
+      "version": "6.0.0",
       "commands": [
         "coverlet"
       ]
     },
     "dotnet-reportgenerator-globaltool": {
-      "version": "4.5.8",
+      "version": "5.3.0",
       "commands": [
         "reportgenerator"
       ]
     },
     "microsoft.dotnet.xharness.cli": {
-      "version": "1.0.0-prerelease.20630.1",
+      "version": "9.0.0-prerelease.24317.3",
       "commands": [
         "xharness"
       ]
     },
     "microsoft.visualstudio.slngen.tool": {
-      "version": "4.4.2",
+      "version": "11.1.0",
       "commands": [
         "slngen"
       ]

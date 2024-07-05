@@ -87,25 +87,37 @@ namespace System.Net.Sockets
         //
         private readonly ConcurrentQueue<SocketIOEvent> _eventQueue = new ConcurrentQueue<SocketIOEvent>();
 
+        // The scheme works as follows:
+        // - From NotScheduled, the only transition is to Scheduled when new events are enqueued and a work item is enqueued to process them.
+        // - From Scheduled, the only transition is to Determining right before trying to dequeue an event.
+        // - From Determining, it can go to either NotScheduled when no events are present in the queue (the previous work item processed all of them)
+        //   or Scheduled if the queue is still not empty (let the current work item handle parallelization as convinient).
         //
-        // This field is set to 1 to indicate that a thread pool work item is scheduled to process events in _eventQueue. It is
-        // set to 0 when the scheduled work item starts running, to indicate that a thread pool work item to process events is
-        // not scheduled. Changes are protected by atomic operations as appropriate.
-        //
-        private int _eventQueueProcessingRequested;
+        // The goal is to avoid enqueueing more work items than necessary, while still ensuring that all events are processed.
+        // Another work item isn't enqueued to the thread pool hastily while the state is Determining,
+        // instead the parallelizer takes care of that. We also ensure that only one thread can be parallelizing at any time.
+        private enum EventQueueProcessingStage
+        {
+            NotScheduled,
+            Determining,
+            Scheduled
+        }
+
+        private int _eventQueueProcessingStage;
 
         //
         // Registers the Socket with a SocketAsyncEngine, and returns the associated engine.
         //
-        public static SocketAsyncEngine RegisterSocket(IntPtr socketHandle, SocketAsyncContext context)
+        public static bool TryRegisterSocket(IntPtr socketHandle, SocketAsyncContext context, out SocketAsyncEngine? engine, out Interop.Error error)
         {
             int engineIndex = Math.Abs(Interlocked.Increment(ref s_allocateFromEngine) % s_engines.Length);
-            SocketAsyncEngine engine = s_engines[engineIndex];
-            engine.RegisterCore(socketHandle, context);
-            return engine;
+            SocketAsyncEngine nextEngine = s_engines[engineIndex];
+            bool registered = nextEngine.TryRegisterCore(socketHandle, context, out error);
+            engine = registered ? nextEngine : null;
+            return registered;
         }
 
-        private void RegisterCore(IntPtr socketHandle, SocketAsyncContext context)
+        private bool TryRegisterCore(IntPtr socketHandle, SocketAsyncContext context, out Interop.Error error)
         {
             bool added = _handleToContextMap.TryAdd(socketHandle, new SocketAsyncContextWrapper(context));
             if (!added)
@@ -115,22 +127,15 @@ namespace System.Net.Sockets
                 throw new InvalidOperationException(SR.net_sockets_handle_already_used);
             }
 
-            Interop.Error error = Interop.Sys.TryChangeSocketEventRegistration(_port, socketHandle, Interop.Sys.SocketEvents.None,
+            error = Interop.Sys.TryChangeSocketEventRegistration(_port, socketHandle, Interop.Sys.SocketEvents.None,
                 Interop.Sys.SocketEvents.Read | Interop.Sys.SocketEvents.Write, socketHandle);
             if (error == Interop.Error.SUCCESS)
             {
-                return;
+                return true;
             }
 
             _handleToContextMap.TryRemove(socketHandle, out _);
-            if (error == Interop.Error.ENOMEM || error == Interop.Error.ENOSPC)
-            {
-                throw new OutOfMemoryException();
-            }
-            else
-            {
-                throw new InternalException(error);
-            }
+            return false;
         }
 
         public void UnregisterSocket(IntPtr socketHandle)
@@ -146,31 +151,31 @@ namespace System.Net.Sockets
                 //
                 // Create the event port and buffer
                 //
-                Interop.Error err = Interop.Sys.CreateSocketEventPort(out _port);
-                if (err != Interop.Error.SUCCESS)
+                Interop.Error err;
+                fixed (IntPtr* portPtr = &_port)
                 {
-                    throw new InternalException(err);
-                }
-                err = Interop.Sys.CreateSocketEventBuffer(EventBufferCount, out _buffer);
-                if (err != Interop.Error.SUCCESS)
-                {
-                    throw new InternalException(err);
+                    err = Interop.Sys.CreateSocketEventPort(portPtr);
+                    if (err != Interop.Error.SUCCESS)
+                    {
+                        throw new InternalException(err);
+                    }
                 }
 
-                bool suppressFlow = !ExecutionContext.IsFlowSuppressed();
-                try
+                fixed (Interop.Sys.SocketEvent** bufferPtr = &_buffer)
                 {
-                    if (suppressFlow) ExecutionContext.SuppressFlow();
+                    err = Interop.Sys.CreateSocketEventBuffer(EventBufferCount, bufferPtr);
+                    if (err != Interop.Error.SUCCESS)
+                    {
+                        throw new InternalException(err);
+                    }
+                }
 
-                    Thread thread = new Thread(s => ((SocketAsyncEngine)s!).EventLoop());
-                    thread.IsBackground = true;
-                    thread.Name = ".NET Sockets";
-                    thread.Start(this);
-                }
-                finally
+                var thread = new Thread(static s => ((SocketAsyncEngine)s!).EventLoop())
                 {
-                    if (suppressFlow) ExecutionContext.RestoreFlow();
-                }
+                    IsBackground = true,
+                    Name = ".NET Sockets"
+                };
+                thread.UnsafeStart(this);
             }
             catch
             {
@@ -196,9 +201,14 @@ namespace System.Net.Sockets
                     // The native shim is responsible for ensuring this condition.
                     Debug.Assert(numEvents > 0, $"Unexpected numEvents: {numEvents}");
 
-                    if (handler.HandleSocketEvents(numEvents))
+                    // Only enqueue a work item if the stage is NotScheduled.
+                    // Otherwise there must be a work item already queued or another thread already handling parallelization.
+                    if (handler.HandleSocketEvents(numEvents) &&
+                        Interlocked.Exchange(
+                            ref _eventQueueProcessingStage,
+                            (int)EventQueueProcessingStage.Scheduled) == (int)EventQueueProcessingStage.NotScheduled)
                     {
-                        ScheduleToProcessEvents();
+                        ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false);
                     }
                 }
             }
@@ -208,42 +218,73 @@ namespace System.Net.Sockets
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ScheduleToProcessEvents()
+        private void UpdateEventQueueProcessingStage(bool isEventQueueEmpty)
         {
-            // Schedule a thread pool work item to process events. Only one work item is scheduled at any given time to avoid
-            // over-parallelization. When the work item begins running, this field is reset to 0, allowing for another work item
-            // to be scheduled for parallelizing processing of events.
-            if (Interlocked.CompareExchange(ref _eventQueueProcessingRequested, 1, 0) == 0)
+            if (!isEventQueueEmpty)
             {
-                ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false);
+                // There are more events to process, set stage to Scheduled and enqueue a work item.
+                _eventQueueProcessingStage = (int)EventQueueProcessingStage.Scheduled;
             }
+            else
+            {
+                // The stage here would be Scheduled if an enqueuer has enqueued work and changed the stage, or Determining
+                // otherwise. If the stage is Determining, there's no more work to do. If the stage is Scheduled, the enqueuer
+                // would not have scheduled a work item to process the work, so schedule one now.
+                int stageBeforeUpdate =
+                    Interlocked.CompareExchange(
+                        ref _eventQueueProcessingStage,
+                        (int)EventQueueProcessingStage.NotScheduled,
+                        (int)EventQueueProcessingStage.Determining);
+                Debug.Assert(stageBeforeUpdate != (int)EventQueueProcessingStage.NotScheduled);
+                if (stageBeforeUpdate == (int)EventQueueProcessingStage.Determining)
+                {
+                    return;
+                }
+            }
+
+            ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false);
         }
 
         void IThreadPoolWorkItem.Execute()
         {
-            // Indicate that a work item is no longer scheduled to process events. The change needs to be visible to enqueuer
-            // threads (only for EventLoop() currently) before an event is attempted to be dequeued. In particular, if an
-            // enqueuer queues an event and does not schedule a work item because it is already scheduled, and this thread is
-            // the last thread processing events, it must see the event queued by the enqueuer.
-            Interlocked.Exchange(ref _eventQueueProcessingRequested, 0);
-
             ConcurrentQueue<SocketIOEvent> eventQueue = _eventQueue;
-            if (!eventQueue.TryDequeue(out SocketIOEvent ev))
+            SocketIOEvent ev;
+            while (true)
             {
-                return;
+                Debug.Assert(_eventQueueProcessingStage == (int)EventQueueProcessingStage.Scheduled);
+
+                // The change needs to be visible to other threads that may request a worker thread before a work item is attempted
+                // to be dequeued by the current thread. In particular, if an enqueuer queues a work item and does not request a
+                // thread because it sees a Determining or Scheduled stage, and the current thread is the last thread processing
+                // work items, the current thread must either see the work item queued by the enqueuer, or it must see a stage of
+                // Scheduled, and try to dequeue again or request another thread.
+                _eventQueueProcessingStage = (int)EventQueueProcessingStage.Determining;
+                Interlocked.MemoryBarrier();
+
+                if (eventQueue.TryDequeue(out ev))
+                {
+                    break;
+                }
+
+                // The stage here would be Scheduled if an enqueuer has enqueued work and changed the stage, or Determining
+                // otherwise. If the stage is Determining, there's no more work to do. If the stage is Scheduled, the enqueuer
+                // would not have scheduled a work item to process the work, so try to dequeue a work item again.
+                int stageBeforeUpdate =
+                    Interlocked.CompareExchange(
+                        ref _eventQueueProcessingStage,
+                        (int)EventQueueProcessingStage.NotScheduled,
+                        (int)EventQueueProcessingStage.Determining);
+                Debug.Assert(stageBeforeUpdate != (int)EventQueueProcessingStage.NotScheduled);
+                if (stageBeforeUpdate == (int)EventQueueProcessingStage.Determining)
+                {
+                    return;
+                }
             }
 
+            UpdateEventQueueProcessingStage(eventQueue.IsEmpty);
+
             int startTimeMs = Environment.TickCount;
-
-            // An event was successfully dequeued, and there may be more events to process. Schedule a work item to parallelize
-            // processing of events, before processing more events. Following this, it is the responsibility of the new work
-            // item and the epoll thread to schedule more work items as necessary. The parallelization may be necessary here if
-            // the user callback as part of handling the event blocks for some reason that may have a dependency on other queued
-            // socket events.
-            ScheduleToProcessEvents();
-
-            while (true)
+            do
             {
                 ev.Context.HandleEvents(ev.Events);
 
@@ -259,19 +300,7 @@ namespace System.Net.Sockets
                 // using Stopwatch instead (like 1 ms, 5 ms, etc.), from quick tests they appeared to have a slightly greater
                 // impact on throughput compared to the threshold chosen below, though it is slight enough that it may not
                 // matter much. Higher thresholds didn't seem to have any noticeable effect.
-                if (Environment.TickCount - startTimeMs >= 15)
-                {
-                    break;
-                }
-
-                if (!eventQueue.TryDequeue(out ev))
-                {
-                    return;
-                }
-            }
-
-            // The queue was not observed to be empty, schedule another work item before yielding the thread
-            ScheduleToProcessEvents();
+            } while (Environment.TickCount - startTimeMs < 15 && eventQueue.TryDequeue(out ev));
         }
 
         private void FreeNativeResources()

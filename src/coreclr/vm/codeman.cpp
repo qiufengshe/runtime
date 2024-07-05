@@ -1,8 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-// codeman.cpp - a managment class for handling multiple code managers
-//
 
+//
+// codeman.cpp - a managment class for handling multiple code managers
 //
 
 #include "common.h"
@@ -17,7 +17,6 @@
 #include "nibblemapmacros.h"
 #include "generics.h"
 #include "dynamicmethod.h"
-#include "eemessagebox.h"
 #include "eventtrace.h"
 #include "threadsuspend.h"
 
@@ -30,6 +29,9 @@
 #include "strsafe.h"
 
 #include "configuration.h"
+
+#include <minipal/cpufeatures.h>
+#include <minipal/cpuid.h>
 
 #ifdef HOST_64BIT
 #define CHECK_DUPLICATED_STRUCT_LAYOUTS
@@ -46,27 +48,17 @@
 SPTR_IMPL(EECodeManager, ExecutionManager, m_pDefaultCodeMan);
 
 SPTR_IMPL(EEJitManager, ExecutionManager, m_pEEJitManager);
-#ifdef FEATURE_PREJIT
-SPTR_IMPL(NativeImageJitManager, ExecutionManager, m_pNativeImageJitManager);
-#endif
 #ifdef FEATURE_READYTORUN
 SPTR_IMPL(ReadyToRunJitManager, ExecutionManager, m_pReadyToRunJitManager);
 #endif
 
-#ifndef DACCESS_COMPILE
-Volatile<RangeSection *> ExecutionManager::m_CodeRangeList = NULL;
-Volatile<LONG> ExecutionManager::m_dwReaderCount = 0;
-Volatile<LONG> ExecutionManager::m_dwWriterLock = 0;
-#else
-SPTR_IMPL(RangeSection, ExecutionManager, m_CodeRangeList);
-SVAL_IMPL(LONG, ExecutionManager, m_dwReaderCount);
-SVAL_IMPL(LONG, ExecutionManager, m_dwWriterLock);
-#endif
+SVAL_IMPL(RangeSectionMapData, ExecutionManager, g_codeRangeMap);
+VOLATILE_SVAL_IMPL_INIT(LONG, ExecutionManager, m_dwReaderCount, 0);
+VOLATILE_SVAL_IMPL_INIT(LONG, ExecutionManager, m_dwWriterLock, 0);
 
 #ifndef DACCESS_COMPILE
 
 CrstStatic ExecutionManager::m_JumpStubCrst;
-CrstStatic ExecutionManager::m_RangeCrst;
 
 unsigned   ExecutionManager::m_normal_JumpStubLookup;
 unsigned   ExecutionManager::m_normal_JumpStubUnique;
@@ -123,7 +115,7 @@ bool InitUnwindFtns()
 #ifndef TARGET_UNIX
     if (!RtlUnwindFtnsInited)
     {
-        HINSTANCE hNtdll = WszGetModuleHandle(W("ntdll.dll"));
+        HINSTANCE hNtdll = GetModuleHandle(W("ntdll.dll"));
         if (hNtdll != NULL)
         {
             void* growFunctionTable = GetProcAddress(hNtdll, "RtlGrowFunctionTable");
@@ -276,7 +268,7 @@ void UnwindInfoTable::AddToUnwindInfoTable(UnwindInfoTable** unwindInfoPtr, PT_R
     if (unwindInfo->hHandle == NULL)
         return;
 
-    // Check for the fast path: we are adding the the end of an UnwindInfoTable with space
+    // Check for the fast path: we are adding the end of an UnwindInfoTable with space
     if (unwindInfo->cTableCurCount < unwindInfo->cTableMaxCount)
     {
         if (unwindInfo->cTableCurCount == 0 ||
@@ -289,7 +281,7 @@ void UnwindInfoTable::AddToUnwindInfoTable(UnwindInfoTable** unwindInfoPtr, PT_R
             // Add to the function table
             pRtlGrowFunctionTable(unwindInfo->hHandle, unwindInfo->cTableCurCount);
 
-            STRESS_LOG5(LF_JIT, LL_INFO1000, "AddToUnwindTable Handle: %p [%p, %p] ADDING 0x%xp TO END, now 0x%x entries\n",
+            STRESS_LOG5(LF_JIT, LL_INFO1000, "AddToUnwindTable Handle: %p [%p, %p] ADDING 0x%p TO END, now 0x%x entries\n",
                 unwindInfo->hHandle, unwindInfo->iRangeStart, unwindInfo->iRangeEnd,
                 data->BeginAddress, unwindInfo->cTableCurCount);
             return;
@@ -302,7 +294,7 @@ void UnwindInfoTable::AddToUnwindInfoTable(UnwindInfoTable** unwindInfoPtr, PT_R
 
     ULONG usedSpace = unwindInfo->cTableCurCount - unwindInfo->cDeletedEntries;
     ULONG desiredSpace = usedSpace * 5 / 4 + 1;        // Increase by 20%
-    // Be more aggresive if we used all of our space;
+    // Be more aggressive if we used all of our space;
     if (usedSpace == unwindInfo->cTableMaxCount)
         desiredSpace = usedSpace * 3 / 2 + 1;        // Increase by 50%
 
@@ -401,7 +393,7 @@ void UnwindInfoTable::AddToUnwindInfoTable(UnwindInfoTable** unwindInfoPtr, PT_R
     if (pRS != NULL)
     {
         for(int i = 0; i < unwindInfoCount; i++)
-            AddToUnwindInfoTable(&pRS->pUnwindInfoTable, &unwindInfo[i], pRS->LowAddress, pRS->HighAddress);
+            AddToUnwindInfoTable(&pRS->_pUnwindInfoTable, &unwindInfo[i], pRS->_range.RangeStart(), pRS->_range.RangeEndOpen());
     }
 }
 
@@ -419,14 +411,14 @@ void UnwindInfoTable::AddToUnwindInfoTable(UnwindInfoTable** unwindInfoPtr, PT_R
     _ASSERTE(pRS != NULL);
     if (pRS != NULL)
     {
-        _ASSERTE(pRS->pjit->GetCodeType() == (miManaged | miIL));
-        if (pRS->pjit->GetCodeType() == (miManaged | miIL))
+        _ASSERTE(pRS->_pjit->GetCodeType() == (miManaged | miIL));
+        if (pRS->_pjit->GetCodeType() == (miManaged | miIL))
         {
             // This cast is justified because only EEJitManager's have the code type above.
-            EEJitManager* pJitMgr = (EEJitManager*)(pRS->pjit);
+            EEJitManager* pJitMgr = (EEJitManager*)(pRS->_pjit);
             CodeHeader * pHeader = pJitMgr->GetCodeHeaderFromStartAddress(entryPoint);
             for(ULONG i = 0; i < pHeader->GetNumberOfUnwindInfos(); i++)
-                RemoveFromUnwindInfoTable(&pRS->pUnwindInfoTable, pRS->LowAddress, pRS->LowAddress + pHeader->GetUnwindInfo(i)->BeginAddress);
+                RemoveFromUnwindInfoTable(&pRS->_pUnwindInfoTable, pRS->_range.RangeStart(), pRS->_range.RangeStart() + pHeader->GetUnwindInfo(i)->BeginAddress);
         }
     }
 }
@@ -463,15 +455,15 @@ extern CrstStatic g_StubUnwindInfoHeapSegmentsCrst;
                 PCODE methodEntry =(PCODE) heapIterator.GetMethodCode();
                 RangeSection * pRS = ExecutionManager::FindCodeRange(methodEntry, ExecutionManager::GetScanFlags());
                 _ASSERTE(pRS != NULL);
-                _ASSERTE(pRS->pjit->GetCodeType() == (miManaged | miIL));
-                if (pRS != NULL && pRS->pjit->GetCodeType() == (miManaged | miIL))
+                _ASSERTE(pRS->_pjit->GetCodeType() == (miManaged | miIL));
+                if (pRS != NULL && pRS->_pjit->GetCodeType() == (miManaged | miIL))
                 {
                     // This cast is justified because only EEJitManager's have the code type above.
-                    EEJitManager* pJitMgr = (EEJitManager*)(pRS->pjit);
+                    EEJitManager* pJitMgr = (EEJitManager*)(pRS->_pjit);
                     CodeHeader * pHeader = pJitMgr->GetCodeHeaderFromStartAddress(methodEntry);
                     int unwindInfoCount = pHeader->GetNumberOfUnwindInfos();
                     for(int i = 0; i < unwindInfoCount; i++)
-                        AddToUnwindInfoTable(&pRS->pUnwindInfoTable, pHeader->GetUnwindInfo(i), pRS->LowAddress, pRS->HighAddress);
+                        AddToUnwindInfoTable(&pRS->_pUnwindInfoTable, pHeader->GetUnwindInfo(i), pRS->_range.RangeStart(), pRS->_range.RangeEndOpen());
                 }
             }
         }
@@ -653,32 +645,22 @@ BOOL EEJitManager::CodeHeapIterator::Next()
 // writer lock and check for any readers. If there are any, the WriterLockHolder functions
 // release the writer and yield to wait for the readers to be done.
 
-ExecutionManager::ReaderLockHolder::ReaderLockHolder(HostCallPreference hostCallPreference /*=AllowHostCalls*/)
+ExecutionManager::ReaderLockHolder::ReaderLockHolder()
 {
     CONTRACTL {
         NOTHROW;
-        if (hostCallPreference == AllowHostCalls) { HOST_CALLS; } else { HOST_NOCALLS; }
         GC_NOTRIGGER;
         CAN_TAKE_LOCK;
     } CONTRACTL_END;
 
     IncCantAllocCount();
 
-    FastInterlockIncrement(&m_dwReaderCount);
+    InterlockedIncrement(&m_dwReaderCount);
 
     EE_LOCK_TAKEN(GetPtrForLockContract());
 
     if (VolatileLoad(&m_dwWriterLock) != 0)
     {
-        if (hostCallPreference != AllowHostCalls)
-        {
-            // Rats, writer lock is held. Gotta bail. Since the reader count was already
-            // incremented, we're technically still blocking writers at the moment. But
-            // the holder who called us is about to call DecrementReader in its
-            // destructor and unblock writers.
-            return;
-        }
-
         YIELD_WHILE ((VolatileLoad(&m_dwWriterLock) != 0));
     }
 }
@@ -697,7 +679,7 @@ ExecutionManager::ReaderLockHolder::~ReaderLockHolder()
     }
     CONTRACTL_END;
 
-    FastInterlockDecrement(&m_dwReaderCount);
+    InterlockedDecrement(&m_dwReaderCount);
     DecCantAllocCount();
 
     EE_LOCK_RELEASED(GetPtrForLockContract());
@@ -735,10 +717,10 @@ ExecutionManager::WriterLockHolder::WriterLockHolder()
         // or allow a profiler to walk its stack
         Thread::IncForbidSuspendThread();
 
-        FastInterlockIncrement(&m_dwWriterLock);
+        InterlockedIncrement(&m_dwWriterLock);
         if (m_dwReaderCount == 0)
             break;
-        FastInterlockDecrement(&m_dwWriterLock);
+        InterlockedDecrement(&m_dwWriterLock);
 
         // Before we loop and retry, it's safe to suspend or hijack and inspect
         // this thread
@@ -753,7 +735,7 @@ ExecutionManager::WriterLockHolder::~WriterLockHolder()
 {
     LIMITED_METHOD_CONTRACT;
 
-    FastInterlockDecrement(&m_dwWriterLock);
+    InterlockedDecrement(&m_dwWriterLock);
 
     // Writer lock released, so it's safe again for this thread to be
     // suspended or have its stack walked by a profiler
@@ -773,7 +755,7 @@ ExecutionManager::WriterLockHolder::~WriterLockHolder()
 // If it is, we will assume the locked data is in an inconsistent
 // state and throw. We never actually take the lock.
 // Note: Throws
-ExecutionManager::ReaderLockHolder::ReaderLockHolder(HostCallPreference hostCallPreference /*=AllowHostCalls*/)
+ExecutionManager::ReaderLockHolder::ReaderLockHolder()
 {
     SUPPORTS_DAC;
 
@@ -803,19 +785,22 @@ values: m_CodeRangeList and hold it while walking the lists
 Uses ReaderLockHolder (allows multiple reeaders with no writers)
 -----------------------------------------
 ExecutionManager::FindCodeRange
-ExecutionManager::FindZapModule
+ExecutionManager::FindReadyToRunModule
 ExecutionManager::EnumMemoryRegions
+AND
+ExecutionManager::IsManagedCode
+ExecutionManager::IsManagedCodeWithLock
+The IsManagedCode checks are notable as they protect not just access to the RangeSection walking,
+but the actual RangeSection while determining if a given ip IsManagedCode.
 
 Uses WriterLockHolder (allows single writer and no readers)
 -----------------------------------------
-ExecutionManager::AddRangeHelper
-ExecutionManager::DeleteRangeHelper
-
+ExecutionManager::DeleteRange
 */
 
 //-----------------------------------------------------------------------------
 
-#if defined(TARGET_ARM) || defined(TARGET_ARM64)
+#if defined(TARGET_ARM) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
 #define EXCEPTION_DATA_SUPPORTS_FUNCTION_FRAGMENTS
 #endif
 
@@ -885,38 +870,44 @@ BOOL IsFunctionFragment(TADDR baseAddress, PTR_RUNTIME_FUNCTION pFunctionEntry)
     }
 
     return ((*pUnwindCodes & 0xFF) == 0xE5);
+#elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+
+    // LOONGARCH64 is a little bit more flexible, in the sense that it supports partial prologs. However only one of the
+    // prolog regions are allowed to alter SP and that's the Host Record. Partial prologs are used in ShrinkWrapping
+    // scenarios which is not supported, hence we don't need to worry about them. discarding partial prologs
+    // simplifies identifying a host record a lot.
+    //
+    // 1. Prolog only: The host record. Epilog Count and E bit are all 0.
+    // 2. Prolog and some epilogs: The host record with accompanying epilog-only records
+    // 3. Epilogs only: First unwind code is Phantom prolog (Starting with an end_c, indicating an empty prolog)
+    // 4. No prologs or epilogs: First unwind code is Phantom prolog  (Starting with an end_c, indicating an empty prolog)
+    //
+
+    int EpilogCount = (int)(unwindHeader >> 22) & 0x1F;
+    int CodeWords = unwindHeader >> 27;
+    PTR_DWORD pUnwindCodes = (PTR_DWORD)(baseAddress + pFunctionEntry->UnwindData);
+    // Skip header.
+    pUnwindCodes++;
+
+    // Skip extended header.
+    if ((CodeWords == 0) && (EpilogCount == 0))
+    {
+        EpilogCount = (*pUnwindCodes) & 0xFFFF;
+        pUnwindCodes++;
+    }
+
+    // Skip epilog scopes.
+    BOOL Ebit = (unwindHeader >> 21) & 0x1;
+    if (!Ebit && (EpilogCount != 0))
+    {
+        // EpilogCount is the number of exception scopes defined right after the unwindHeader
+        pUnwindCodes += EpilogCount;
+    }
+
+    return ((*pUnwindCodes & 0xFF) == 0xE5);
 #else
     PORTABILITY_ASSERT("IsFunctionFragnent - NYI on this platform");
 #endif
-}
-
-// When we have fragmented unwind we usually want to refer to the
-// unwind record that includes the prolog. We can find it by searching
-// back in the sequence of unwind records.
-PTR_RUNTIME_FUNCTION FindRootEntry(PTR_RUNTIME_FUNCTION pFunctionEntry, TADDR baseAddress)
-{
-    LIMITED_METHOD_DAC_CONTRACT;
-
-    PTR_RUNTIME_FUNCTION pRootEntry = pFunctionEntry;
-
-    if (pRootEntry != NULL)
-    {
-        // Walk backwards in the RUNTIME_FUNCTION array until we find a non-fragment.
-        // We're guaranteed to find one, because we require that a fragment live in a function or funclet
-        // that has a prolog, which will have non-fragment .xdata.
-        for (;;)
-        {
-            if (!IsFunctionFragment(baseAddress, pRootEntry))
-            {
-                // This is not a fragment; we're done
-                break;
-            }
-
-            --pRootEntry;
-        }
-    }
-
-    return pRootEntry;
 }
 
 #endif // EXCEPTION_DATA_SUPPORTS_FUNCTION_FRAGMENTS
@@ -946,14 +937,13 @@ ExecutionManager::ScanFlag ExecutionManager::GetScanFlags()
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        HOST_NOCALLS;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
-#if !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
-    BEGIN_GETTHREAD_ALLOWED;
+#if !defined(DACCESS_COMPILE)
 
-    Thread *pThread = GetThread();
+
+    Thread *pThread = GetThreadNULLOk();
 
     if (!pThread)
         return ScanNoReaderLock;
@@ -966,7 +956,7 @@ ExecutionManager::ScanFlag ExecutionManager::GetScanFlags()
     if (pThread->PreemptiveGCDisabled() || (pThread == ThreadSuspend::GetSuspensionThread()))
         return ScanNoReaderLock;
 
-    END_GETTHREAD_ALLOWED;
+
 
     return ScanReaderLock;
 #else
@@ -1010,30 +1000,31 @@ PTR_VOID GetUnwindDataBlob(TADDR moduleBase, PTR_RUNTIME_FUNCTION pRuntimeFuncti
 
     return pUnwindInfo;
 
-#elif defined(TARGET_ARM)
+#elif defined(TARGET_ARM) || defined(TARGET_ARM64)
 
     // if this function uses packed unwind data then at least one of the two least significant bits
     // will be non-zero.  if this is the case then there will be no xdata record to enumerate.
     _ASSERTE((pRuntimeFunction->UnwindData & 0x3) == 0);
 
     // compute the size of the unwind info
-    PTR_ULONG xdata = dac_cast<PTR_ULONG>(pRuntimeFunction->UnwindData + moduleBase);
+    PTR_DWORD xdata = dac_cast<PTR_DWORD>(pRuntimeFunction->UnwindData + moduleBase);
+    int size = 4;
 
-    ULONG epilogScopes = 0;
-    ULONG unwindWords = 0;
-    ULONG size = 0;
+#if defined(TARGET_ARM)
+    // See https://learn.microsoft.com/cpp/build/arm-exception-handling
+    int unwindWords = xdata[0] >> 28;
+    int epilogScopes = (xdata[0] >> 23) & 0x1f;
+#else
+    // See https://learn.microsoft.com/cpp/build/arm64-exception-handling
+    int unwindWords = xdata[0] >> 27;
+    int epilogScopes = (xdata[0] >> 22) & 0x1f;
+#endif
 
-    if ((xdata[0] >> 23) != 0)
+    if (unwindWords == 0 && epilogScopes == 0)
     {
-        size = 4;
-        epilogScopes = (xdata[0] >> 23) & 0x1f;
-        unwindWords = (xdata[0] >> 28) & 0x0f;
-    }
-    else
-    {
-        size = 8;
-        epilogScopes = xdata[1] & 0xffff;
+        size += 4;
         unwindWords = (xdata[1] >> 16) & 0xff;
+        epilogScopes = xdata[1] & 0xffff;
     }
 
     if (!(xdata[0] & (1 << 21)))
@@ -1047,10 +1038,12 @@ PTR_VOID GetUnwindDataBlob(TADDR moduleBase, PTR_RUNTIME_FUNCTION pRuntimeFuncti
     *pSize = size;
     return xdata;
 
-#elif defined(TARGET_ARM64)
-	// if this function uses packed unwind data then at least one of the two least significant bits
-	// will be non-zero.  if this is the case then there will be no xdata record to enumerate.
-	_ASSERTE((pRuntimeFunction->UnwindData & 0x3) == 0);
+
+#elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+    // TODO: maybe optimize further.
+    // if this function uses packed unwind data then at least one of the two least significant bits
+    // will be non-zero.  if this is the case then there will be no xdata record to enumerate.
+    _ASSERTE((pRuntimeFunction->UnwindData & 0x3) == 0);
 
     // compute the size of the unwind info
     PTR_ULONG xdata    = dac_cast<PTR_ULONG>(pRuntimeFunction->UnwindData + moduleBase);
@@ -1065,7 +1058,7 @@ PTR_VOID GetUnwindDataBlob(TADDR moduleBase, PTR_RUNTIME_FUNCTION pRuntimeFuncti
     {
         size = 4;
         epilogScopes = (xdata[0] >> 22) & 0x1f;
-        unwindWords = (xdata[0] >> 27) & 0x0f;
+        unwindWords = (xdata[0] >> 27) & 0x1f;
     }
     else
     {
@@ -1085,7 +1078,6 @@ PTR_VOID GetUnwindDataBlob(TADDR moduleBase, PTR_RUNTIME_FUNCTION pRuntimeFuncti
     *pSize = size;
     return xdata;
 
-
 #else
     PORTABILITY_ASSERT("GetUnwindDataBlob");
     return NULL;
@@ -1102,12 +1094,30 @@ TADDR IJitManager::GetFuncletStartAddress(EECodeInfo * pCodeInfo)
 #endif
 
     TADDR baseAddress = pCodeInfo->GetModuleBase();
+    TADDR funcletStartAddress = baseAddress + RUNTIME_FUNCTION__BeginAddress(pFunctionEntry);
 
 #if defined(EXCEPTION_DATA_SUPPORTS_FUNCTION_FRAGMENTS)
-    pFunctionEntry = FindRootEntry(pFunctionEntry, baseAddress);
-#endif // EXCEPTION_DATA_SUPPORTS_FUNCTION_FRAGMENTS
+    // Is the RUNTIME_FUNCTION a fragment? If so, we need to walk backwards until we find the first
+    // non-fragment RUNTIME_FUNCTION, and use that one. This happens when we have very large functions
+    // and multiple RUNTIME_FUNCTION entries per function or funclet. However, all but the first will
+    // have the "F" bit set in the unwind data, indicating a fragment (with phantom prolog unwind codes).
 
-    TADDR funcletStartAddress = baseAddress + RUNTIME_FUNCTION__BeginAddress(pFunctionEntry);
+    for (;;)
+    {
+        if (!IsFunctionFragment(baseAddress, pFunctionEntry))
+        {
+            // This is not a fragment; we're done
+            break;
+        }
+
+        // We found a fragment. Walk backwards in the RUNTIME_FUNCTION array until we find a non-fragment.
+        // We're guaranteed to find one, because we require that a fragment live in a function or funclet
+        // that has a prolog, which will have non-fragment .xdata.
+        --pFunctionEntry;
+
+        funcletStartAddress = baseAddress + RUNTIME_FUNCTION__BeginAddress(pFunctionEntry);
+    }
+#endif // EXCEPTION_DATA_SUPPORTS_FUNCTION_FRAGMENTS
 
     return funcletStartAddress;
 }
@@ -1188,7 +1198,6 @@ PTR_VOID GetUnwindDataBlob(TADDR moduleBase, PTR_RUNTIME_FUNCTION pRuntimeFuncti
 #endif // FEATURE_EH_FUNCLETS
 
 
-#ifndef CROSSGEN_COMPILE
 
 #ifndef DACCESS_COMPILE
 
@@ -1226,298 +1235,396 @@ EEJitManager::EEJitManager()
     m_AltJITRequired   = false;
 #endif
 
+    m_storeRichDebugInfo = false;
     m_cleanupList = NULL;
+
+    SetCpuInfo();
 }
 
-#if defined(TARGET_X86) || defined(TARGET_AMD64)
-
-bool DoesOSSupportAVX()
-{
-    LIMITED_METHOD_CONTRACT;
-
-#ifndef TARGET_UNIX
-    // On Windows we have an api(GetEnabledXStateFeatures) to check if AVX is supported
-    typedef DWORD64 (WINAPI *PGETENABLEDXSTATEFEATURES)();
-    PGETENABLEDXSTATEFEATURES pfnGetEnabledXStateFeatures = NULL;
-
-    HMODULE hMod = WszLoadLibraryEx(WINDOWS_KERNEL32_DLLNAME_W, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if(hMod == NULL)
-        return FALSE;
-
-    pfnGetEnabledXStateFeatures = (PGETENABLEDXSTATEFEATURES)GetProcAddress(hMod, "GetEnabledXStateFeatures");
-
-    if (pfnGetEnabledXStateFeatures == NULL)
-    {
-        return FALSE;
-    }
-
-    DWORD64 FeatureMask = pfnGetEnabledXStateFeatures();
-    if ((FeatureMask & XSTATE_MASK_AVX) == 0)
-    {
-        return FALSE;
-    }
-#endif // !TARGET_UNIX
-
-    return TRUE;
-}
-
-#endif // defined(TARGET_X86) || defined(TARGET_AMD64)
+#ifdef TARGET_ARM64
+extern "C" DWORD64 __stdcall GetDataCacheZeroIDReg();
+extern "C" uint64_t GetSveLengthFromOS();
+#endif
 
 void EEJitManager::SetCpuInfo()
 {
     LIMITED_METHOD_CONTRACT;
 
     //
-    // NOTE: This function needs to be kept in sync with Zapper::CompileAssembly()
-    // NOTE: This function needs to be kept in sync with compSetProcesor() in jit\compiler.cpp
+    // NOTE: This function needs to be kept in sync with compSetProcessor() in jit\compiler.cpp
     //
 
     CORJIT_FLAGS CPUCompileFlags;
 
-#if defined(TARGET_X86)
-    // NOTE: if you're adding any flags here, you probably should also be doing it
-    // for ngen (zapper.cpp)
-    CORINFO_CPU cpuInfo;
-    GetSpecificCpuInfo(&cpuInfo);
+    int cpuFeatures = minipal_getcpufeatures();
 
-    switch (CPU_X86_FAMILY(cpuInfo.dwCPUType))
-    {
-        case CPU_X86_PENTIUM_4:
-            CPUCompileFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_TARGET_P4);
-            break;
-
-        default:
-            break;
-    }
-
-    if (CPU_X86_USE_CMOV(cpuInfo.dwFeatures))
-    {
-        CPUCompileFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_CMOV);
-        CPUCompileFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_FCOMI);
-    }
-#endif // TARGET_X86
+    // Get the maximum bitwidth of Vector<T>, rounding down to the nearest multiple of 128-bits
+    uint32_t maxVectorTBitWidth = (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_MaxVectorTBitWidth) / 128) * 128;
 
 #if defined(TARGET_X86) || defined(TARGET_AMD64)
-     CPUCompileFlags.Set(InstructionSet_X86Base);
+    CPUCompileFlags.Set(InstructionSet_VectorT128);
 
-    // NOTE: The below checks are based on the information reported by
-    //   Intel® 64 and IA-32 Architectures Software Developer’s Manual. Volume 2
-    //   and
-    //   AMD64 Architecture Programmer’s Manual. Volume 3
-    // For more information, please refer to the CPUID instruction in the respective manuals
-
-    // We will set the following flags:
-    //   CORJIT_FLAG_USE_SSE2 is required
-    //      SSE       - EDX bit 25
-    //      SSE2      - EDX bit 26
-    //   CORJIT_FLAG_USE_AES
-    //      CORJIT_FLAG_USE_SSE2
-    //      AES       - ECX bit 25
-    //   CORJIT_FLAG_USE_PCLMULQDQ
-    //      CORJIT_FLAG_USE_SSE2
-    //      PCLMULQDQ - ECX bit 1
-    //   CORJIT_FLAG_USE_SSE3 if the following feature bits are set (input EAX of 1)
-    //      CORJIT_FLAG_USE_SSE2
-    //      SSE3      - ECX bit 0
-    //   CORJIT_FLAG_USE_SSSE3 if the following feature bits are set (input EAX of 1)
-    //      CORJIT_FLAG_USE_SSE3
-    //      SSSE3     - ECX bit 9
-    //   CORJIT_FLAG_USE_SSE41 if the following feature bits are set (input EAX of 1)
-    //      CORJIT_FLAG_USE_SSSE3
-    //      SSE4.1    - ECX bit 19
-    //   CORJIT_FLAG_USE_SSE42 if the following feature bits are set (input EAX of 1)
-    //      CORJIT_FLAG_USE_SSE41
-    //      SSE4.2    - ECX bit 20
-    //   CORJIT_FLAG_USE_POPCNT if the following feature bits are set (input EAX of 1)
-    //      CORJIT_FLAG_USE_SSE42
-    //      POPCNT    - ECX bit 23
-    //   CORJIT_FLAG_USE_AVX if the following feature bits are set (input EAX of 1), and xmmYmmStateSupport returns 1:
-    //      CORJIT_FLAG_USE_SSE42
-    //      OSXSAVE   - ECX bit 27
-    //      AVX       - ECX bit 28
-    //      XGETBV    - XCR0[2:1]    11b
-    //   CORJIT_FLAG_USE_FMA if the following feature bits are set (input EAX of 1), and xmmYmmStateSupport returns 1:
-    //      CORJIT_FLAG_USE_AVX
-    //      FMA       - ECX bit 12
-    //   CORJIT_FLAG_USE_AVX2 if the following feature bit is set (input EAX of 0x07 and input ECX of 0):
-    //      CORJIT_FLAG_USE_AVX
-    //      AVX2      - EBX bit 5
-    //   CORJIT_FLAG_USE_AVX_512 is not currently set, but defined so that it can be used in future without
-    //   CORJIT_FLAG_USE_BMI1 if the following feature bit is set (input EAX of 0x07 and input ECX of 0):
-    //      BMI1 - EBX bit 3
-    //   CORJIT_FLAG_USE_BMI2 if the following feature bit is set (input EAX of 0x07 and input ECX of 0):
-    //      BMI2 - EBX bit 8
-    //   CORJIT_FLAG_USE_LZCNT if the following feature bits are set (input EAX of 80000001H)
-    //      LZCNT - ECX bit 5
-    // synchronously updating VM and JIT.
-
-    int cpuidInfo[4];
-
-    const int EAX = CPUID_EAX;
-    const int EBX = CPUID_EBX;
-    const int ECX = CPUID_ECX;
-    const int EDX = CPUID_EDX;
-
-    __cpuid(cpuidInfo, 0x00000000);
-    uint32_t maxCpuId = static_cast<uint32_t>(cpuidInfo[EAX]);
-
-    if (maxCpuId >= 1)
+    if (((cpuFeatures & XArchIntrinsicConstants_Avx2) != 0) && ((maxVectorTBitWidth == 0) || (maxVectorTBitWidth >= 256)))
     {
-        __cpuid(cpuidInfo, 0x00000001);
+        // We allow 256-bit Vector<T> by default
+        CPUCompileFlags.Set(InstructionSet_VectorT256);
+    }
 
-        if (((cpuidInfo[EDX] & (1 << 25)) != 0) && ((cpuidInfo[EDX] & (1 << 26)) != 0))                     // SSE & SSE2
+    if (((cpuFeatures & XArchIntrinsicConstants_Avx512) != 0) && (maxVectorTBitWidth >= 512))
+    {
+        // We require 512-bit Vector<T> to be opt-in
+        CPUCompileFlags.Set(InstructionSet_VectorT512);
+    }
+
+    // x86-64-v1
+
+    if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableHWIntrinsic))
+    {
+        CPUCompileFlags.Set(InstructionSet_X86Base);
+    }
+
+    if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableSSE))
+    {
+        CPUCompileFlags.Set(InstructionSet_SSE);
+    }
+
+    if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableSSE2))
+    {
+        CPUCompileFlags.Set(InstructionSet_SSE2);
+    }
+
+    // x86-64-v2
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Sse3) != 0) &&
+        CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableSSE3) &&
+        CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableSSE3_4))
+    {
+        // We need to additionally check that EXTERNAL_EnableSSE3_4 is set, as that
+        // is a prexisting config flag that controls the SSE3+ ISAs
+        CPUCompileFlags.Set(InstructionSet_SSE3);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Ssse3) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableSSSE3))
+    {
+        CPUCompileFlags.Set(InstructionSet_SSSE3);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Sse41) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableSSE41))
+    {
+        CPUCompileFlags.Set(InstructionSet_SSE41);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Sse42) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableSSE42))
+    {
+        CPUCompileFlags.Set(InstructionSet_SSE42);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Popcnt) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnablePOPCNT))
+    {
+        CPUCompileFlags.Set(InstructionSet_POPCNT);
+    }
+
+    // x86-64-v3
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Avx) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX))
+    {
+        CPUCompileFlags.Set(InstructionSet_AVX);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Avx2) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX2))
+    {
+        CPUCompileFlags.Set(InstructionSet_AVX2);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Bmi1) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableBMI1))
+    {
+        CPUCompileFlags.Set(InstructionSet_BMI1);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Bmi2) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableBMI2))
+    {
+        CPUCompileFlags.Set(InstructionSet_BMI2);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Fma) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableFMA))
+    {
+        CPUCompileFlags.Set(InstructionSet_FMA);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Lzcnt) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableLZCNT))
+    {
+        CPUCompileFlags.Set(InstructionSet_LZCNT);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Movbe) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableMOVBE))
+    {
+        CPUCompileFlags.Set(InstructionSet_MOVBE);
+    }
+
+    // x86-64-v4
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Evex) != 0) &&
+        ((cpuFeatures & XArchIntrinsicConstants_Avx512) != 0))
+    {
+        // While the AVX-512 ISAs can be individually lit-up, they really
+        // need F, BW, CD, DQ, and VL to be fully functional without adding
+        // significant complexity into the JIT. Additionally, unlike AVX/AVX2
+        // there was never really any hardware that didn't provide all 5 at
+        // once, with the notable exception being Knight's Landing which
+        // provided a similar but not quite the same feature.
+
+        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX512F) &&
+            CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX512F_VL) &&
+            CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX512BW) &&
+            CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX512BW_VL) &&
+            CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX512CD) &&
+            CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX512CD_VL) &&
+            CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX512DQ) &&
+            CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX512DQ_VL))
         {
-            CPUCompileFlags.Set(InstructionSet_SSE);
-            CPUCompileFlags.Set(InstructionSet_SSE2);
-
-            if ((cpuidInfo[ECX] & (1 << 25)) != 0)                                                          // AESNI
-            {
-                CPUCompileFlags.Set(InstructionSet_AES);
-            }
-
-            if ((cpuidInfo[ECX] & (1 << 1)) != 0)                                                           // PCLMULQDQ
-            {
-                CPUCompileFlags.Set(InstructionSet_PCLMULQDQ);
-            }
-
-            if ((cpuidInfo[ECX] & (1 << 0)) != 0)                                                           // SSE3
-            {
-                CPUCompileFlags.Set(InstructionSet_SSE3);
-
-                if ((cpuidInfo[ECX] & (1 << 9)) != 0)                                                       // SSSE3
-                {
-                    CPUCompileFlags.Set(InstructionSet_SSSE3);
-
-                    if ((cpuidInfo[ECX] & (1 << 19)) != 0)                                                  // SSE4.1
-                    {
-                        CPUCompileFlags.Set(InstructionSet_SSE41);
-
-                        if ((cpuidInfo[ECX] & (1 << 20)) != 0)                                              // SSE4.2
-                        {
-                            CPUCompileFlags.Set(InstructionSet_SSE42);
-
-                            if ((cpuidInfo[ECX] & (1 << 23)) != 0)                                          // POPCNT
-                            {
-                                CPUCompileFlags.Set(InstructionSet_POPCNT);
-                            }
-
-                            if (((cpuidInfo[ECX] & (1 << 27)) != 0) && ((cpuidInfo[ECX] & (1 << 28)) != 0)) // OSXSAVE & AVX
-                            {
-                                if(DoesOSSupportAVX() && (xmmYmmStateSupport() == 1))                       // XGETBV == 11
-                                {
-                                    CPUCompileFlags.Set(InstructionSet_AVX);
-
-                                    if ((cpuidInfo[ECX] & (1 << 12)) != 0)                                  // FMA
-                                    {
-                                        CPUCompileFlags.Set(InstructionSet_FMA);
-                                    }
-
-                                    if (maxCpuId >= 0x07)
-                                    {
-                                        __cpuidex(cpuidInfo, 0x00000007, 0x00000000);
-
-                                        if ((cpuidInfo[EBX] & (1 << 5)) != 0)                               // AVX2
-                                        {
-                                            CPUCompileFlags.Set(InstructionSet_AVX2);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            static ConfigDWORD fFeatureSIMD;
-
-            if (fFeatureSIMD.val(CLRConfig::EXTERNAL_FeatureSIMD) != 0)
-            {
-                CPUCompileFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_FEATURE_SIMD);
-            }
-
-            if (CLRConfig::GetConfigValue(CLRConfig::INTERNAL_SIMD16ByteOnly) != 0)
-            {
-                CPUCompileFlags.Clear(InstructionSet_AVX2);
-            }
-        }
-
-        if (maxCpuId >= 0x07)
-        {
-            __cpuidex(cpuidInfo, 0x00000007, 0x00000000);
-
-            if ((cpuidInfo[EBX] & (1 << 3)) != 0)                                                           // BMI1
-            {
-                CPUCompileFlags.Set(InstructionSet_BMI1);
-            }
-
-            if ((cpuidInfo[EBX] & (1 << 8)) != 0)                                                           // BMI2
-            {
-                CPUCompileFlags.Set(InstructionSet_BMI2);
-            }
+            CPUCompileFlags.Set(InstructionSet_EVEX);
+            CPUCompileFlags.Set(InstructionSet_AVX512F);
+            CPUCompileFlags.Set(InstructionSet_AVX512F_VL);
+            CPUCompileFlags.Set(InstructionSet_AVX512BW);
+            CPUCompileFlags.Set(InstructionSet_AVX512BW_VL);
+            CPUCompileFlags.Set(InstructionSet_AVX512CD);
+            CPUCompileFlags.Set(InstructionSet_AVX512CD_VL);
+            CPUCompileFlags.Set(InstructionSet_AVX512DQ);
+            CPUCompileFlags.Set(InstructionSet_AVX512DQ_VL);
         }
     }
 
-    __cpuid(cpuidInfo, 0x80000000);
-    uint32_t maxCpuIdEx = static_cast<uint32_t>(cpuidInfo[EAX]);
-
-    if (maxCpuIdEx >= 0x80000001)
+    if ((cpuFeatures & XArchIntrinsicConstants_Avx512Vbmi) != 0)
     {
-        __cpuid(cpuidInfo, 0x80000001);
-
-        if ((cpuidInfo[ECX] & (1 << 5)) != 0)                                                               // LZCNT
+        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX512VBMI) &&
+            CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX512VBMI_VL))
         {
-            CPUCompileFlags.Set(InstructionSet_LZCNT);
+            CPUCompileFlags.Set(InstructionSet_AVX512VBMI);
+            CPUCompileFlags.Set(InstructionSet_AVX512VBMI_VL);
         }
     }
 
-    if (!CPUCompileFlags.IsSet(InstructionSet_SSE))
-    {
-        EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("SSE is not supported on the processor."));
-    }
-    if (!CPUCompileFlags.IsSet(InstructionSet_SSE2))
-    {
-        EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("SSE2 is not supported on the processor."));
-    }
-#endif // defined(TARGET_X86) || defined(TARGET_AMD64)
+    // Unversioned
 
-#if defined(TARGET_ARM64)
-    static ConfigDWORD fFeatureSIMD;
-    if (fFeatureSIMD.val(CLRConfig::EXTERNAL_FeatureSIMD) != 0)
+    if (((cpuFeatures & XArchIntrinsicConstants_Aes) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAES))
     {
-        CPUCompileFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_FEATURE_SIMD);
+        CPUCompileFlags.Set(InstructionSet_AES);
     }
-#if defined(TARGET_UNIX)
-    PAL_GetJitCpuCapabilityFlags(&CPUCompileFlags);
 
-    // For HOST_ARM64, if OS has exposed mechanism to detect CPU capabilities, make sure it has AdvSimd capability.
-    // For other cases i.e. if !HOST_ARM64 but TARGET_ARM64 or HOST_ARM64 but OS doesn't expose way to detect
-    // CPU capabilities, we always enable AdvSimd flags by default.
-    //
-    if (!CPUCompileFlags.IsSet(InstructionSet_AdvSimd))
+    if (((cpuFeatures & XArchIntrinsicConstants_Pclmulqdq) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnablePCLMULQDQ))
     {
-        EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("AdvSimd is not supported on the processor."));
+        CPUCompileFlags.Set(InstructionSet_PCLMULQDQ);
     }
-#elif defined(HOST_64BIT)
-    // FP and SIMD support are enabled by default
-    CPUCompileFlags.Set(InstructionSet_ArmBase);
-    CPUCompileFlags.Set(InstructionSet_AdvSimd);
-    // PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE (30)
-    if (IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE))
+
+    if (((cpuFeatures & XArchIntrinsicConstants_AvxVnni) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVXVNNI))
+    {
+        CPUCompileFlags.Set(InstructionSet_AVXVNNI);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Serialize) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableX86Serialize))
+    {
+        CPUCompileFlags.Set(InstructionSet_X86Serialize);
+    }
+
+    if (((cpuFeatures & XArchIntrinsicConstants_Evex) != 0) &&
+        ((cpuFeatures & XArchIntrinsicConstants_Avx10v1) != 0))
+    {
+        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableAVX10v1))
+        {
+            CPUCompileFlags.Set(InstructionSet_EVEX);
+            CPUCompileFlags.Set(InstructionSet_AVX10v1);
+
+            if((cpuFeatures & XArchIntrinsicConstants_Avx512) != 0)
+            {
+                CPUCompileFlags.Set(InstructionSet_AVX10v1_V512);
+            }
+        }
+    }
+#elif defined(TARGET_ARM64)
+
+#if !defined(TARGET_WINDOWS)
+    // Linux may still support no AdvSimd
+    if ((cpuFeatures & ARM64IntrinsicConstants_AdvSimd) == 0)
+    {
+        EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("AdvSimd processor support required."));
+    }
+#else
+    _ASSERTE((cpuFeatures & ARM64IntrinsicConstants_AdvSimd) != 0);
+#endif
+
+    CPUCompileFlags.Set(InstructionSet_VectorT128);
+
+    if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableHWIntrinsic))
+    {
+        CPUCompileFlags.Set(InstructionSet_ArmBase);
+    }
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_AdvSimd) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64AdvSimd))
+    {
+        CPUCompileFlags.Set(InstructionSet_AdvSimd);
+    }
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_Aes) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Aes))
     {
         CPUCompileFlags.Set(InstructionSet_Aes);
-        CPUCompileFlags.Set(InstructionSet_Sha1);
-        CPUCompileFlags.Set(InstructionSet_Sha256);
     }
-    // PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE (31)
-    if (IsProcessorFeaturePresent(PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE))
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_Atomics) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Atomics))
+    {
+        CPUCompileFlags.Set(InstructionSet_Atomics);
+    }
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_Rcpc) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Rcpc))
+    {
+        CPUCompileFlags.Set(InstructionSet_Rcpc);
+    }
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_Rcpc2) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Rcpc2))
+    {
+        CPUCompileFlags.Set(InstructionSet_Rcpc2);
+    }
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_Crc32) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Crc32))
     {
         CPUCompileFlags.Set(InstructionSet_Crc32);
     }
-#endif // HOST_64BIT
-#endif // TARGET_ARM64
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_Dp) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Dp))
+    {
+        CPUCompileFlags.Set(InstructionSet_Dp);
+    }
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_Rdm) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Rdm))
+    {
+        CPUCompileFlags.Set(InstructionSet_Rdm);
+    }
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_Sha1) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Sha1))
+    {
+        CPUCompileFlags.Set(InstructionSet_Sha1);
+    }
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_Sha256) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Sha256))
+    {
+        CPUCompileFlags.Set(InstructionSet_Sha256);
+    }
+
+    if (((cpuFeatures & ARM64IntrinsicConstants_Sve) != 0) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Sve))
+    {
+        uint32_t maxVectorTLength = (maxVectorTBitWidth / 8);
+        uint64_t sveLengthFromOS = GetSveLengthFromOS();
+
+        // For now, enable SVE only when the system vector length is 16 bytes (128-bits)
+        // TODO: https://github.com/dotnet/runtime/issues/101477
+        if (sveLengthFromOS == 16)
+        // if ((maxVectorTLength >= sveLengthFromOS) || (maxVectorTBitWidth == 0))
+        {
+            CPUCompileFlags.Set(InstructionSet_Sve);
+        }
+    }
+
+    // DCZID_EL0<4> (DZP) indicates whether use of DC ZVA instructions is permitted (0) or prohibited (1).
+    // DCZID_EL0<3:0> (BS) specifies Log2 of the block size in words.
+    //
+    // We set the flag when the instruction is permitted and the block size is 64 bytes.
+    if ((GetDataCacheZeroIDReg() == 4) && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_EnableArm64Dczva))
+    {
+        CPUCompileFlags.Set(InstructionSet_Dczva);
+    }
+
+    if ((cpuFeatures & ARM64IntrinsicConstants_Atomics) != 0)
+    {
+        g_arm64_atomics_present = true;
+    }
+#endif
+
+    // These calls are very important as it ensures the flags are consistent with any
+    // removals specified above. This includes removing corresponding 64-bit ISAs
+    // and any other implications such as SSE2 depending on SSE or AdvSimd on ArmBase
 
     CPUCompileFlags.Set64BitInstructionSetVariants();
     CPUCompileFlags.EnsureValidInstructionSetSupport();
+
+#if defined(TARGET_X86) || defined(TARGET_AMD64)
+
+    // Clean up mutually exclusive ISAs
+    if (CPUCompileFlags.IsSet(InstructionSet_VectorT512))
+    {
+        CPUCompileFlags.Clear(InstructionSet_VectorT256);
+        CPUCompileFlags.Clear(InstructionSet_VectorT128);
+    }
+    else if (CPUCompileFlags.IsSet(InstructionSet_VectorT256))
+    {
+        CPUCompileFlags.Clear(InstructionSet_VectorT128);
+    }
+
+    int cpuidInfo[4];
+
+    const int CPUID_EAX = 0;
+    const int CPUID_EBX = 1;
+    const int CPUID_ECX = 2;
+    const int CPUID_EDX = 3;
+
+    __cpuid(cpuidInfo, 0x00000000);
+
+    bool isGenuineIntel = (cpuidInfo[CPUID_EBX] == 0x756E6547) && // Genu
+                          (cpuidInfo[CPUID_EDX] == 0x49656E69) && // ineI
+                          (cpuidInfo[CPUID_ECX] == 0x6C65746E);   // ntel
+
+    if (isGenuineIntel)
+    {
+        union XarchCpuInfo
+        {
+            struct {
+                uint32_t SteppingId       : 4;
+                uint32_t Model            : 4;
+                uint32_t FamilyId         : 4;
+                uint32_t ProcessorType    : 2;
+                uint32_t Reserved1        : 2; // Unused bits in the CPUID result
+                uint32_t ExtendedModelId  : 4;
+                uint32_t ExtendedFamilyId : 8;
+                uint32_t Reserved         : 4; // Unused bits in the CPUID result
+            };
+
+            uint32_t Value;
+        } xarchCpuInfo;
+
+        __cpuid(cpuidInfo, 0x00000001);
+        _ASSERTE((cpuidInfo[CPUID_EDX] & (1 << 15)) != 0);                                                    // CMOV
+
+        xarchCpuInfo.Value = cpuidInfo[CPUID_EAX];
+
+        // Some architectures can experience frequency throttling when executing
+        // executing 512-bit width instructions. To account for this we set the
+        // default preferred vector width to 256-bits in some scenarios. Power
+        // users can override this with `DOTNET_PreferredVectorBitWidth=512` to
+        // allow using such instructions where hardware support is available.
+
+        if (xarchCpuInfo.FamilyId == 0x06)
+        {
+            if (xarchCpuInfo.ExtendedModelId == 0x05)
+            {
+                if (xarchCpuInfo.Model == 0x05)
+                {
+                    // * Skylake (Server)
+                    // * Cascade Lake
+                    // * Cooper Lake
+
+                    CPUCompileFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_VECTOR512_THROTTLING);
+                }
+            }
+            else if (xarchCpuInfo.ExtendedModelId == 0x06)
+            {
+                if (xarchCpuInfo.Model == 0x06)
+                {
+                    // * Cannon Lake
+
+                    CPUCompileFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_VECTOR512_THROTTLING);
+                }
+            }
+        }
+    }
+#endif // TARGET_X86 || TARGET_AMD64
 
     m_CPUCompileFlags = CPUCompileFlags;
 }
@@ -1557,38 +1664,11 @@ struct JIT_LOAD_DATA
 // Here's the global data for JIT load and initialization state.
 JIT_LOAD_DATA g_JitLoadData;
 
-//  Validate that the name used to load the JIT is just a simple file name
-//  and does not contain something that could be used in a non-qualified path.
-//  For example, using the string "..\..\..\myjit.dll" we might attempt to
-//  load a JIT from the root of the drive.
-//
-//  The minimal set of characters that we must check for and exclude are:
-//     '\\' - (backslash)
-//     '/'  - (forward slash)
-//     ':'  - (colon)
-//
-//  Returns false if we find any of these characters in 'pwzJitName'
-//  Returns true if we reach the null terminator without encountering 
-//  any of these characters.
-//
-static bool ValidateJitName(LPCWSTR pwzJitName)
-{
-    LPCWSTR pCurChar = pwzJitName;
-    wchar_t curChar;
-    do {
-        curChar = *pCurChar;
-        if ((curChar == '\\') || (curChar == '/') || (curChar == ':'))
-        {
-            //  Return false if we find any of these character in 'pwzJitName'
-            return false;
-        }
-        pCurChar++;
-    } while (curChar != 0);
+CORINFO_OS getClrVmOs();
 
-    //  Return true; we have reached the null terminator
-    //
-    return true;
-}
+#define LogJITInitializationError(...) \
+    LOG((LF_JIT, LL_FATALERROR, __VA_ARGS__)); \
+    LogErrorToHost(__VA_ARGS__);
 
 // LoadAndInitializeJIT: load the JIT dll into the process, and initialize it (call the UtilCode initialization function,
 // check the JIT-EE interface GUID, etc.)
@@ -1596,6 +1676,7 @@ static bool ValidateJitName(LPCWSTR pwzJitName)
 // Parameters:
 //
 // pwzJitName        - The filename of the JIT .dll file to load. E.g., "altjit.dll".
+// pwzJitPath        - (Debug only) The full path of the JIT .dll file to load
 // phJit             - On return, *phJit is the Windows module handle of the loaded JIT dll. It will be NULL if the load failed.
 // ppICorJitCompiler - On return, *ppICorJitCompiler is the ICorJitCompiler* returned by the JIT's getJit() entrypoint.
 //                     It is NULL if the JIT returns a NULL interface pointer, or if the JIT-EE interface GUID is mismatched.
@@ -1606,9 +1687,10 @@ static bool ValidateJitName(LPCWSTR pwzJitName)
 //                     is used to help understand problems we see with JIT loading that come in via Watson dumps. Since we don't throw
 //                     an exception immediately upon failure, we can lose information about what the failure was if we don't store this
 //                     information in a way that persists into a process dump.
+// targetOs          - Target OS for JIT
 //
 
-static void LoadAndInitializeJIT(LPCWSTR pwzJitName, OUT HINSTANCE* phJit, OUT ICorJitCompiler** ppICorJitCompiler, IN OUT JIT_LOAD_DATA* pJitLoadData)
+static void LoadAndInitializeJIT(LPCWSTR pwzJitName DEBUGARG(LPCWSTR pwzJitPath), OUT HINSTANCE* phJit, OUT ICorJitCompiler** ppICorJitCompiler, IN OUT JIT_LOAD_DATA* pJitLoadData, CORINFO_OS targetOs)
 {
     STANDARD_VM_CONTRACT;
 
@@ -1622,40 +1704,57 @@ static void LoadAndInitializeJIT(LPCWSTR pwzJitName, OUT HINSTANCE* phJit, OUT I
     *phJit = NULL;
     *ppICorJitCompiler = NULL;
 
-    if (pwzJitName == nullptr)
-    {
-        pJitLoadData->jld_hr = E_FAIL;
-        LOG((LF_JIT, LL_FATALERROR, "LoadAndInitializeJIT: pwzJitName is null"));
-        return;
-    }
-
     HRESULT hr = E_FAIL;
 
-    if (ValidateJitName(pwzJitName))
+#ifdef _DEBUG
+    if (pwzJitPath != NULL)
     {
-        // Load JIT from next to CoreCLR binary
-        PathString CoreClrFolderHolder;
-        if (GetClrModulePathName(CoreClrFolderHolder) && !CoreClrFolderHolder.IsEmpty())
+        *phJit = CLRLoadLibrary(pwzJitPath);
+        if (*phJit != NULL)
         {
-            SString::Iterator iter = CoreClrFolderHolder.End();
-            BOOL findSep = CoreClrFolderHolder.FindBack(iter, DIRECTORY_SEPARATOR_CHAR_W);
-            if (findSep)
-            {
-                SString sJitName(pwzJitName);
-                CoreClrFolderHolder.Replace(iter + 1, CoreClrFolderHolder.End() - (iter + 1), sJitName);
+            hr = S_OK;
+        }
+    }
+#endif
 
-                *phJit = CLRLoadLibrary(CoreClrFolderHolder.GetUnicode());
-                if (*phJit != NULL)
+    if (hr == E_FAIL)
+    {
+        if (pwzJitName == nullptr)
+        {
+            pJitLoadData->jld_hr = E_FAIL;
+            LogJITInitializationError("LoadAndInitializeJIT: pwzJitName is null");
+            return;
+        }
+
+        if (ValidateModuleName(pwzJitName))
+        {
+            // Load JIT from next to CoreCLR binary
+            PathString CoreClrFolderHolder;
+            if (GetClrModulePathName(CoreClrFolderHolder) && !CoreClrFolderHolder.IsEmpty())
+            {
+                SString::Iterator iter = CoreClrFolderHolder.End();
+                BOOL findSep = CoreClrFolderHolder.FindBack(iter, DIRECTORY_SEPARATOR_CHAR_W);
+                if (findSep)
                 {
-                    hr = S_OK;
+                    SString sJitName(pwzJitName);
+                    CoreClrFolderHolder.Replace(iter + 1, CoreClrFolderHolder.End() - (iter + 1), sJitName);
+
+                    *phJit = CLRLoadLibrary(CoreClrFolderHolder.GetUnicode());
+                    if (*phJit != NULL)
+                    {
+                        hr = S_OK;
+                    }
                 }
             }
         }
+        else
+        {
+            MAKE_UTF8PTR_FROMWIDE_NOTHROW(utf8JitName, pwzJitName);
+            LogJITInitializationError("LoadAndInitializeJIT: invalid characters in %s", utf8JitName);
+        }
     }
-    else
-    {
-        LOG((LF_JIT, LL_FATALERROR, "LoadAndInitializeJIT: invalid characters in %S\n", pwzJitName));
-    }
+
+    MAKE_UTF8PTR_FROMWIDE_NOTHROW(utf8JitName, pwzJitName);
 
     if (SUCCEEDED(hr))
     {
@@ -1663,7 +1762,7 @@ static void LoadAndInitializeJIT(LPCWSTR pwzJitName, OUT HINSTANCE* phJit, OUT I
 
         EX_TRY
         {
-            typedef void (__stdcall* pjitStartup)(ICorJitHost*);
+            typedef void (* pjitStartup)(ICorJitHost*);
             pjitStartup jitStartupFn = (pjitStartup) GetProcAddress(*phJit, "jitStartup");
 
             if (jitStartupFn)
@@ -1697,6 +1796,9 @@ static void LoadAndInitializeJIT(LPCWSTR pwzJitName, OUT HINSTANCE* phJit, OUT I
                     {
                         pJitLoadData->jld_status = JIT_LOAD_STATUS_DONE_VERSION_CHECK;
 
+                        // Specify to the JIT that it is working with the OS that we are compiled against
+                        pICorJitCompiler->setTargetOS(targetOs);
+
                         // The JIT has loaded and passed the version identifier test, so publish the JIT interface to the caller.
                         *ppICorJitCompiler = pICorJitCompiler;
 
@@ -1706,35 +1808,35 @@ static void LoadAndInitializeJIT(LPCWSTR pwzJitName, OUT HINSTANCE* phJit, OUT I
                     else
                     {
                         // Mismatched version ID. Fail the load.
-                        LOG((LF_JIT, LL_FATALERROR, "LoadAndInitializeJIT: mismatched JIT version identifier in %S\n", pwzJitName));
+                        LogJITInitializationError("LoadAndInitializeJIT: mismatched JIT version identifier in %s", utf8JitName);
                     }
                 }
                 else
                 {
-                    LOG((LF_JIT, LL_FATALERROR, "LoadAndInitializeJIT: failed to get ICorJitCompiler in %S\n", pwzJitName));
+                    LogJITInitializationError("LoadAndInitializeJIT: failed to get ICorJitCompiler in %s", utf8JitName);
                 }
             }
             else
             {
-                LOG((LF_JIT, LL_FATALERROR, "LoadAndInitializeJIT: failed to find 'getJit' entrypoint in %S\n", pwzJitName));
+                LogJITInitializationError("LoadAndInitializeJIT: failed to find 'getJit' entrypoint in %s", utf8JitName);
             }
         }
         EX_CATCH
         {
-            LOG((LF_JIT, LL_FATALERROR, "LoadAndInitializeJIT: caught an exception trying to initialize %S\n", pwzJitName));
+            LogJITInitializationError("LoadAndInitializeJIT: LoadAndInitializeJIT: caught an exception trying to initialize %s", utf8JitName);
         }
         EX_END_CATCH(SwallowAllExceptions)
     }
     else
     {
         pJitLoadData->jld_hr = hr;
-        LOG((LF_JIT, LL_FATALERROR, "LoadAndInitializeJIT: failed to load %S, hr=0x%08x\n", pwzJitName, hr));
+        LogJITInitializationError("LoadAndInitializeJIT: failed to load %s, hr=0x%08X", utf8JitName, hr);
     }
 }
 
 #ifdef FEATURE_MERGE_JIT_AND_ENGINE
-EXTERN_C void __stdcall jitStartup(ICorJitHost* host);
-EXTERN_C ICorJitCompiler* __stdcall getJit();
+EXTERN_C void jitStartup(ICorJitHost* host);
+EXTERN_C ICorJitCompiler* getJit();
 #endif // FEATURE_MERGE_JIT_AND_ENGINE
 
 BOOL EEJitManager::LoadJIT()
@@ -1752,7 +1854,7 @@ BOOL EEJitManager::LoadJIT()
     if (IsJitLoaded())
         return TRUE;
 
-    SetCpuInfo();
+    m_storeRichDebugInfo = CLRConfig::GetConfigValue(CLRConfig::UNSUPPORTED_RichDebugInfo) != 0;
 
     ICorJitCompiler* newJitCompiler = NULL;
 
@@ -1779,12 +1881,16 @@ BOOL EEJitManager::LoadJIT()
 #endif
 
     g_JitLoadData.jld_id = JIT_LOAD_MAIN;
-    LoadAndInitializeJIT(ExecutionManager::GetJitName(), &m_JITCompiler, &newJitCompiler, &g_JitLoadData);
+    LPWSTR mainJitPath = NULL;
+#ifdef _DEBUG
+    IfFailThrow(CLRConfig::GetConfigValue(CLRConfig::INTERNAL_JitPath, &mainJitPath));
+#endif
+    LoadAndInitializeJIT(ExecutionManager::GetJitName() DEBUGARG(mainJitPath), &m_JITCompiler, &newJitCompiler, &g_JitLoadData, getClrVmOs());
 #endif // !FEATURE_MERGE_JIT_AND_ENGINE
 
 #ifdef ALLOW_SXS_JIT
 
-    // Do not load altjit.dll unless COMPlus_AltJit is set.
+    // Do not load altjit.dll unless DOTNET_AltJit is set.
     // Even if the main JIT fails to load, if the user asks for an altjit we try to load it.
     // This allows us to display load error messages for loading altjit.
 
@@ -1810,26 +1916,56 @@ BOOL EEJitManager::LoadJIT()
             altJitName = MAKEDLLNAME_W(W("clrjit_win_x86_x86"));
 #elif defined(TARGET_AMD64)
             altJitName = MAKEDLLNAME_W(W("clrjit_win_x64_x64"));
-#elif defined(TARGET_ARM)
-            altJitName = MAKEDLLNAME_W(W("clrjit_win_arm_arm"));
-#elif defined(TARGET_ARM64)
-            altJitName = MAKEDLLNAME_W(W("clrjit_win_arm64_arm64"));
 #endif
 #else // TARGET_WINDOWS
 #ifdef TARGET_X86
             altJitName = MAKEDLLNAME_W(W("clrjit_unix_x86_x86"));
 #elif defined(TARGET_AMD64)
             altJitName = MAKEDLLNAME_W(W("clrjit_unix_x64_x64"));
-#elif defined(TARGET_ARM)
-            altJitName = MAKEDLLNAME_W(W("clrjit_unix_arm_arm"));
-#elif defined(TARGET_ARM64)
-            altJitName = MAKEDLLNAME_W(W("clrjit_unix_arm64_arm64"));
+#elif defined(TARGET_LOONGARCH64)
+            altJitName = MAKEDLLNAME_W(W("clrjit_unix_loongarch64_loongarch64"));
+#elif defined(TARGET_RISCV64)
+            altJitName = MAKEDLLNAME_W(W("clrjit_unix_riscv64_riscv64"));
 #endif
 #endif // TARGET_WINDOWS
+
+#if defined(TARGET_ARM)
+            altJitName = MAKEDLLNAME_W(W("clrjit_universal_arm_arm"));
+#elif defined(TARGET_ARM64)
+            altJitName = MAKEDLLNAME_W(W("clrjit_universal_arm64_arm64"));
+#endif // TARGET_ARM
         }
 
+#ifdef _DEBUG
+        LPWSTR altJitPath;
+        IfFailThrow(CLRConfig::GetConfigValue(CLRConfig::INTERNAL_AltJitPath, &altJitPath));
+#endif
+
+        CORINFO_OS targetOs = getClrVmOs();
+        LPWSTR altJitOsConfig;
+        IfFailThrow(CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_AltJitOs, &altJitOsConfig));
+        if (altJitOsConfig != NULL)
+        {
+            // We have some inconsistency all over the place with osx vs macos, let's handle both here
+            if ((_wcsicmp(altJitOsConfig, W("macos")) == 0) || (_wcsicmp(altJitOsConfig, W("osx")) == 0))
+            {
+                targetOs = CORINFO_APPLE;
+            }
+            else if ((_wcsicmp(altJitOsConfig, W("linux")) == 0) || (_wcsicmp(altJitOsConfig, W("unix")) == 0))
+            {
+                targetOs = CORINFO_UNIX;
+            }
+            else if (_wcsicmp(altJitOsConfig, W("windows")) == 0)
+            {
+                targetOs = CORINFO_WINNT;
+            }
+            else
+            {
+                _ASSERTE(!"Unknown AltJitOS, it has to be either Windows, Linux or macOS");
+            }
+        }
         g_JitLoadData.jld_id = JIT_LOAD_ALTJIT;
-        LoadAndInitializeJIT(altJitName, &m_AltJITCompiler, &newAltJitCompiler, &g_JitLoadData);
+        LoadAndInitializeJIT(altJitName DEBUGARG(altJitPath), &m_AltJITCompiler, &newAltJitCompiler, &g_JitLoadData, targetOs);
     }
 
 #endif // ALLOW_SXS_JIT
@@ -1849,7 +1985,6 @@ BOOL EEJitManager::LoadJIT()
     return IsJitLoaded();
 }
 
-#ifndef CROSSGEN_COMPILE
 //**************************************************************************
 
 CodeFragmentHeap::CodeFragmentHeap(LoaderAllocator * pAllocator, StubCodeBlockKind kind)
@@ -1862,11 +1997,29 @@ CodeFragmentHeap::CodeFragmentHeap(LoaderAllocator * pAllocator, StubCodeBlockKi
 
 void CodeFragmentHeap::AddBlock(VOID * pMem, size_t dwSize)
 {
-    LIMITED_METHOD_CONTRACT;
-    FreeBlock * pBlock = (FreeBlock *)pMem;
-    pBlock->m_pNext = m_pFreeBlocks;
-    pBlock->m_dwSize = dwSize;
-    m_pFreeBlocks = pBlock;
+     CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_ANY;
+    }
+    CONTRACTL_END;
+
+    // The new "nothrow" below failure is handled in a non-fault way, so
+    // make sure that callers with FORBID_FAULT can call this method without
+    // firing the contract violation assert.
+    PERMANENT_CONTRACT_VIOLATION(FaultViolation, ReasonContractInfrastructure);
+
+    FreeBlock * pBlock = new (nothrow) FreeBlock;
+    // In the OOM case we don't add the block to the list of free blocks
+    // as we are in a FORBID_FAULT code path.
+    if (pBlock != NULL)
+    {
+        pBlock->m_pNext = m_pFreeBlocks;
+        pBlock->m_pBlock = pMem;
+        pBlock->m_dwSize = dwSize;
+        m_pFreeBlocks = pBlock;
+    }
 }
 
 void CodeFragmentHeap::RemoveBlock(FreeBlock ** ppBlock)
@@ -1874,27 +2027,31 @@ void CodeFragmentHeap::RemoveBlock(FreeBlock ** ppBlock)
     LIMITED_METHOD_CONTRACT;
     FreeBlock * pBlock = *ppBlock;
     *ppBlock = pBlock->m_pNext;
-    ZeroMemory(pBlock, sizeof(FreeBlock));
+    delete pBlock;
+}
+
+CodeFragmentHeap::~CodeFragmentHeap()
+{
+    FreeBlock* pBlock = m_pFreeBlocks;
+    while (pBlock != NULL)
+    {
+        FreeBlock *pNextBlock = pBlock->m_pNext;
+        delete pBlock;
+        pBlock = pNextBlock;
+    }
 }
 
 TaggedMemAllocPtr CodeFragmentHeap::RealAllocAlignedMem(size_t  dwRequestedSize
                     ,unsigned  dwAlignment
 #ifdef _DEBUG
-                    ,__in __in_z const char *szFile
+                    ,_In_ _In_z_ const char *szFile
                     ,int  lineNum
 #endif
                     )
 {
     CrstHolder ch(&m_CritSec);
 
-#if defined(HOST_OSX) && defined(HOST_ARM64)
-    auto jitWriteEnableHolder = PAL_JITWriteEnable(true);
-#endif // defined(HOST_OSX) && defined(HOST_ARM64)
-
     dwRequestedSize = ALIGN_UP(dwRequestedSize, sizeof(TADDR));
-
-    if (dwRequestedSize < sizeof(FreeBlock))
-        dwRequestedSize = sizeof(FreeBlock);
 
     // We will try to batch up allocation of small blocks into one large allocation
 #define SMALL_BLOCK_THRESHOLD 0x100
@@ -1905,7 +2062,7 @@ TaggedMemAllocPtr CodeFragmentHeap::RealAllocAlignedMem(size_t  dwRequestedSize
     while (*ppFreeBlock != NULL)
     {
         FreeBlock * pFreeBlock = *ppFreeBlock;
-        if (((BYTE *)pFreeBlock + pFreeBlock->m_dwSize) - (BYTE *)ALIGN_UP(pFreeBlock, dwAlignment) >= (SSIZE_T)dwRequestedSize)
+        if (((BYTE *)pFreeBlock->m_pBlock + pFreeBlock->m_dwSize) - (BYTE *)ALIGN_UP(pFreeBlock->m_pBlock, dwAlignment) >= (SSIZE_T)dwRequestedSize)
         {
             if (ppBestFit == NULL || pFreeBlock->m_dwSize < (*ppBestFit)->m_dwSize)
                 ppBestFit = ppFreeBlock;
@@ -1922,7 +2079,7 @@ TaggedMemAllocPtr CodeFragmentHeap::RealAllocAlignedMem(size_t  dwRequestedSize
     SIZE_T dwSize;
     if (ppBestFit != NULL)
     {
-        pMem = *ppBestFit;
+        pMem = (*ppBestFit)->m_pBlock;
         dwSize = (*ppBestFit)->m_dwSize;
 
         RemoveBlock(ppBestFit);
@@ -1961,22 +2118,19 @@ TaggedMemAllocPtr CodeFragmentHeap::RealAllocAlignedMem(size_t  dwRequestedSize
 void CodeFragmentHeap::RealBackoutMem(void *pMem
                     , size_t dwSize
 #ifdef _DEBUG
-                    , __in __in_z const char *szFile
+                    , _In_ _In_z_ const char *szFile
                     , int lineNum
-                    , __in __in_z const char *szAllocFile
+                    , _In_ _In_z_ const char *szAllocFile
                     , int allocLineNum
 #endif
                     )
 {
     CrstHolder ch(&m_CritSec);
 
-    _ASSERTE(dwSize >= sizeof(FreeBlock));
-
-#if defined(HOST_OSX) && defined(HOST_ARM64)
-    auto jitWriteEnableHolder = PAL_JITWriteEnable(true);
-#endif // defined(HOST_OSX) && defined(HOST_ARM64)
-
-    ZeroMemory((BYTE *)pMem, dwSize);
+    {
+        ExecutableWriterHolder<BYTE> memWriterHolder((BYTE*)pMem, dwSize);
+        ZeroMemory(memWriterHolder.GetRW(), dwSize);
+    }
 
     //
     // Try to coalesce blocks if possible
@@ -2007,7 +2161,6 @@ void CodeFragmentHeap::RealBackoutMem(void *pMem
 
     AddBlock(pMem, dwSize);
 }
-#endif // !CROSSGEN_COMPILE
 
 //**************************************************************************
 
@@ -2105,13 +2258,13 @@ VOID EEJitManager::EnsureJumpStubReserve(BYTE * pImageBase, SIZE_T imageSize, SI
     int allocMode = 0;
 
     // Try to reserve at least 16MB at a time
-    SIZE_T allocChunk = max(ALIGN_UP(reserveSize, VIRTUAL_ALLOC_RESERVE_GRANULARITY), 16*1024*1024);
+    SIZE_T allocChunk = max<SIZE_T>(ALIGN_UP(reserveSize, VIRTUAL_ALLOC_RESERVE_GRANULARITY), 16*1024*1024);
 
     while (reserveSize > 0)
     {
         NewHolder<EmergencyJumpStubReserve> pNewReserve(new EmergencyJumpStubReserve());
 
-        for (;;)
+        while (true)
         {
             BYTE * loAddrCurrent = loAddr;
             BYTE * hiAddrCurrent = hiAddr;
@@ -2135,8 +2288,7 @@ VOID EEJitManager::EnsureJumpStubReserve(BYTE * pImageBase, SIZE_T imageSize, SI
                 return; // Unable to allocate the reserve - give up
             }
 
-            pNewReserve->m_ptr = ClrVirtualAllocWithinRange(loAddrCurrent, hiAddrCurrent,
-                                               allocChunk, MEM_RESERVE, PAGE_NOACCESS);
+            pNewReserve->m_ptr = (BYTE*)ExecutableAllocator::Instance()->ReserveWithinRange(allocChunk, loAddrCurrent, hiAddrCurrent);
 
             if (pNewReserve->m_ptr != NULL)
                 break;
@@ -2162,7 +2314,7 @@ static size_t GetDefaultReserveForJumpStubs(size_t codeHeapSize)
 {
     LIMITED_METHOD_CONTRACT;
 
-#if defined(TARGET_AMD64) || defined(TARGET_ARM64)
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
     //
     // Keep a small default reserve at the end of the codeheap for jump stubs. It should reduce
     // chance that we won't be able allocate jump stub because of lack of suitable address space.
@@ -2213,7 +2365,11 @@ HeapList* LoaderCodeHeap::CreateCodeHeap(CodeHeapRequestInfo *pInfo, LoaderHeap 
     DWORD dwSizeAcquiredFromInitialBlock = 0;
     bool fAllocatedFromEmergencyJumpStubReserve = false;
 
-    pBaseAddr = (BYTE *)pInfo->m_pAllocator->GetCodeHeapInitialBlock(loAddr, hiAddr, (DWORD)initialRequestSize, &dwSizeAcquiredFromInitialBlock);
+    size_t allocationSize = pCodeHeap->m_LoaderHeap.AllocMem_TotalSize(initialRequestSize);
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+    allocationSize += pCodeHeap->m_LoaderHeap.AllocMem_TotalSize(JUMP_ALLOCATE_SIZE);
+#endif
+    pBaseAddr = (BYTE *)pInfo->m_pAllocator->GetCodeHeapInitialBlock(loAddr, hiAddr, (DWORD)allocationSize, &dwSizeAcquiredFromInitialBlock);
     if (pBaseAddr != NULL)
     {
         pCodeHeap->m_LoaderHeap.SetReservedRegion(pBaseAddr, dwSizeAcquiredFromInitialBlock, FALSE);
@@ -2227,8 +2383,7 @@ HeapList* LoaderCodeHeap::CreateCodeHeap(CodeHeapRequestInfo *pInfo, LoaderHeap 
             if (!pInfo->getThrowOnOutOfMemoryWithinRange() && PEDecoder::GetForceRelocs())
                 RETURN NULL;
 #endif
-            pBaseAddr = ClrVirtualAllocWithinRange(loAddr, hiAddr,
-                                                   reserveSize, MEM_RESERVE, PAGE_NOACCESS);
+            pBaseAddr = (BYTE*)ExecutableAllocator::Instance()->ReserveWithinRange(reserveSize, loAddr, hiAddr);
 
             if (!pBaseAddr)
             {
@@ -2247,7 +2402,7 @@ HeapList* LoaderCodeHeap::CreateCodeHeap(CodeHeapRequestInfo *pInfo, LoaderHeap 
         }
         else
         {
-            pBaseAddr = ClrVirtualAllocExecutable(reserveSize, MEM_RESERVE, PAGE_NOACCESS);
+            pBaseAddr = (BYTE*)ExecutableAllocator::Instance()->Reserve(reserveSize);
             if (!pBaseAddr)
                 ThrowOutOfMemory();
         }
@@ -2256,14 +2411,22 @@ HeapList* LoaderCodeHeap::CreateCodeHeap(CodeHeapRequestInfo *pInfo, LoaderHeap 
 
 
     // this first allocation is critical as it sets up correctly the loader heap info
-    HeapList *pHp = (HeapList*)pCodeHeap->m_LoaderHeap.AllocMem(sizeof(HeapList));
+    HeapList *pHp = new HeapList;
+
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+    pHp->CLRPersonalityRoutine = (BYTE *)pCodeHeap->m_LoaderHeap.AllocMem(JUMP_ALLOCATE_SIZE);
+#else
+    // Ensure that the heap has a reserved block of memory and so the GetReservedBytesFree()
+    // and GetAllocPtr() calls below return nonzero values.
+    pCodeHeap->m_LoaderHeap.ReservePages(1);
+#endif
 
     pHp->pHeap = pCodeHeap;
 
     size_t heapSize = pCodeHeap->m_LoaderHeap.GetReservedBytesFree();
     size_t nibbleMapSize = HEAP2MAPSIZE(ROUND_UP_TO_PAGE(heapSize));
 
-    pHp->startAddress    = (TADDR)pHp + sizeof(HeapList);
+    pHp->startAddress = (TADDR)pCodeHeap->m_LoaderHeap.GetAllocPtr();
 
     pHp->endAddress      = pHp->startAddress;
     pHp->maxCodeHeapSize = heapSize;
@@ -2277,13 +2440,16 @@ HeapList* LoaderCodeHeap::CreateCodeHeap(CodeHeapRequestInfo *pInfo, LoaderHeap 
     pHp->mapBase         = ROUND_DOWN_TO_PAGE(pHp->startAddress);  // round down to next lower page align
     pHp->pHdrMap         = (DWORD*)(void*)pJitMetaHeap->AllocMem(S_SIZE_T(nibbleMapSize));
 
+    pHp->pLoaderAllocator = pInfo->m_pAllocator;
+
     LOG((LF_JIT, LL_INFO100,
          "Created new CodeHeap(" FMT_ADDR ".." FMT_ADDR ")\n",
          DBG_ADDR(pHp->startAddress), DBG_ADDR(pHp->startAddress+pHp->maxCodeHeapSize)
          ));
 
 #ifdef TARGET_64BIT
-    emitJump((LPBYTE)pHp->CLRPersonalityRoutine, (void *)ProcessCLRException);
+    ExecutableWriterHolder<BYTE> personalityRoutineWriterHolder(pHp->CLRPersonalityRoutine, 12);
+    emitJump(pHp->CLRPersonalityRoutine, personalityRoutineWriterHolder.GetRW(), (void *)ProcessCLRException);
 #endif // TARGET_64BIT
 
     pCodeHeap.SuppressRelease();
@@ -2400,13 +2566,12 @@ HeapList* EEJitManager::NewCodeHeap(CodeHeapRequestInfo *pInfo, DomainCodeHeapLi
     }
 #endif
 
-    // <BUGNUM> VSW 433293 </BUGNUM>
-    // SETUP_NEW_BLOCK reserves the first sizeof(LoaderHeapBlock) bytes for LoaderHeapBlock.
-    // In other word, the first m_pAllocPtr starts at sizeof(LoaderHeapBlock) bytes
-    // after the allocated memory. Therefore, we need to take it into account.
-    size_t requestAndHeadersSize = sizeof(LoaderHeapBlock) + sizeof(HeapList) + initialRequestSize;
+    size_t reserveSize = initialRequestSize;
 
-    size_t reserveSize = requestAndHeadersSize;
+#if defined(TARGET_AMD64) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+    reserveSize += JUMP_ALLOCATE_SIZE;
+#endif
+
     if (reserveSize < minReserveSize)
         reserveSize = minReserveSize;
     reserveSize = ALIGN_UP(reserveSize, VIRTUAL_ALLOC_RESERVE_GRANULARITY);
@@ -2444,7 +2609,7 @@ HeapList* EEJitManager::NewCodeHeap(CodeHeapRequestInfo *pInfo, DomainCodeHeapLi
 
     EX_TRY
     {
-        TADDR pStartRange = (TADDR) pHp;
+        TADDR pStartRange = pHp->GetModuleBase();
         TADDR pEndRange = (TADDR) &((BYTE*)pHp->startAddress)[pHp->maxCodeHeapSize];
 
         ExecutionManager::AddCodeRange(pStartRange,
@@ -2468,8 +2633,8 @@ HeapList* EEJitManager::NewCodeHeap(CodeHeapRequestInfo *pInfo, DomainCodeHeapLi
         // If we failed to alloc memory in ExecutionManager::AddCodeRange()
         // then we will delete the LoaderHeap that we allocated
 
-        // pHp is allocated in pHeap, so only need to delete the LoaderHeap itself
         delete pHp->pHeap;
+        delete pHp;
 
         pHp = NULL;
     }
@@ -2590,18 +2755,18 @@ void* EEJitManager::allocCodeRaw(CodeHeapRequestInfo *pInfo,
     RETURN(mem);
 }
 
-CodeHeader* EEJitManager::allocCode(MethodDesc* pMD, size_t blockSize, size_t reserveForJumpStubs, CorJitAllocMemFlag flag
+void EEJitManager::allocCode(MethodDesc* pMD, size_t blockSize, size_t reserveForJumpStubs, CorJitAllocMemFlag flag, CodeHeader** ppCodeHeader, CodeHeader** ppCodeHeaderRW,
+                             size_t* pAllocatedSize, HeapList** ppCodeHeap
+                           , BYTE** ppRealHeader
 #ifdef FEATURE_EH_FUNCLETS
-                                    , UINT nUnwindInfos
-                                    , TADDR * pModuleBase
+                           , UINT nUnwindInfos
 #endif
-                                    )
+                           )
 {
-    CONTRACT(CodeHeader *) {
+    CONTRACTL {
         THROWS;
         GC_NOTRIGGER;
-        POSTCONDITION(CheckPointer(RETVAL));
-    } CONTRACT_END;
+    } CONTRACTL_END;
 
     //
     // Alignment
@@ -2611,11 +2776,11 @@ CodeHeader* EEJitManager::allocCode(MethodDesc* pMD, size_t blockSize, size_t re
 
     if ((flag & CORJIT_ALLOCMEM_FLG_32BYTE_ALIGN) != 0)
     {
-        alignment = max(alignment, 32);
+        alignment = max(alignment, 32u);
     }
     else if ((flag & CORJIT_ALLOCMEM_FLG_16BYTE_ALIGN) != 0)
     {
-        alignment = max(alignment, 16);
+        alignment = max(alignment, 16u);
     }
 
 #if defined(TARGET_X86)
@@ -2623,7 +2788,7 @@ CodeHeader* EEJitManager::allocCode(MethodDesc* pMD, size_t blockSize, size_t re
     // the JIT can in turn 8-byte align the loop entry headers.
     else if ((g_pConfig->GenOptimizeType() != OPT_SIZE))
     {
-        alignment = max(alignment, 8);
+        alignment = max(alignment, 8u);
     }
 #endif
 
@@ -2634,6 +2799,7 @@ CodeHeader* EEJitManager::allocCode(MethodDesc* pMD, size_t blockSize, size_t re
     SIZE_T totalSize = blockSize;
 
     CodeHeader * pCodeHdr = NULL;
+    CodeHeader * pCodeHdrRW = NULL;
 
     CodeHeapRequestInfo requestInfo(pMD);
 #if defined(FEATURE_JIT_PITCHING)
@@ -2644,8 +2810,11 @@ CodeHeader* EEJitManager::allocCode(MethodDesc* pMD, size_t blockSize, size_t re
 #endif
     requestInfo.setReserveForJumpStubs(reserveForJumpStubs);
 
-#if defined(USE_INDIRECT_CODEHEADER)
+#ifdef FEATURE_EH_FUNCLETS
     SIZE_T realHeaderSize = offsetof(RealCodeHeader, unwindInfos[0]) + (sizeof(T_RUNTIME_FUNCTION) * nUnwindInfos);
+#else
+    SIZE_T realHeaderSize = sizeof(RealCodeHeader);
+#endif
 
     // if this is a LCG method then we will be allocating the RealCodeHeader
     // following the code so that the code block can be removed easily by
@@ -2655,17 +2824,14 @@ CodeHeader* EEJitManager::allocCode(MethodDesc* pMD, size_t blockSize, size_t re
         totalSize = ALIGN_UP(totalSize, sizeof(void*)) + realHeaderSize;
         static_assert_no_msg(CODE_SIZE_ALIGN >= sizeof(void*));
     }
-#endif  // USE_INDIRECT_CODEHEADER
 
     // Scope the lock
     {
         CrstHolder ch(&m_CodeHeapCritSec);
 
-        HeapList *pCodeHeap = NULL;
-
-        TADDR pCode = (TADDR) allocCodeRaw(&requestInfo, sizeof(CodeHeader), totalSize, alignment, &pCodeHeap);
-
-        _ASSERTE(pCodeHeap);
+        *ppCodeHeap = NULL;
+        TADDR pCode = (TADDR) allocCodeRaw(&requestInfo, sizeof(CodeHeader), totalSize, alignment, ppCodeHeap);
+        _ASSERTE(*ppCodeHeap);
 
         if (pMD->IsLCGMethod())
         {
@@ -2674,16 +2840,23 @@ CodeHeader* EEJitManager::allocCode(MethodDesc* pMD, size_t blockSize, size_t re
 
         _ASSERTE(IS_ALIGNED(pCode, alignment));
 
-        // Initialize the CodeHeader *BEFORE* we publish this code range via the nibble
-        // map so that we don't have to harden readers against uninitialized data.
-        // However because we hold the lock, this initialization should be fast and cheap!
-
         pCodeHdr = ((CodeHeader *)pCode) - 1;
 
-#ifdef USE_INDIRECT_CODEHEADER
+        *pAllocatedSize = sizeof(CodeHeader) + totalSize;
+
+        if (ExecutableAllocator::IsWXORXEnabled())
+        {
+            pCodeHdrRW = (CodeHeader *)new BYTE[*pAllocatedSize];
+        }
+        else
+        {
+            pCodeHdrRW = pCodeHdr;
+        }
+
         if (requestInfo.IsDynamicDomain())
         {
-            pCodeHdr->SetRealCodeHeader((BYTE*)pCode + ALIGN_UP(blockSize, sizeof(void*)));
+            // Set the real code header to the writeable mapping so that we can set its members via the CodeHeader methods below
+            pCodeHdrRW->SetRealCodeHeader((BYTE *)(pCodeHdrRW + 1) + ALIGN_UP(blockSize, sizeof(void*)));
         }
         else
         {
@@ -2691,23 +2864,29 @@ CodeHeader* EEJitManager::allocCode(MethodDesc* pMD, size_t blockSize, size_t re
             //
             // allocate the real header in the low frequency heap
             BYTE* pRealHeader = (BYTE*)(void*)pMD->GetLoaderAllocator()->GetLowFrequencyHeap()->AllocMem(S_SIZE_T(realHeaderSize));
-            pCodeHdr->SetRealCodeHeader(pRealHeader);
+            pCodeHdrRW->SetRealCodeHeader(pRealHeader);
         }
-#endif
 
-        pCodeHdr->SetDebugInfo(NULL);
-        pCodeHdr->SetEHInfo(NULL);
-        pCodeHdr->SetGCInfo(NULL);
-        pCodeHdr->SetMethodDesc(pMD);
+        pCodeHdrRW->SetDebugInfo(NULL);
+        pCodeHdrRW->SetEHInfo(NULL);
+        pCodeHdrRW->SetGCInfo(NULL);
+        pCodeHdrRW->SetMethodDesc(pMD);
 #ifdef FEATURE_EH_FUNCLETS
-        pCodeHdr->SetNumberOfUnwindInfos(nUnwindInfos);
-        *pModuleBase = (TADDR)pCodeHeap;
+        pCodeHdrRW->SetNumberOfUnwindInfos(nUnwindInfos);
 #endif
 
-        NibbleMapSet(pCodeHeap, pCode, TRUE);
+        if (requestInfo.IsDynamicDomain())
+        {
+            *ppRealHeader = (BYTE*)pCode + ALIGN_UP(blockSize, sizeof(void*));
+        }
+        else
+        {
+            *ppRealHeader = NULL;
+        }
     }
 
-    RETURN(pCodeHdr);
+    *ppCodeHeader = pCodeHdr;
+    *ppCodeHeaderRW = pCodeHdrRW;
 }
 
 EEJitManager::DomainCodeHeapList *EEJitManager::GetCodeHeapList(CodeHeapRequestInfo *pInfo, LoaderAllocator *pAllocator, BOOL fDynamicOnly)
@@ -2976,14 +3155,14 @@ JumpStubBlockHeader *  EEJitManager::allocJumpStubBlock(MethodDesc* pMD, DWORD n
     requestInfo.setThrowOnOutOfMemoryWithinRange(throwOnOutOfMemoryWithinRange);
 
     TADDR                  mem;
-    JumpStubBlockHeader *  pBlock;
+    ExecutableWriterHolderNoLog<JumpStubBlockHeader> blockWriterHolder;
 
     // Scope the lock
     {
         CrstHolder ch(&m_CodeHeapCritSec);
 
-        mem = (TADDR) allocCodeRaw(&requestInfo, sizeof(TADDR), blockSize, CODE_SIZE_ALIGN, &pCodeHeap);
-        if (mem == NULL)
+        mem = (TADDR) allocCodeRaw(&requestInfo, sizeof(CodeHeader), blockSize, CODE_SIZE_ALIGN, &pCodeHeap);
+        if (mem == (TADDR)0)
         {
             _ASSERTE(!throwOnOutOfMemoryWithinRange);
             RETURN(NULL);
@@ -2991,27 +3170,28 @@ JumpStubBlockHeader *  EEJitManager::allocJumpStubBlock(MethodDesc* pMD, DWORD n
 
         // CodeHeader comes immediately before the block
         CodeHeader * pCodeHdr = (CodeHeader *) (mem - sizeof(CodeHeader));
-        pCodeHdr->SetStubCodeBlockKind(STUB_CODE_BLOCK_JUMPSTUB);
+        ExecutableWriterHolder<CodeHeader> codeHdrWriterHolder(pCodeHdr, sizeof(CodeHeader));
+        codeHdrWriterHolder.GetRW()->SetStubCodeBlockKind(STUB_CODE_BLOCK_JUMPSTUB);
 
-        NibbleMapSet(pCodeHeap, mem, TRUE);
+        NibbleMapSetUnlocked(pCodeHeap, mem, TRUE);
 
-        pBlock = (JumpStubBlockHeader *)mem;
+        blockWriterHolder.AssignExecutableWriterHolder((JumpStubBlockHeader *)mem, sizeof(JumpStubBlockHeader));
 
-        _ASSERTE(IS_ALIGNED(pBlock, CODE_SIZE_ALIGN));
+        _ASSERTE(IS_ALIGNED(blockWriterHolder.GetRW(), CODE_SIZE_ALIGN));
     }
 
-    pBlock->m_next            = NULL;
-    pBlock->m_used            = 0;
-    pBlock->m_allocated       = numJumps;
+    blockWriterHolder.GetRW()->m_next            = NULL;
+    blockWriterHolder.GetRW()->m_used            = 0;
+    blockWriterHolder.GetRW()->m_allocated       = numJumps;
     if (pMD && pMD->IsLCGMethod())
-        pBlock->SetHostCodeHeap(static_cast<HostCodeHeap*>(pCodeHeap->pHeap));
+        blockWriterHolder.GetRW()->SetHostCodeHeap(static_cast<HostCodeHeap*>(pCodeHeap->pHeap));
     else
-        pBlock->SetLoaderAllocator(pLoaderAllocator);
+        blockWriterHolder.GetRW()->SetLoaderAllocator(pLoaderAllocator);
 
     LOG((LF_JIT, LL_INFO1000, "Allocated new JumpStubBlockHeader for %d stubs at" FMT_ADDR " in loader allocator " FMT_ADDR "\n",
-         numJumps, DBG_ADDR(pBlock) , DBG_ADDR(pLoaderAllocator) ));
+         numJumps, DBG_ADDR(mem) , DBG_ADDR(pLoaderAllocator) ));
 
-    RETURN(pBlock);
+    RETURN((JumpStubBlockHeader*)mem);
 }
 
 void * EEJitManager::allocCodeFragmentBlock(size_t blockSize, unsigned alignment, LoaderAllocator *pLoaderAllocator, StubCodeBlockKind kind)
@@ -3042,9 +3222,10 @@ void * EEJitManager::allocCodeFragmentBlock(size_t blockSize, unsigned alignment
 
         // CodeHeader comes immediately before the block
         CodeHeader * pCodeHdr = (CodeHeader *) (mem - sizeof(CodeHeader));
-        pCodeHdr->SetStubCodeBlockKind(kind);
+        ExecutableWriterHolder<CodeHeader> codeHdrWriterHolder(pCodeHdr, sizeof(CodeHeader));
+        codeHdrWriterHolder.GetRW()->SetStubCodeBlockKind(kind);
 
-        NibbleMapSet(pCodeHeap, (TADDR)mem, TRUE);
+        NibbleMapSetUnlocked(pCodeHeap, mem, TRUE);
 
         // Record the jump stub reservation
         pCodeHeap->reserveForJumpStubs += requestInfo.getReserveForJumpStubs();
@@ -3061,7 +3242,6 @@ GCInfoToken EEJitManager::GetGCInfoToken(const METHODTOKEN& MethodToken)
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        HOST_NOCALLS;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
@@ -3076,7 +3256,7 @@ unsigned EEJitManager::InitializeEHEnumeration(const METHODTOKEN& MethodToken, E
     EE_ILEXCEPTION * EHInfo = GetCodeHeader(MethodToken)->GetEHInfo();
 
     pEnumState->iCurrentPos = 0;     // since the EH info is not compressed, the clause number is used to do the enumeration
-    pEnumState->pExceptionClauseArray = NULL;
+    pEnumState->pExceptionClauseArray = 0;
 
     if (!EHInfo)
         return 0;
@@ -3134,36 +3314,6 @@ TypeHandle EEJitManager::ResolveEHClause(EE_ILEXCEPTION_CLAUSE* pEHClause,
     PREFIX_ASSUME(pModule != NULL);
 
     SigTypeContext typeContext(pMD);
-    VarKind k = hasNoVars;
-
-    // In the vast majority of cases the code under the "if" below
-    // will not be executed.
-    //
-    // First grab the representative instantiations.  For code
-    // shared by multiple generic instantiations these are the
-    // canonical (representative) instantiation.
-    if (TypeFromToken(typeTok) == mdtTypeSpec)
-    {
-        PCCOR_SIGNATURE pSig;
-        ULONG cSig;
-        IfFailThrow(pModule->GetMDImport()->GetTypeSpecFromToken(typeTok, &pSig, &cSig));
-
-        SigPointer psig(pSig, cSig);
-        k = psig.IsPolyType(&typeContext);
-
-        // Grab the active class and method instantiation.  This exact instantiation is only
-        // needed in the corner case of "generic" exception catching in shared
-        // generic code.  We don't need the exact instantiation if the token
-        // doesn't contain E_T_VAR or E_T_MVAR.
-        if ((k & hasSharableVarsMask) != 0)
-        {
-            Instantiation classInst;
-            Instantiation methodInst;
-            pCf->GetExactGenericInstantiations(&classInst, &methodInst);
-            SigTypeContext::InitTypeContext(pMD,classInst, methodInst,&typeContext);
-        }
-    }
-
     return ClassLoader::LoadTypeDefOrRefOrSpecThrowing(pModule, typeTok, &typeContext,
                                                        ClassLoader::ReturnNullIfNotFound);
 }
@@ -3222,7 +3372,7 @@ void EEJitManager::RemoveJitData (CodeHeader * pCHdr, size_t GCinfo_len, size_t 
         if (pHp == NULL)
             return;
 
-        NibbleMapSet(pHp, (TADDR)(pCHdr + 1), FALSE);
+        NibbleMapSetUnlocked(pHp, (TADDR)(pCHdr + 1), FALSE);
     }
 
     // Backout the GCInfo
@@ -3244,7 +3394,7 @@ void EEJitManager::RemoveJitData (CodeHeader * pCHdr, size_t GCinfo_len, size_t 
     //       code buffer itself. As a result, we might leak the CodeHeap if jitting fails after
     //       the code buffer is allocated.
     //
-    //       However, it appears non-trival to fix this.
+    //       However, it appears non-trivial to fix this.
     //       Here are some of the reasons:
     //       (1) AllocCode calls in AllocCodeRaw to alloc code buffer in the CodeHeap. The exact size
     //           of the code buffer is not known until the alignment is calculated deep on the stack.
@@ -3319,7 +3469,7 @@ void EEJitManager::Unload(LoaderAllocator *pAllocator)
         }
     }
 
-    ResetCodeAllocHint();
+    ExecutableAllocator::ResetLazyPreferredRangeHint();
 }
 
 EEJitManager::DomainCodeHeapList::DomainCodeHeapList()
@@ -3384,7 +3534,7 @@ void EEJitManager::FreeCodeMemory(HostCodeHeap *pCodeHeap, void * codeStart)
     // so pCodeHeap can only be a HostCodeHeap.
 
     // clean up the NibbleMap
-    NibbleMapSet(pCodeHeap->m_pHeapList, (TADDR)codeStart, FALSE);
+    NibbleMapSetUnlocked(pCodeHeap->m_pHeapList, (TADDR)codeStart, FALSE);
 
     // The caller of this method doesn't call HostCodeHeap->FreeMemForCode
     // directly because the operation should be protected by m_CodeHeapCritSec.
@@ -3400,7 +3550,7 @@ void ExecutionManager::CleanupCodeHeaps()
     }
     CONTRACTL_END;
 
-    _ASSERTE (g_fProcessDetach || (GCHeapUtilities::IsGCInProgress()  && ::IsGCThread()));
+    _ASSERTE (IsAtProcessExit() || (GCHeapUtilities::IsGCInProgress()  && ::IsGCThread()));
 
     GetEEJitManager()->CleanupCodeHeaps();
 }
@@ -3414,7 +3564,7 @@ void EEJitManager::CleanupCodeHeaps()
     }
     CONTRACTL_END;
 
-    _ASSERTE (g_fProcessDetach || (GCHeapUtilities::IsGCInProgress() && ::IsGCThread()));
+    _ASSERTE (IsAtProcessExit() || (GCHeapUtilities::IsGCInProgress() && ::IsGCThread()));
 
 	// Quick out, don't even take the lock if we have not cleanup to do.
 	// This is important because ETW takes the CodeHeapLock when it is doing
@@ -3494,7 +3644,7 @@ void EEJitManager::AddToCleanupList(HostCodeHeap *pCodeHeap)
     // it may happen that the current heap count goes to 0 and later on, before it is destroyed, it gets reused
     // for another dynamic method.
     // It's then possible that the ref count reaches 0 multiple times. If so we simply don't add it again
-    // Also on cleanup we check the the ref count is actually 0.
+    // Also on cleanup we check the ref count is actually 0.
     HostCodeHeap *pHeap = m_cleanupList;
     while (pHeap)
     {
@@ -3537,20 +3687,17 @@ void EEJitManager::DeleteCodeHeap(HeapList *pHeapList)
         pHp->SetNext(pHeapList->GetNext());
     }
 
-    DeleteEEFunctionTable((PVOID)pHeapList);
+    DeleteEEFunctionTable((PVOID)pHeapList->GetModuleBase());
 
-    ExecutionManager::DeleteRange((TADDR)pHeapList);
+    ExecutionManager::DeleteRange((TADDR)pHeapList->GetModuleBase());
 
     LOG((LF_JIT, LL_INFO100, "DeleteCodeHeap start" FMT_ADDR "end" FMT_ADDR "\n",
                               (const BYTE*)pHeapList->startAddress,
                               (const BYTE*)pHeapList->endAddress     ));
 
-    // pHeapList is allocated in pHeap, so only need to delete the CodeHeap itself
-    // !!! For SoC, compiler inserts code to write a special cookie at pHeapList->pHeap after delete operator, at least for debug code.
-    // !!! Since pHeapList is deleted at the same time as pHeap, this causes AV.
-    // delete pHeapList->pHeap;
     CodeHeap* pHeap = pHeapList->pHeap;
     delete pHeap;
+    delete pHeapList;
 }
 
 #endif // #ifndef DACCESS_COMPILE
@@ -3564,7 +3711,7 @@ static CodeHeader * GetCodeHeaderFromDebugInfoRequest(const DebugInfoRequest & r
     } CONTRACTL_END;
 
     TADDR address = (TADDR) request.GetStartAddress();
-    _ASSERTE(address != NULL);
+    _ASSERTE(address != (TADDR)0);
 
     CodeHeader * pHeader = dac_cast<PTR_CodeHeader>(address & ~3) - 1;
     _ASSERTE(pHeader != NULL);
@@ -3604,6 +3751,11 @@ BOOL EEJitManager::GetBoundariesAndVars(
     BOOL hasFlagByte = FALSE;
 #endif
 
+    if (m_storeRichDebugInfo)
+    {
+        hasFlagByte = TRUE;
+    }
+
     // Uncompress. This allocates memory and may throw.
     CompressDebugInfo::RestoreBoundariesAndVars(
         fpNew, pNewData, // allocators
@@ -3612,6 +3764,43 @@ BOOL EEJitManager::GetBoundariesAndVars(
         pcVars, ppVars,  // output
         hasFlagByte
     );
+
+    return TRUE;
+}
+
+BOOL EEJitManager::GetRichDebugInfo(
+    const DebugInfoRequest& request,
+    IN FP_IDS_NEW fpNew, IN void* pNewData,
+    OUT ICorDebugInfo::InlineTreeNode** ppInlineTree,
+    OUT ULONG32* pNumInlineTree,
+    OUT ICorDebugInfo::RichOffsetMapping** ppRichMappings,
+    OUT ULONG32* pNumRichMappings)
+{
+    CONTRACTL {
+        THROWS;       // on OOM.
+        GC_NOTRIGGER; // getting debug info shouldn't trigger
+        SUPPORTS_DAC;
+    } CONTRACTL_END;
+
+    if (!m_storeRichDebugInfo)
+    {
+        return FALSE;
+    }
+
+    CodeHeader * pHdr = GetCodeHeaderFromDebugInfoRequest(request);
+    _ASSERTE(pHdr != NULL);
+
+    PTR_BYTE pDebugInfo = pHdr->GetDebugInfo();
+
+    // No header created, which means no debug information is available.
+    if (pDebugInfo == NULL)
+        return FALSE;
+
+    CompressDebugInfo::RestoreRichDebugInfo(
+        fpNew, pNewData,
+        pDebugInfo,
+        ppInlineTree, pNumInlineTree,
+        ppRichMappings, pNumRichMappings);
 
     return TRUE;
 }
@@ -3629,9 +3818,7 @@ void CodeHeader::EnumMemoryRegions(CLRDataEnumMemoryFlags flags, IJitManager* pJ
 
     DAC_ENUM_DTHIS();
 
-#ifdef USE_INDIRECT_CODEHEADER
     this->pRealCodeHeader.EnumMem();
-#endif // USE_INDIRECT_CODEHEADER
 
 #ifdef FEATURE_ON_STACK_REPLACEMENT
     BOOL hasFlagByte = TRUE;
@@ -3690,8 +3877,11 @@ BOOL EEJitManager::JitCodeToMethodInfo(
 
     _ASSERTE(pRangeSection != NULL);
 
-    TADDR start = dac_cast<PTR_EEJitManager>(pRangeSection->pjit)->FindMethodCode(pRangeSection, currentPC);
-    if (start == NULL)
+    if (pRangeSection->_flags & RangeSection::RANGE_SECTION_RANGELIST)
+        return FALSE;
+
+    TADDR start = dac_cast<PTR_EEJitManager>(pRangeSection->_pjit)->FindMethodCode(pRangeSection, currentPC);
+    if (start == (TADDR)0)
         return FALSE;
 
     CodeHeader * pCHdr = PTR_CodeHeader(start - sizeof(CodeHeader));
@@ -3730,8 +3920,13 @@ StubCodeBlockKind EEJitManager::GetStubCodeBlockKind(RangeSection * pRangeSectio
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
-    TADDR start = dac_cast<PTR_EEJitManager>(pRangeSection->pjit)->FindMethodCode(pRangeSection, currentPC);
-    if (start == NULL)
+    if (pRangeSection->_flags & RangeSection::RANGE_SECTION_RANGELIST)
+    {
+        return pRangeSection->_pRangeList->GetCodeBlockKind();
+    }
+
+    TADDR start = dac_cast<PTR_EEJitManager>(pRangeSection->_pjit)->FindMethodCode(pRangeSection, currentPC);
+    if (start == (TADDR)0)
         return STUB_CODE_BLOCK_NOCODE;
     CodeHeader * pCHdr = PTR_CodeHeader(start - sizeof(CodeHeader));
     return pCHdr->IsStubCodeBlock() ? pCHdr->GetStubCodeBlockKind() : STUB_CODE_BLOCK_MANAGED;
@@ -3746,9 +3941,9 @@ TADDR EEJitManager::FindMethodCode(PCODE currentPC)
     } CONTRACTL_END;
 
     RangeSection * pRS = ExecutionManager::FindCodeRange(currentPC, ExecutionManager::GetScanFlags());
-    if (pRS == NULL || (pRS->flags & RangeSection::RANGE_SECTION_CODEHEAP) == 0)
+    if (pRS == NULL || (pRS->_flags & RangeSection::RANGE_SECTION_CODEHEAP) == 0)
         return STUB_CODE_BLOCK_NOCODE;
-    return dac_cast<PTR_EEJitManager>(pRS->pjit)->FindMethodCode(pRS, currentPC);
+    return dac_cast<PTR_EEJitManager>(pRS->_pjit)->FindMethodCode(pRS, currentPC);
 }
 
 // Finds the header corresponding to the code at offset "delta".
@@ -3759,13 +3954,14 @@ TADDR EEJitManager::FindMethodCode(RangeSection * pRangeSection, PCODE currentPC
     LIMITED_METHOD_DAC_CONTRACT;
 
     _ASSERTE(pRangeSection != NULL);
+    _ASSERTE(pRangeSection->_flags & RangeSection::RANGE_SECTION_CODEHEAP);
 
-    HeapList *pHp = dac_cast<PTR_HeapList>(pRangeSection->pHeapListOrZapModule);
+    HeapList *pHp = pRangeSection->_pHeapList;
 
     if ((currentPC < pHp->startAddress) ||
         (currentPC > pHp->endAddress))
     {
-        return NULL;
+        return 0;
     }
 
     TADDR base = pHp->mapBase;
@@ -3812,7 +4008,7 @@ TADDR EEJitManager::FindMethodCode(RangeSection * pRangeSection, PCODE currentPC
     // previous DWORD, unless we are already on the first DWORD
 
     if (startPos < NIBBLES_PER_DWORD)
-        return NULL;
+        return 0;
 
     startPos = ((startPos >> LOG2_NIBBLES_PER_DWORD) << LOG2_NIBBLES_PER_DWORD) - 1;
 
@@ -3826,7 +4022,7 @@ TADDR EEJitManager::FindMethodCode(RangeSection * pRangeSection, PCODE currentPC
     // This helps to catch degenerate error cases. This relies on the fact that
     // startPos cannot ever be bigger than MAX_UINT
     if (((INT_PTR)startPos) < 0)
-        return NULL;
+        return 0;
 
     // Find the nibble with the header in the DWORD
 
@@ -3837,13 +4033,25 @@ TADDR EEJitManager::FindMethodCode(RangeSection * pRangeSection, PCODE currentPC
     }
 
     if (startPos == 0 && tmp == 0)
-        return NULL;
+        return 0;
 
     return base + POSOFF2ADDR(startPos, tmp & NIBBLE_MASK);
 }
 
 #if !defined(DACCESS_COMPILE)
+
 void EEJitManager::NibbleMapSet(HeapList * pHp, TADDR pCode, BOOL bSet)
+{
+    CONTRACTL {
+        NOTHROW;
+        GC_NOTRIGGER;
+    } CONTRACTL_END;
+
+    CrstHolder ch(&m_CodeHeapCritSec);
+    NibbleMapSetUnlocked(pHp, pCode, bSet);
+}
+
+void EEJitManager::NibbleMapSetUnlocked(HeapList * pHp, TADDR pCode, BOOL bSet)
 {
     CONTRACTL {
         NOTHROW;
@@ -3878,8 +4086,6 @@ void EEJitManager::NibbleMapSet(HeapList * pHp, TADDR pCode, BOOL bSet)
 #endif // !DACCESS_COMPILE
 
 #if defined(FEATURE_EH_FUNCLETS)
-// Note: This returns the root unwind record (the one that describes the prolog)
-// in cases where there is fragmented unwind.
 PTR_RUNTIME_FUNCTION EEJitManager::LazyGetFunctionEntry(EECodeInfo * pCodeInfo)
 {
     CONTRACTL {
@@ -3908,14 +4114,6 @@ PTR_RUNTIME_FUNCTION EEJitManager::LazyGetFunctionEntry(EECodeInfo * pCodeInfo)
 
         if (RUNTIME_FUNCTION__BeginAddress(pFunctionEntry) <= address && address < RUNTIME_FUNCTION__EndAddress(pFunctionEntry, baseAddress))
         {
-
-#if defined(EXCEPTION_DATA_SUPPORTS_FUNCTION_FRAGMENTS) && defined(TARGET_ARM64)
-            // If we might have fragmented unwind, and we're on ARM64, make sure
-            // to returning the root record, as the trailing records don't have
-            // prolog unwind codes.
-            pFunctionEntry = FindRootEntry(pFunctionEntry, baseAddress);
-#endif
-
             return pFunctionEntry;
         }
     }
@@ -3975,12 +4173,12 @@ void GetUnmanagedStackWalkInfo(IN  ULONG64   ControlPc,
 
     if (pModuleBase)
     {
-        *pModuleBase = NULL;
+        *pModuleBase = 0;
     }
 
     if (pFuncEntry)
     {
-        *pFuncEntry = NULL;
+        *pFuncEntry = 0;
     }
 
     PEDecoder peDecoder(DacGlobalBase());
@@ -4004,7 +4202,7 @@ void GetUnmanagedStackWalkInfo(IN  ULONG64   ControlPc,
             COUNT_T cbSize = 0;
             TADDR   pExceptionDir = peDecoder.GetDirectoryEntryData(IMAGE_DIRECTORY_ENTRY_EXCEPTION, &cbSize);
 
-            if (pExceptionDir != NULL)
+            if (pExceptionDir != 0)
             {
                 // Do a binary search on the static function table of mscorwks.dll.
                 HRESULT hr = E_FAIL;
@@ -4036,6 +4234,23 @@ void GetUnmanagedStackWalkInfo(IN  ULONG64   ControlPc,
                     else
                     {
                         _ASSERTE(pFuncEntry);
+#ifdef _TARGET_AMD64_
+                        // On amd64, match RtlLookupFunctionEntry behavior by resolving indirect function entries
+                        // back to the associated owning function entry.
+                        if ((functionEntry.UnwindData & RUNTIME_FUNCTION_INDIRECT) != 0)
+                        {
+                            DWORD dwRvaOfOwningFunctionEntry = (functionEntry.UnwindData & ~RUNTIME_FUNCTION_INDIRECT);
+                            taFuncEntry = peDecoder.GetRvaData(dwRvaOfOwningFunctionEntry);
+                            hr = DacReadAll(taFuncEntry, &functionEntry, sizeof(functionEntry), false);
+                            if (FAILED(hr))
+                            {
+                                return;
+                            }
+
+                            _ASSERTE((functionEntry.UnwindData & RUNTIME_FUNCTION_INDIRECT) == 0);
+                        }
+#endif // _TARGET_AMD64_
+
                         *pFuncEntry = (UINT_PTR)(T_RUNTIME_FUNCTION*)PTR_RUNTIME_FUNCTION(taFuncEntry);
                         break;
                     }
@@ -4043,7 +4258,7 @@ void GetUnmanagedStackWalkInfo(IN  ULONG64   ControlPc,
 
                 if (dwLow > dwHigh)
                 {
-                    _ASSERTE(*pFuncEntry == NULL);
+                    _ASSERTE(*pFuncEntry == 0);
                 }
             }
         }
@@ -4060,12 +4275,10 @@ extern "C" void GetRuntimeStackWalkInfo(IN  ULONG64   ControlPc,
 
     BEGIN_PRESERVE_LAST_ERROR;
 
-    BEGIN_ENTRYPOINT_VOIDRET;
-
     if (pModuleBase)
-        *pModuleBase = NULL;
+        *pModuleBase = 0;
     if (pFuncEntry)
-        *pFuncEntry = NULL;
+        *pFuncEntry = 0;
 
     EECodeInfo codeInfo((PCODE)ControlPc);
     if (!codeInfo.IsValid())
@@ -4087,8 +4300,7 @@ extern "C" void GetRuntimeStackWalkInfo(IN  ULONG64   ControlPc,
     }
 
 Exit:
-    END_ENTRYPOINT_VOIDRET;
-
+    ;
     END_PRESERVE_LAST_ERROR;
 }
 #endif // FEATURE_EH_FUNCLETS
@@ -4127,17 +4339,6 @@ void EEJitManager::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
 }
 #endif // #ifdef DACCESS_COMPILE
 
-#else // CROSSGEN_COMPILE
-// stub for compilation
-BOOL EEJitManager::JitCodeToMethodInfo(RangeSection * pRangeSection,
-    PCODE currentPC,
-    MethodDesc ** ppMethodDesc,
-    EECodeInfo * pCodeInfo)
-{
-    _ASSERTE(FALSE);
-    return FALSE;
-}
-#endif // !CROSSGEN_COMPILE
 
 
 #ifndef DACCESS_COMPILE
@@ -4156,16 +4357,12 @@ void ExecutionManager::Init()
 
     m_JumpStubCrst.Init(CrstJumpStubCache, CrstFlags(CRST_UNSAFE_ANYMODE|CRST_DEBUGGER_THREAD));
 
-    m_RangeCrst.Init(CrstExecuteManRangeLock, CRST_UNSAFE_ANYMODE);
+    new(&g_codeRangeMap) RangeSectionMap();
 
     m_pDefaultCodeMan = new EECodeManager();
 
-#ifndef CROSSGEN_COMPILE
     m_pEEJitManager = new EEJitManager();
-#endif
-#ifdef FEATURE_PREJIT
-    m_pNativeImageJitManager = new NativeImageJitManager();
-#endif
+
 
 #ifdef FEATURE_READYTORUN
     m_pReadyToRunJitManager = new ReadyToRunJitManager();
@@ -4184,13 +4381,15 @@ ExecutionManager::FindCodeRange(PCODE currentPC, ScanFlag scanFlag)
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
-    if (currentPC == NULL)
+    if (currentPC == (PCODE)NULL)
         return NULL;
 
     if (scanFlag == ScanReaderLock)
         return FindCodeRangeWithLock(currentPC);
 
-    return GetRangeSection(currentPC);
+    // Since ScanReaderLock is not set, then we should behave AS IF the ReaderLock is held
+    RangeSectionLockState lockState = RangeSectionLockState::ReaderLocked;
+    return GetRangeSection(currentPC, &lockState);
 }
 
 //**************************************************************************
@@ -4204,8 +4403,15 @@ ExecutionManager::FindCodeRangeWithLock(PCODE currentPC)
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
-    ReaderLockHolder rlh;
-    return GetRangeSection(currentPC);
+    RangeSectionLockState lockState = RangeSectionLockState::None;
+    RangeSection *result = GetRangeSection(currentPC, &lockState);
+    if (lockState == RangeSectionLockState::NeedsLock)
+    {
+        ReaderLockHolder rlh;
+        lockState = RangeSectionLockState::ReaderLocked;
+        result = GetRangeSection(currentPC, &lockState);
+    }
+    return result;
 }
 
 
@@ -4213,11 +4419,11 @@ ExecutionManager::FindCodeRangeWithLock(PCODE currentPC)
 PCODE ExecutionManager::GetCodeStartAddress(PCODE currentPC)
 {
     WRAPPER_NO_CONTRACT;
-    _ASSERTE(currentPC != NULL);
+    _ASSERTE(currentPC != (PCODE)NULL);
 
     EECodeInfo codeInfo(currentPC);
     if (!codeInfo.IsValid())
-        return NULL;
+        return (PCODE)NULL;
     return PINSTRToPCODE(codeInfo.GetStartAddress());
 }
 
@@ -4261,13 +4467,15 @@ BOOL ExecutionManager::IsManagedCode(PCODE currentPC)
         GC_NOTRIGGER;
     } CONTRACTL_END;
 
-    if (currentPC == NULL)
+    if (currentPC == (PCODE)NULL)
         return FALSE;
 
     if (GetScanFlags() == ScanReaderLock)
         return IsManagedCodeWithLock(currentPC);
 
-    return IsManagedCodeWorker(currentPC);
+    // Since ScanReaderLock is not set, then we must assume that the ReaderLock is effectively taken.
+    RangeSectionLockState lockState = RangeSectionLockState::ReaderLocked;
+    return IsManagedCodeWorker(currentPC, &lockState);
 }
 
 //**************************************************************************
@@ -4279,42 +4487,23 @@ BOOL ExecutionManager::IsManagedCodeWithLock(PCODE currentPC)
         GC_NOTRIGGER;
     } CONTRACTL_END;
 
-    ReaderLockHolder rlh;
-    return IsManagedCodeWorker(currentPC);
-}
+    RangeSectionLockState lockState = RangeSectionLockState::None;
+    BOOL result = IsManagedCodeWorker(currentPC, &lockState);
 
-//**************************************************************************
-BOOL ExecutionManager::IsManagedCode(PCODE currentPC, HostCallPreference hostCallPreference /*=AllowHostCalls*/, BOOL *pfFailedReaderLock /*=NULL*/)
-{
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-#ifdef DACCESS_COMPILE
-    return IsManagedCode(currentPC);
-#else
-    if (hostCallPreference == AllowHostCalls)
+    if (lockState == RangeSectionLockState::NeedsLock)
     {
-        return IsManagedCode(currentPC);
+        ReaderLockHolder rlh;
+        lockState = RangeSectionLockState::ReaderLocked;
+        result = IsManagedCodeWorker(currentPC, &lockState);
     }
 
-    ReaderLockHolder rlh(hostCallPreference);
-    if (!rlh.Acquired())
-    {
-        _ASSERTE(pfFailedReaderLock != NULL);
-        *pfFailedReaderLock = TRUE;
-        return FALSE;
-    }
-
-    return IsManagedCodeWorker(currentPC);
-#endif
+    return result;
 }
 
 //**************************************************************************
 // Assumes that the ExecutionManager reader/writer lock is taken or that
 // it is safe not to take it.
-BOOL ExecutionManager::IsManagedCodeWorker(PCODE currentPC)
+BOOL ExecutionManager::IsManagedCodeWorker(PCODE currentPC, RangeSectionLockState *pLockState)
 {
     CONTRACTL {
         NOTHROW;
@@ -4325,50 +4514,30 @@ BOOL ExecutionManager::IsManagedCodeWorker(PCODE currentPC)
     // taken over the call to JitCodeToMethodInfo too so that nobody pulls out
     // the range section from underneath us.
 
-    RangeSection * pRS = GetRangeSection(currentPC);
+    RangeSection * pRS = GetRangeSection(currentPC, pLockState);
     if (pRS == NULL)
         return FALSE;
 
-    if (pRS->flags & RangeSection::RANGE_SECTION_CODEHEAP)
+    if (pRS->_flags & RangeSection::RANGE_SECTION_CODEHEAP)
     {
-#ifndef CROSSGEN_COMPILE
         // Typically if we find a Jit Manager we are inside a managed method
         // but on we could also be in a stub, so we check for that
         // as well and we don't consider stub to be real managed code.
-        TADDR start = dac_cast<PTR_EEJitManager>(pRS->pjit)->FindMethodCode(pRS, currentPC);
-        if (start == NULL)
+        TADDR start = dac_cast<PTR_EEJitManager>(pRS->_pjit)->FindMethodCode(pRS, currentPC);
+        if (start == (TADDR)0)
             return FALSE;
         CodeHeader * pCHdr = PTR_CodeHeader(start - sizeof(CodeHeader));
         if (!pCHdr->IsStubCodeBlock())
             return TRUE;
-#endif
     }
 #ifdef FEATURE_READYTORUN
     else
-    if (pRS->flags & RangeSection::RANGE_SECTION_READYTORUN)
+    if (pRS->_pR2RModule != NULL)
     {
-        if (dac_cast<PTR_ReadyToRunJitManager>(pRS->pjit)->JitCodeToMethodInfo(pRS, currentPC, NULL, NULL))
+        if (dac_cast<PTR_ReadyToRunJitManager>(pRS->_pjit)->JitCodeToMethodInfo(pRS, currentPC, NULL, NULL))
             return TRUE;
     }
 #endif
-    else
-    {
-#ifdef FEATURE_PREJIT
-        // Check that we are in the range with true managed code. We don't
-        // consider jump stubs or precodes to be real managed code.
-
-        Module * pModule = dac_cast<PTR_Module>(pRS->pHeapListOrZapModule);
-
-        NGenLayoutInfo * pLayoutInfo = pModule->GetNGenLayoutInfo();
-
-        if (pLayoutInfo->m_CodeSections[0].IsInRange(currentPC) ||
-            pLayoutInfo->m_CodeSections[1].IsInRange(currentPC) ||
-            pLayoutInfo->m_CodeSections[2].IsInRange(currentPC))
-        {
-            return TRUE;
-        }
-#endif
-    }
 
     return FALSE;
 }
@@ -4382,15 +4551,34 @@ BOOL ExecutionManager::IsReadyToRunCode(PCODE currentPC)
         GC_NOTRIGGER;
     } CONTRACTL_END;
 
-    // This may get called for arbitrary code addresses. Note that the lock is
-    // taken over the call to JitCodeToMethodInfo too so that nobody pulls out
-    // the range section from underneath us.
-
 #ifdef FEATURE_READYTORUN
-    RangeSection * pRS = GetRangeSection(currentPC);
-    if (pRS != NULL && (pRS->flags & RangeSection::RANGE_SECTION_READYTORUN))
+    RangeSectionLockState lockState = RangeSectionLockState::None;
+    RangeSection * pRS = GetRangeSection(currentPC, &lockState);
+
+    // Since R2R images are not collectible, and we always can find
+    // non-collectible RangeSections without taking a lock we don't need
+    // to take the actual ReaderLock here if GetRangeSection returns NULL
+
+#ifdef _DEBUG
+    if (pRS == NULL)
     {
-        if (dac_cast<PTR_ReadyToRunJitManager>(pRS->pjit)->JitCodeToMethodInfo(pRS, currentPC, NULL, NULL))
+        // This logic checks to ensure that the behavior of the fully locked
+        // lookup matches that of the unlocked lookup.
+        // Note that if the locked lookup finds something, we need to check
+        // the unlocked lookup, in case a new module was loaded in the meantime.
+        ReaderLockHolder rlh;
+        lockState = RangeSectionLockState::ReaderLocked;
+        if (GetRangeSection(currentPC, &lockState) != NULL)
+        {
+            lockState = RangeSectionLockState::None;
+            assert(GetRangeSection(currentPC, &lockState) == NULL);
+        }
+    }
+#endif // _DEBUG
+
+    if (pRS != NULL && (pRS->_pR2RModule != NULL))
+    {
+        if (dac_cast<PTR_ReadyToRunJitManager>(pRS->_pjit)->JitCodeToMethodInfo(pRS, currentPC, NULL, NULL))
             return TRUE;
     }
 #endif
@@ -4410,7 +4598,7 @@ LPCWSTR ExecutionManager::GetJitName()
 
     // Try to obtain a name for the jit library from the env. variable
     IfFailThrow(CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_JitName, const_cast<LPWSTR *>(&pwzJitName)));
-    
+
     if (NULL == pwzJitName)
     {
         pwzJitName = MAKEDLLNAME_W(W("clrjit"));
@@ -4420,157 +4608,15 @@ LPCWSTR ExecutionManager::GetJitName()
 }
 #endif // !FEATURE_MERGE_JIT_AND_ENGINE
 
-RangeSection* ExecutionManager::GetRangeSection(TADDR addr)
+RangeSection* ExecutionManager::GetRangeSection(TADDR addr, RangeSectionLockState *pLockState)
 {
     CONTRACTL {
         NOTHROW;
-        HOST_NOCALLS;
         GC_NOTRIGGER;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
-    RangeSection * pHead = m_CodeRangeList;
-
-    if (pHead == NULL)
-    {
-        return NULL;
-    }
-
-    RangeSection *pCurr = pHead;
-    RangeSection *pLast = NULL;
-
-#ifndef DACCESS_COMPILE
-    RangeSection *pLastUsedRS = (pCurr != NULL) ? pCurr->pLastUsed : NULL;
-
-    if (pLastUsedRS != NULL)
-    {
-        // positive case
-        if ((addr >= pLastUsedRS->LowAddress) &&
-            (addr <  pLastUsedRS->HighAddress)   )
-        {
-            return pLastUsedRS;
-        }
-
-        RangeSection * pNextAfterLastUsedRS = pLastUsedRS->pnext;
-
-        // negative case
-        if ((addr <  pLastUsedRS->LowAddress) &&
-            (pNextAfterLastUsedRS == NULL || addr >= pNextAfterLastUsedRS->HighAddress))
-        {
-            return NULL;
-        }
-    }
-#endif
-
-    while (pCurr != NULL)
-    {
-        // See if addr is in [pCurr->LowAddress .. pCurr->HighAddress)
-        if (pCurr->LowAddress <= addr)
-        {
-            // Since we are sorted, once pCurr->HighAddress is less than addr
-            // then all subsequence ones will also be lower, so we are done.
-            if (addr >= pCurr->HighAddress)
-            {
-                // we'll return NULL and put pLast into pLastUsed
-                pCurr = NULL;
-            }
-            else
-            {
-                // addr must be in [pCurr->LowAddress .. pCurr->HighAddress)
-                _ASSERTE((pCurr->LowAddress <= addr) && (addr < pCurr->HighAddress));
-
-                // Found the matching RangeSection
-                // we'll return pCurr and put it into pLastUsed
-                pLast = pCurr;
-            }
-
-            break;
-        }
-        pLast = pCurr;
-        pCurr = pCurr->pnext;
-    }
-
-#ifndef DACCESS_COMPILE
-    // Cache pCurr as pLastUsed in the head node
-    // Unless we are on an MP system with many cpus
-    // where this sort of caching actually diminishes scaling during server GC
-    // due to many processors writing to a common location
-    if (g_SystemInfo.dwNumberOfProcessors < 4 || !GCHeapUtilities::IsServerHeap() || !GCHeapUtilities::IsGCInProgress())
-        pHead->pLastUsed = pLast;
-#endif
-
-    return pCurr;
-}
-
-RangeSection* ExecutionManager::GetRangeSectionAndPrev(RangeSection *pHead, TADDR addr, RangeSection** ppPrev)
-{
-    WRAPPER_NO_CONTRACT;
-
-    RangeSection *pCurr;
-    RangeSection *pPrev;
-    RangeSection *result = NULL;
-
-    for (pPrev = NULL,  pCurr = pHead;
-         pCurr != NULL;
-         pPrev = pCurr, pCurr = pCurr->pnext)
-    {
-        // See if addr is in [pCurr->LowAddress .. pCurr->HighAddress)
-        if (pCurr->LowAddress > addr)
-            continue;
-
-        if (addr >= pCurr->HighAddress)
-            break;
-
-        // addr must be in [pCurr->LowAddress .. pCurr->HighAddress)
-        _ASSERTE((pCurr->LowAddress <= addr) && (addr < pCurr->HighAddress));
-
-        // Found the matching RangeSection
-        result = pCurr;
-
-        // Write back pPrev to ppPrev if it is non-null
-        if (ppPrev != NULL)
-            *ppPrev = pPrev;
-
-        break;
-    }
-
-    // If we failed to find a match write NULL to ppPrev if it is non-null
-    if ((ppPrev != NULL) && (result == NULL))
-    {
-        *ppPrev = NULL;
-    }
-
-    return result;
-}
-
-/* static */
-PTR_Module ExecutionManager::FindZapModule(TADDR currentData)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-        STATIC_CONTRACT_HOST_CALLS;
-        SUPPORTS_DAC;
-    }
-    CONTRACTL_END;
-
-    ReaderLockHolder rlh;
-
-    RangeSection * pRS = GetRangeSection(currentData);
-    if (pRS == NULL)
-        return NULL;
-
-    if (pRS->flags & RangeSection::RANGE_SECTION_CODEHEAP)
-        return NULL;
-
-#ifdef FEATURE_READYTORUN
-    if (pRS->flags & RangeSection::RANGE_SECTION_READYTORUN)
-        return NULL;
-#endif
-
-    return dac_cast<PTR_Module>(pRS->pHeapListOrZapModule);
+    return GetCodeRangeMap()->LookupRangeSection(addr, pLockState);
 }
 
 /* static */
@@ -4581,25 +4627,39 @@ PTR_Module ExecutionManager::FindReadyToRunModule(TADDR currentData)
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        STATIC_CONTRACT_HOST_CALLS;
         SUPPORTS_DAC;
     }
     CONTRACTL_END;
 
 #ifdef FEATURE_READYTORUN
-    ReaderLockHolder rlh;
+    RangeSectionLockState lockState = RangeSectionLockState::None;
+    RangeSection * pRS = GetRangeSection(currentData, &lockState);
 
-    RangeSection * pRS = GetRangeSection(currentData);
+    // Since R2R images are not collectible, and we always can find
+    // non-collectible RangeSections without taking a lock we don't need
+    // to take the actual ReaderLock here if GetRangeSection returns NULL
     if (pRS == NULL)
+    {
+#ifdef _DEBUG
+        {
+            // This logic checks to ensure that the behavior of the fully locked
+            // lookup matches that of the unlocked lookup.
+            // Note that if the locked lookup finds something, we need to check
+            // the unlocked lookup, in case a new module was loaded in the meantime.
+            ReaderLockHolder rlh;
+            lockState = RangeSectionLockState::ReaderLocked;
+            if (GetRangeSection(currentData, &lockState) != NULL)
+            {
+                lockState = RangeSectionLockState::None;
+                assert(GetRangeSection(currentData, &lockState) == NULL);
+            }
+        }
+#endif // _DEBUG
+
         return NULL;
+    }
 
-    if (pRS->flags & RangeSection::RANGE_SECTION_CODEHEAP)
-        return NULL;
-
-    if (pRS->flags & RangeSection::RANGE_SECTION_READYTORUN)
-        return dac_cast<PTR_Module>(pRS->pHeapListOrZapModule);;
-
-    return NULL;
+    return pRS->_pR2RModule;
 #else
     return NULL;
 #endif
@@ -4617,138 +4677,88 @@ PTR_Module ExecutionManager::FindModuleForGCRefMap(TADDR currentData)
     }
     CONTRACTL_END;
 
+#ifndef FEATURE_READYTORUN
+    return NULL;
+#else
     RangeSection * pRS = FindCodeRange(currentData, ExecutionManager::GetScanFlags());
     if (pRS == NULL)
         return NULL;
 
-    if (pRS->flags & RangeSection::RANGE_SECTION_CODEHEAP)
-        return NULL;
-
-#ifdef FEATURE_READYTORUN
-    // RANGE_SECTION_READYTORUN is intentionally not filtered out here
-#endif
-
-    return dac_cast<PTR_Module>(pRS->pHeapListOrZapModule);
+    return pRS->_pR2RModule;
+#endif // FEATURE_READYTORUN
 }
 
 #ifndef DACCESS_COMPILE
 
-/* NGenMem depends on this entrypoint */
 NOINLINE
 void ExecutionManager::AddCodeRange(TADDR          pStartRange,
                                     TADDR          pEndRange,
                                     IJitManager *  pJit,
                                     RangeSection::RangeSectionFlags flags,
-                                    void *         pHp)
+                                    PTR_Module     pModule)
 {
     CONTRACTL {
         THROWS;
         GC_NOTRIGGER;
+        PRECONDITION(pStartRange < pEndRange);
+        PRECONDITION(CheckPointer(pJit));
+        PRECONDITION(CheckPointer(pModule));
+    } CONTRACTL_END;
+
+    ReaderLockHolder rlh;
+    RangeSectionLockState lockState = RangeSectionLockState::ReaderLocked; //
+
+    PTR_RangeSection pRange = GetCodeRangeMap()->AllocateRange(Range(pStartRange, pEndRange), pJit, flags, pModule, &lockState);
+    if (pRange == NULL)
+        ThrowOutOfMemory();
+}
+
+NOINLINE
+void ExecutionManager::AddCodeRange(TADDR          pStartRange,
+                                    TADDR          pEndRange,
+                                    IJitManager *  pJit,
+                                    RangeSection::RangeSectionFlags flags,
+                                    PTR_HeapList   pHp)
+{
+    CONTRACTL {
+        THROWS;
+        GC_NOTRIGGER;
+        PRECONDITION(pStartRange < pEndRange);
         PRECONDITION(CheckPointer(pJit));
         PRECONDITION(CheckPointer(pHp));
     } CONTRACTL_END;
 
-    AddRangeHelper(pStartRange,
-                   pEndRange,
-                   pJit,
-                   flags,
-                   dac_cast<TADDR>(pHp));
+    ReaderLockHolder rlh;
+    RangeSectionLockState lockState = RangeSectionLockState::ReaderLocked; //
+
+    PTR_RangeSection pRange = GetCodeRangeMap()->AllocateRange(Range(pStartRange, pEndRange), pJit, flags, pHp, &lockState);
+
+    if (pRange == NULL)
+        ThrowOutOfMemory();
 }
 
-#ifdef FEATURE_PREJIT
-
-void ExecutionManager::AddNativeImageRange(TADDR StartRange,
-                                           SIZE_T Size,
-                                           Module * pModule)
+NOINLINE
+void ExecutionManager::AddCodeRange(TADDR          pStartRange,
+                                    TADDR          pEndRange,
+                                    IJitManager *  pJit,
+                                    RangeSection::RangeSectionFlags flags,
+                                    PTR_CodeRangeMapRangeList   pRangeList)
 {
     CONTRACTL {
         THROWS;
         GC_NOTRIGGER;
-        PRECONDITION(CheckPointer(pModule));
-    } CONTRACTL_END;
-
-    AddRangeHelper(StartRange,
-                   StartRange + Size,
-                   GetNativeImageJitManager(),
-                   RangeSection::RANGE_SECTION_NONE,
-                   dac_cast<TADDR>(pModule));
-}
-#endif
-
-void ExecutionManager::AddRangeHelper(TADDR          pStartRange,
-                                      TADDR          pEndRange,
-                                      IJitManager *  pJit,
-                                      RangeSection::RangeSectionFlags flags,
-                                      TADDR          pHeapListOrZapModule)
-{
-    CONTRACTL {
-        THROWS;
-        GC_NOTRIGGER;
-        HOST_CALLS;
         PRECONDITION(pStartRange < pEndRange);
-        PRECONDITION(pHeapListOrZapModule != NULL);
+        PRECONDITION(CheckPointer(pJit));
+        PRECONDITION(CheckPointer(pRangeList));
     } CONTRACTL_END;
 
-    RangeSection *pnewrange = new RangeSection;
+    ReaderLockHolder rlh;
+    RangeSectionLockState lockState = RangeSectionLockState::ReaderLocked; //
 
-    _ASSERTE(pEndRange > pStartRange);
+    PTR_RangeSection pRange = GetCodeRangeMap()->AllocateRange(Range(pStartRange, pEndRange), pJit, flags, pRangeList, &lockState);
 
-    pnewrange->LowAddress  = pStartRange;
-    pnewrange->HighAddress = pEndRange;
-    pnewrange->pjit        = pJit;
-    pnewrange->pnext       = NULL;
-    pnewrange->flags       = flags;
-    pnewrange->pLastUsed   = NULL;
-    pnewrange->pHeapListOrZapModule = pHeapListOrZapModule;
-#if defined(TARGET_AMD64)
-    pnewrange->pUnwindInfoTable = NULL;
-#endif // defined(TARGET_AMD64)
-    {
-        CrstHolder ch(&m_RangeCrst); // Acquire the Crst before linking in a new RangeList
-
-        RangeSection * current  = m_CodeRangeList;
-        RangeSection * previous = NULL;
-
-        if (current != NULL)
-        {
-            while (true)
-            {
-                // Sort addresses top down so that more recently created ranges
-                // will populate the top of the list
-                if (pnewrange->LowAddress > current->LowAddress)
-                {
-                    // Asserts if ranges are overlapping
-                    _ASSERTE(pnewrange->LowAddress >= current->HighAddress);
-                    pnewrange->pnext = current;
-
-                    if (previous == NULL) // insert new head
-                    {
-                        m_CodeRangeList = pnewrange;
-                    }
-                    else
-                    { // insert in the middle
-                        previous->pnext  = pnewrange;
-                    }
-                    break;
-                }
-
-                RangeSection * next = current->pnext;
-                if (next == NULL) // insert at end of list
-                {
-                    current->pnext = pnewrange;
-                    break;
-                }
-
-                // Continue walking the RangeSection list
-                previous = current;
-                current  = next;
-            }
-        }
-        else
-        {
-            m_CodeRangeList = pnewrange;
-        }
-    }
+    if (pRange == NULL)
+        ThrowOutOfMemory();
 }
 
 // Deletes a single range starting at pStartRange
@@ -4759,139 +4769,83 @@ void ExecutionManager::DeleteRange(TADDR pStartRange)
         GC_NOTRIGGER;
     } CONTRACTL_END;
 
-    RangeSection *pCurr = NULL;
-    {
-        // Acquire the Crst before unlinking a RangeList.
-        // NOTE: The Crst must be acquired BEFORE we grab the writer lock, as the
-        // writer lock forces us into a forbid suspend thread region, and it's illegal
-        // to enter a Crst after the forbid suspend thread region is entered
-        CrstHolder ch(&m_RangeCrst);
+    RangeSection *pCurr = FindCodeRangeWithLock(pStartRange);
+    GetCodeRangeMap()->RemoveRangeSection(pCurr);
 
+
+#if defined(TARGET_AMD64)
+    PTR_UnwindInfoTable unwindTable = pCurr->_pUnwindInfoTable;
+#endif
+
+    {
         // Acquire the WriterLock and prevent any readers from walking the RangeList.
         // This also forces us to enter a forbid suspend thread region, to prevent
         // hijacking profilers from grabbing this thread and walking it (the walk may
         // require the reader lock, which would cause a deadlock).
         WriterLockHolder wlh;
 
-        RangeSection *pPrev = NULL;
+        RangeSectionLockState lockState = RangeSectionLockState::WriteLocked;
 
-        pCurr = GetRangeSectionAndPrev(m_CodeRangeList, pStartRange, &pPrev);
-
-        // pCurr points at the Range that needs to be unlinked from the RangeList
-        if (pCurr != NULL)
-        {
-
-            // If pPrev is NULL the the head of this list is to be deleted
-            if (pPrev == NULL)
-            {
-                m_CodeRangeList = pCurr->pnext;
-            }
-            else
-            {
-                _ASSERT(pPrev->pnext == pCurr);
-
-                pPrev->pnext = pCurr->pnext;
-            }
-
-            // Clear the cache pLastUsed in the head node (if any)
-            RangeSection * head = m_CodeRangeList;
-            if (head != NULL)
-            {
-                head->pLastUsed = NULL;
-            }
-
-            //
-            // Cannot delete pCurr here because we own the WriterLock and if this is
-            // a hosted scenario then the hosting api callback cannot occur in a forbid
-            // suspend region, which the writer lock is.
-            //
-        }
+        GetCodeRangeMap()->CleanupRangeSections(&lockState);
+        // Unlike the previous implementation, we no longer attempt to avoid freeing
+        // the memory behind the RangeSection here, as we do not support the hosting
+        // api taking over memory allocation.
     }
 
     //
-    // Now delete the node
+    // Now delete the unwind info table
     //
-    if (pCurr != NULL)
-    {
 #if defined(TARGET_AMD64)
-        if (pCurr->pUnwindInfoTable != 0)
-            delete pCurr->pUnwindInfoTable;
+    if (unwindTable != 0)
+        delete unwindTable;
 #endif // defined(TARGET_AMD64)
-        delete pCurr;
-    }
 }
 
 #endif // #ifndef DACCESS_COMPILE
 
 #ifdef DACCESS_COMPILE
 
-void ExecutionManager::EnumRangeList(RangeSection* list,
-                                     CLRDataEnumMemoryFlags flags)
+void RangeSection::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
 {
-    while (list != NULL)
+    if (!DacEnumMemoryRegion(dac_cast<TADDR>(this), sizeof(*this)))
+        return;
+
+    if (_pjit.IsValid())
     {
-        // If we can't read the target memory, stop immediately so we don't work
-        // with broken data.
-        if (!DacEnumMemoryRegion(dac_cast<TADDR>(list), sizeof(*list)))
-            break;
-
-        if (list->pjit.IsValid())
-        {
-            list->pjit->EnumMemoryRegions(flags);
-        }
-
-        if (!(list->flags & RangeSection::RANGE_SECTION_CODEHEAP))
-        {
-            PTR_Module pModule = dac_cast<PTR_Module>(list->pHeapListOrZapModule);
-
-            if (pModule.IsValid())
-            {
-                pModule->EnumMemoryRegions(flags, true);
-            }
-        }
-
-        list = list->pnext;
-#if defined (_DEBUG)
-        // Test hook: when testing on debug builds, we want an easy way to test that the while
-        // correctly terminates in the face of ridiculous stuff from the target.
-        if (CLRConfig::GetConfigValue(CLRConfig::INTERNAL_DumpGeneration_IntentionallyCorruptDataFromTarget) == 1)
-        {
-            // Force us to struggle on with something bad.
-            if (list == NULL)
-            {
-                list = (RangeSection *)&flags;
-            }
-        }
-#endif // (_DEBUG)
-
+        _pjit->EnumMemoryRegions(flags);
     }
+
+#ifdef FEATURE_READYTORUN
+    if (_pR2RModule != NULL)
+    {
+        if (_pR2RModule.IsValid())
+        {
+            _pR2RModule->EnumMemoryRegions(flags, true);
+        }
+    }
+#endif // FEATURE_READYTORUN
 }
+
 
 void ExecutionManager::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
 {
-    STATIC_CONTRACT_HOST_CALLS;
-
     ReaderLockHolder rlh;
 
     //
     // Report the global data portions.
     //
 
-    m_CodeRangeList.EnumMem();
+    GetCodeRangeMap().EnumMem();
     m_pDefaultCodeMan.EnumMem();
 
     //
     // Walk structures and report.
     //
-
-    if (m_CodeRangeList.IsValid())
-    {
-        EnumRangeList(m_CodeRangeList, flags);
-    }
+    GetCodeRangeMap()->EnumMemoryRegions(flags);
 }
 #endif // #ifdef DACCESS_COMPILE
 
-#if !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
+#if !defined(DACCESS_COMPILE)
 
 void ExecutionManager::Unload(LoaderAllocator *pLoaderAllocator)
 {
@@ -4900,20 +4854,8 @@ void ExecutionManager::Unload(LoaderAllocator *pLoaderAllocator)
         GC_NOTRIGGER;
     } CONTRACTL_END;
 
-#if defined(HOST_OSX) && defined(HOST_ARM64)
-    auto jitWriteEnableHolder = PAL_JITWriteEnable(true);
-#endif // defined(HOST_OSX) && defined(HOST_ARM64)
-
     // a size of 0 is a signal to Nirvana to flush the entire cache
     FlushInstructionCache(GetCurrentProcess(),0,0);
-
-    /* StackwalkCacheEntry::EIP is an address into code. Since we are
-    unloading the code, we need to invalidate the cache. Otherwise,
-    its possible that another appdomain might generate code at the very
-    same address, and we might incorrectly think that the old
-    StackwalkCacheEntry corresponds to it. So flush the cache.
-    */
-    StackwalkCache::Invalidate(pLoaderAllocator);
 
     JumpStubCache * pJumpStubCache = (JumpStubCache *) pLoaderAllocator->m_pJumpStubCache;
     if (pJumpStubCache != NULL)
@@ -4982,7 +4924,7 @@ PCODE ExecutionManager::jumpStub(MethodDesc* pMD, PCODE target,
         POSTCONDITION((RETVAL != NULL) || !throwOnOutOfMemoryWithinRange);
     } CONTRACT_END;
 
-    PCODE jumpStub = NULL;
+    PCODE jumpStub = (PCODE)NULL;
 
     if (pLoaderAllocator == NULL)
     {
@@ -5032,7 +4974,7 @@ PCODE ExecutionManager::jumpStub(MethodDesc* pMD, PCODE target,
     {
         jumpStub = i->m_jumpStub;
 
-        _ASSERTE(jumpStub != NULL);
+        _ASSERTE(jumpStub != (PCODE)NULL);
 
         // Is the matching entry with the requested range?
         if (((TADDR)loAddr <= jumpStub) && (jumpStub <= (TADDR)hiAddr))
@@ -5044,10 +4986,10 @@ PCODE ExecutionManager::jumpStub(MethodDesc* pMD, PCODE target,
     // If we get here we need to create a new jump stub
     // add or change the jump stub table to point at the new one
     jumpStub = getNextJumpStub(pMD, target, loAddr, hiAddr, pLoaderAllocator, throwOnOutOfMemoryWithinRange); // this statement can throw
-    if (jumpStub == NULL)
+    if (jumpStub == (PCODE)NULL)
     {
         _ASSERTE(!throwOnOutOfMemoryWithinRange);
-        RETURN(NULL);
+        RETURN((PCODE)NULL);
     }
 
     _ASSERTE(((TADDR)loAddr <= jumpStub) && (jumpStub <= (TADDR)hiAddr));
@@ -5071,9 +5013,18 @@ PCODE ExecutionManager::getNextJumpStub(MethodDesc* pMD, PCODE target,
         POSTCONDITION((RETVAL != NULL) || !throwOnOutOfMemoryWithinRange);
     } CONTRACT_END;
 
-    DWORD            numJumpStubs   = DEFAULT_JUMPSTUBS_PER_BLOCK;  // a block of 32 JumpStubs
     BYTE *           jumpStub       = NULL;
+    BYTE *           jumpStubRW     = NULL;
     bool             isLCG          = pMD && pMD->IsLCGMethod();
+    // For LCG we request a small block of 4 jumpstubs, because we can not share them
+    // with any other methods and very frequently our method only needs one jump stub.
+    // Using 4 gives a request size of (32 + 4*12) or 80 bytes.
+    // Also note that request sizes are rounded up to a multiples of 16.
+    // The request size is calculated into 'blockSize' in allocJumpStubBlock.
+    // For x64 the value of BACK_TO_BACK_JUMP_ALLOCATE_SIZE is 12 bytes
+    // and the sizeof(JumpStubBlockHeader) is 32.
+    //
+    DWORD            numJumpStubs   = isLCG ? 4 : DEFAULT_JUMPSTUBS_PER_BLOCK;
     JumpStubCache *  pJumpStubCache = (JumpStubCache *) pLoaderAllocator->m_pJumpStubCache;
 
     if (isLCG)
@@ -5085,6 +5036,7 @@ PCODE ExecutionManager::getNextJumpStub(MethodDesc* pMD, PCODE target,
 
     JumpStubBlockHeader ** ppHead   = &(pJumpStubCache->m_pBlocks);
     JumpStubBlockHeader *  curBlock = *ppHead;
+    ExecutableWriterHolderNoLog<JumpStubBlockHeader> curBlockWriterHolder;
 
     // allocate a new jumpstub from 'curBlock' if it is not fully allocated
     //
@@ -5099,6 +5051,9 @@ PCODE ExecutionManager::getNextJumpStub(MethodDesc* pMD, PCODE target,
             if ((loAddr <= jumpStub) && (jumpStub <= hiAddr))
             {
                 // We will update curBlock->m_used at "DONE"
+                size_t blockSize = sizeof(JumpStubBlockHeader) + (size_t) numJumpStubs * BACK_TO_BACK_JUMP_ALLOCATE_SIZE;
+                curBlockWriterHolder.AssignExecutableWriterHolder(curBlock, blockSize);
+                jumpStubRW = (BYTE *)((TADDR)jumpStub + (TADDR)curBlockWriterHolder.GetRW() - (TADDR)curBlock);
                 goto DONE;
             }
         }
@@ -5109,17 +5064,6 @@ PCODE ExecutionManager::getNextJumpStub(MethodDesc* pMD, PCODE target,
 
     if (isLCG)
     {
-        // For LCG we request a small block of 4 jumpstubs, because we can not share them
-        // with any other methods and very frequently our method only needs one jump stub.
-        // Using 4 gives a request size of (32 + 4*12) or 80 bytes.
-        // Also note that request sizes are rounded up to a multiples of 16.
-        // The request size is calculated into 'blockSize' in allocJumpStubBlock.
-        // For x64 the value of BACK_TO_BACK_JUMP_ALLOCATE_SIZE is 12 bytes
-        // and the sizeof(JumpStubBlockHeader) is 32.
-        //
-
-        numJumpStubs = 4;
-
 #ifdef TARGET_AMD64
         // Note this these values are not requirements, instead we are
         // just confirming the values that are mentioned in the comments.
@@ -5145,14 +5089,17 @@ PCODE ExecutionManager::getNextJumpStub(MethodDesc* pMD, PCODE target,
     if (curBlock == NULL)
     {
         _ASSERTE(!throwOnOutOfMemoryWithinRange);
-        RETURN(NULL);
+        RETURN((PCODE)NULL);
     }
 
+    curBlockWriterHolder.AssignExecutableWriterHolder(curBlock, sizeof(JumpStubBlockHeader) + ((size_t) (curBlock->m_used + 1) * BACK_TO_BACK_JUMP_ALLOCATE_SIZE));
+
+    jumpStubRW = (BYTE *) curBlockWriterHolder.GetRW() + sizeof(JumpStubBlockHeader) + ((size_t) curBlock->m_used * BACK_TO_BACK_JUMP_ALLOCATE_SIZE);
     jumpStub = (BYTE *) curBlock + sizeof(JumpStubBlockHeader) + ((size_t) curBlock->m_used * BACK_TO_BACK_JUMP_ALLOCATE_SIZE);
 
     _ASSERTE((loAddr <= jumpStub) && (jumpStub <= hiAddr));
 
-    curBlock->m_next = *ppHead;
+    curBlockWriterHolder.GetRW()->m_next = *ppHead;
     *ppHead = curBlock;
 
 DONE:
@@ -5164,7 +5111,7 @@ DONE:
     _ASSERTE(((UINT_PTR)jumpStub & 7) == 0);
 #endif
 
-    emitBackToBackJump(jumpStub, (void*) target);
+    emitBackToBackJump(jumpStub, jumpStubRW, (void*) target);
 
 #ifdef FEATURE_PERFMAP
     PerfMap::LogStubs(__FUNCTION__, "emitBackToBackJump", (PCODE)jumpStub, BACK_TO_BACK_JUMP_ALLOCATE_SIZE);
@@ -5181,7 +5128,7 @@ DONE:
 
     pJumpStubCache->m_Table.Add(entry);
 
-    curBlock->m_used++;    // record that we have used up one more jumpStub in the block
+    curBlockWriterHolder.GetRW()->m_used++;    // record that we have used up one more jumpStub in the block
 
     // Every time we create a new jumpStub thunk one of these counters is incremented
     if (isLCG)
@@ -5231,7 +5178,7 @@ DONE:
 
     RETURN((PCODE)jumpStub);
 }
-#endif // !DACCESS_COMPILE && !CROSSGEN_COMPILE
+#endif // !DACCESS_COMPILE
 
 static void GetFuncletStartOffsetsHelper(PCODE pCodeStart, SIZE_T size, SIZE_T ofsAdj,
     PTR_RUNTIME_FUNCTION pFunctionEntry, TADDR moduleBase,
@@ -5304,21 +5251,11 @@ static void EnumRuntimeFunctionEntriesToFindEntry(PTR_RUNTIME_FUNCTION pRtf, PTR
         return;
     }
 
-    // Review conversion of size_t to ULONG.
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable:4267)
-#endif // defined(_MSC_VER)
+    UINT_PTR indexToLocate = pRtf - firstFunctionEntry;
 
-    ULONG indexToLocate = pRtf - firstFunctionEntry;
-
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif // defined(_MSC_VER)
-
-    ULONG low = 0; // index in the function entry table of low end of search range
-    ULONG high = (pProgramExceptionsDirectory->Size) / sizeof(T_RUNTIME_FUNCTION) - 1; // index of high end of search range
-    ULONG mid = (low + high) / 2; // index of entry to be compared
+    UINT_PTR low = 0; // index in the function entry table of low end of search range
+    UINT_PTR high = (pProgramExceptionsDirectory->Size) / sizeof(T_RUNTIME_FUNCTION) - 1; // index of high end of search range
+    UINT_PTR mid = (low + high) / 2; // index of entry to be compared
 
     if (indexToLocate > high)
     {
@@ -5343,768 +5280,7 @@ static void EnumRuntimeFunctionEntriesToFindEntry(PTR_RUNTIME_FUNCTION pRtf, PTR
 }
 #endif // FEATURE_EH_FUNCLETS
 
-#ifdef FEATURE_PREJIT
-//***************************************************************************************
-//***************************************************************************************
-
-#ifndef DACCESS_COMPILE
-
-NativeImageJitManager::NativeImageJitManager()
-{
-    WRAPPER_NO_CONTRACT;
-}
-
-#endif // #ifndef DACCESS_COMPILE
-
-GCInfoToken NativeImageJitManager::GetGCInfoToken(const METHODTOKEN& MethodToken)
-{
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-        HOST_NOCALLS;
-        SUPPORTS_DAC;
-    } CONTRACTL_END;
-
-    PTR_RUNTIME_FUNCTION pRuntimeFunction = dac_cast<PTR_RUNTIME_FUNCTION>(MethodToken.m_pCodeHeader);
-    TADDR baseAddress = JitTokenToModuleBase(MethodToken);
-
-#ifndef DACCESS_COMPILE
-    if (g_IBCLogger.InstrEnabled())
-    {
-        PTR_NGenLayoutInfo pNgenLayout = JitTokenToZapModule(MethodToken)->GetNGenLayoutInfo();
-        PTR_MethodDesc pMD = NativeUnwindInfoLookupTable::GetMethodDesc(pNgenLayout, pRuntimeFunction, baseAddress);
-        g_IBCLogger.LogMethodGCInfoAccess(pMD);
-    }
-#endif
-
-    SIZE_T nUnwindDataSize;
-    PTR_VOID pUnwindData = GetUnwindDataBlob(baseAddress, pRuntimeFunction, &nUnwindDataSize);
-
-    // GCInfo immediatelly follows unwind data
-    // GCInfo from an NGEN-ed image is always the current version
-    return{ dac_cast<PTR_BYTE>(pUnwindData) + nUnwindDataSize, GCINFO_VERSION };
-}
-
-unsigned NativeImageJitManager::InitializeEHEnumeration(const METHODTOKEN& MethodToken, EH_CLAUSE_ENUMERATOR* pEnumState)
-{
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-    NGenLayoutInfo * pNgenLayout = JitTokenToZapModule(MethodToken)->GetNGenLayoutInfo();
-
-    //early out if the method doesn't have EH info bit set.
-    if (!NativeUnwindInfoLookupTable::HasExceptionInfo(pNgenLayout, PTR_RUNTIME_FUNCTION(MethodToken.m_pCodeHeader)))
-        return 0;
-
-    PTR_CORCOMPILE_EXCEPTION_LOOKUP_TABLE pExceptionLookupTable = dac_cast<PTR_CORCOMPILE_EXCEPTION_LOOKUP_TABLE>(pNgenLayout->m_ExceptionInfoLookupTable.StartAddress());
-    _ASSERTE(pExceptionLookupTable != NULL);
-
-    SIZE_T size = pNgenLayout->m_ExceptionInfoLookupTable.Size();
-    COUNT_T numLookupTableEntries = (COUNT_T)(size / sizeof(CORCOMPILE_EXCEPTION_LOOKUP_TABLE_ENTRY));
-    // at least 2 entries (1 valid entry + 1 sentinal entry)
-    _ASSERTE(numLookupTableEntries >= 2);
-
-    DWORD methodStartRVA = (DWORD)(JitTokenToStartAddress(MethodToken) - JitTokenToModuleBase(MethodToken));
-
-    COUNT_T ehInfoSize = 0;
-    DWORD exceptionInfoRVA = NativeExceptionInfoLookupTable::LookupExceptionInfoRVAForMethod(pExceptionLookupTable,
-                                                                  numLookupTableEntries,
-                                                                  methodStartRVA,
-                                                                  &ehInfoSize);
-    if (exceptionInfoRVA == 0)
-        return 0;
-
-    pEnumState->iCurrentPos = 0;
-    pEnumState->pExceptionClauseArray = JitTokenToModuleBase(MethodToken) + exceptionInfoRVA;
-
-    return ehInfoSize / sizeof(CORCOMPILE_EXCEPTION_CLAUSE);
-}
-
-PTR_EXCEPTION_CLAUSE_TOKEN NativeImageJitManager::GetNextEHClause(EH_CLAUSE_ENUMERATOR* pEnumState,
-                              EE_ILEXCEPTION_CLAUSE* pEHClauseOut)
-{
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-    unsigned iCurrentPos = pEnumState->iCurrentPos;
-    pEnumState->iCurrentPos++;
-
-    CORCOMPILE_EXCEPTION_CLAUSE* pClause = &(dac_cast<PTR_CORCOMPILE_EXCEPTION_CLAUSE>(pEnumState->pExceptionClauseArray)[iCurrentPos]);
-
-    // copy to the input parmeter, this is a nice abstraction for the future
-    // if we want to compress the Clause encoding, we can do without affecting the call sites
-    pEHClauseOut->TryStartPC = pClause->TryStartPC;
-    pEHClauseOut->TryEndPC = pClause->TryEndPC;
-    pEHClauseOut->HandlerStartPC = pClause->HandlerStartPC;
-    pEHClauseOut->HandlerEndPC = pClause->HandlerEndPC;
-    pEHClauseOut->Flags = pClause->Flags;
-    pEHClauseOut->FilterOffset = pClause->FilterOffset;
-
-    return dac_cast<PTR_EXCEPTION_CLAUSE_TOKEN>(pClause);
-}
-
-#ifndef DACCESS_COMPILE
-
-TypeHandle NativeImageJitManager::ResolveEHClause(EE_ILEXCEPTION_CLAUSE* pEHClause,
-                                              CrawlFrame* pCf)
-{
-    CONTRACTL {
-        THROWS;
-        GC_TRIGGERS;
-    } CONTRACTL_END;
-
-    _ASSERTE(NULL != pCf);
-    _ASSERTE(NULL != pEHClause);
-    _ASSERTE(IsTypedHandler(pEHClause));
-
-    MethodDesc *pMD = PTR_MethodDesc(pCf->GetFunction());
-
-    _ASSERTE(pMD != NULL);
-
-    Module* pModule = pMD->GetModule();
-    PREFIX_ASSUME(pModule != NULL);
-
-    SigTypeContext typeContext(pMD);
-    VarKind k = hasNoVars;
-
-    mdToken typeTok = pEHClause->ClassToken;
-
-    // In the vast majority of cases the code under the "if" below
-    // will not be executed.
-    //
-    // First grab the representative instantiations.  For code
-    // shared by multiple generic instantiations these are the
-    // canonical (representative) instantiation.
-    if (TypeFromToken(typeTok) == mdtTypeSpec)
-    {
-        PCCOR_SIGNATURE pSig;
-        ULONG cSig;
-        IfFailThrow(pModule->GetMDImport()->GetTypeSpecFromToken(typeTok, &pSig, &cSig));
-
-        SigPointer psig(pSig, cSig);
-        k = psig.IsPolyType(&typeContext);
-
-        // Grab the active class and method instantiation.  This exact instantiation is only
-        // needed in the corner case of "generic" exception catching in shared
-        // generic code.  We don't need the exact instantiation if the token
-        // doesn't contain E_T_VAR or E_T_MVAR.
-        if ((k & hasSharableVarsMask) != 0)
-        {
-            Instantiation classInst;
-            Instantiation methodInst;
-            pCf->GetExactGenericInstantiations(&classInst,&methodInst);
-            SigTypeContext::InitTypeContext(pMD,classInst, methodInst,&typeContext);
-        }
-    }
-
-    return ClassLoader::LoadTypeDefOrRefOrSpecThrowing(pModule, typeTok, &typeContext,
-                                                          ClassLoader::ReturnNullIfNotFound);
-}
-
-#endif // #ifndef DACCESS_COMPILE
-
-//-----------------------------------------------------------------------------
-// Ngen info manager
-//-----------------------------------------------------------------------------
-BOOL NativeImageJitManager::GetBoundariesAndVars(
-        const DebugInfoRequest & request,
-        IN FP_IDS_NEW fpNew, IN void * pNewData,
-        OUT ULONG32 * pcMap,
-        OUT ICorDebugInfo::OffsetMapping **ppMap,
-        OUT ULONG32 * pcVars,
-        OUT ICorDebugInfo::NativeVarInfo **ppVars)
-{
-    CONTRACTL {
-        THROWS;       // on OOM.
-        GC_NOTRIGGER; // getting vars shouldn't trigger
-        SUPPORTS_DAC;
-    } CONTRACTL_END;
-
-    // We want the module that the code is instantiated in, not necessarily the one
-    // that it was declared in. This only matters for ngen-generics.
-    MethodDesc * pMD = request.GetMD();
-    Module * pModule = pMD->GetZapModule();
-    PREFIX_ASSUME(pModule != NULL);
-
-    PTR_BYTE pDebugInfo = pModule->GetNativeDebugInfo(pMD);
-
-    // No header created, which means no jit information is available.
-    if (pDebugInfo == NULL)
-        return FALSE;
-
-    // Uncompress. This allocates memory and may throw.
-    CompressDebugInfo::RestoreBoundariesAndVars(
-        fpNew, pNewData, // allocators
-        pDebugInfo,      // input
-        pcMap, ppMap,    // output
-        pcVars, ppVars,  // output
-        FALSE);          // no patchpoint info
-
-    return TRUE;
-}
-
-#ifdef DACCESS_COMPILE
-//
-// Need to write out debug info
-//
-void NativeImageJitManager::EnumMemoryRegionsForMethodDebugInfo(CLRDataEnumMemoryFlags flags, MethodDesc * pMD)
-{
-    SUPPORTS_DAC;
-
-    Module * pModule = pMD->GetZapModule();
-    PREFIX_ASSUME(pModule != NULL);
-    PTR_BYTE pDebugInfo = pModule->GetNativeDebugInfo(pMD);
-
-    if (pDebugInfo != NULL)
-    {
-        CompressDebugInfo::EnumMemoryRegions(flags, pDebugInfo);
-    }
-}
-#endif
-
-PCODE NativeImageJitManager::GetCodeAddressForRelOffset(const METHODTOKEN& MethodToken, DWORD relOffset)
-{
-    WRAPPER_NO_CONTRACT;
-
-    MethodRegionInfo methodRegionInfo;
-    JitTokenToMethodRegionInfo(MethodToken, &methodRegionInfo);
-
-    if (relOffset < methodRegionInfo.hotSize)
-        return methodRegionInfo.hotStartAddress + relOffset;
-
-    SIZE_T coldOffset = relOffset - methodRegionInfo.hotSize;
-    _ASSERTE(coldOffset < methodRegionInfo.coldSize);
-    return methodRegionInfo.coldStartAddress + coldOffset;
-}
-
-BOOL NativeImageJitManager::JitCodeToMethodInfo(RangeSection * pRangeSection,
-                                            PCODE        currentPC,
-                                            MethodDesc** ppMethodDesc,
-                                            EECodeInfo * pCodeInfo)
-{
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-        SUPPORTS_DAC;
-    } CONTRACTL_END;
-
-    TADDR currentInstr = PCODEToPINSTR(currentPC);
-
-    Module * pModule = dac_cast<PTR_Module>(pRangeSection->pHeapListOrZapModule);
-
-    NGenLayoutInfo * pLayoutInfo = pModule->GetNGenLayoutInfo();
-    DWORD iRange = 0;
-
-    if (pLayoutInfo->m_CodeSections[0].IsInRange(currentInstr))
-    {
-        iRange = 0;
-    }
-    else
-    if (pLayoutInfo->m_CodeSections[1].IsInRange(currentInstr))
-    {
-        iRange = 1;
-    }
-    else
-    if (pLayoutInfo->m_CodeSections[2].IsInRange(currentInstr))
-    {
-        iRange = 2;
-    }
-    else
-    {
-        return FALSE;
-    }
-
-    TADDR ImageBase = pRangeSection->LowAddress;
-
-    DWORD RelativePc = (DWORD)(currentInstr - ImageBase);
-
-    PTR_RUNTIME_FUNCTION FunctionEntry;
-
-    if (iRange == 2)
-    {
-        int ColdMethodIndex = NativeUnwindInfoLookupTable::LookupUnwindInfoForMethod(RelativePc,
-                                                                               pLayoutInfo->m_pRuntimeFunctions[2],
-                                                                               0,
-                                                                               pLayoutInfo->m_nRuntimeFunctions[2] - 1);
-
-        if (ColdMethodIndex < 0)
-            return FALSE;
-
-#ifdef FEATURE_EH_FUNCLETS
-        // Save the raw entry
-        int RawColdMethodIndex = ColdMethodIndex;
-
-        PTR_CORCOMPILE_COLD_METHOD_ENTRY pColdCodeMap = pLayoutInfo->m_ColdCodeMap;
-
-        while (pColdCodeMap[ColdMethodIndex].mainFunctionEntryRVA == 0)
-            ColdMethodIndex--;
-
-        FunctionEntry = dac_cast<PTR_RUNTIME_FUNCTION>(ImageBase + pColdCodeMap[ColdMethodIndex].mainFunctionEntryRVA);
-#else
-        DWORD ColdUnwindData = pLayoutInfo->m_pRuntimeFunctions[2][ColdMethodIndex].UnwindData;
-        _ASSERTE((ColdUnwindData & RUNTIME_FUNCTION_INDIRECT) != 0);
-        FunctionEntry = dac_cast<PTR_RUNTIME_FUNCTION>(ImageBase + (ColdUnwindData & ~RUNTIME_FUNCTION_INDIRECT));
-#endif
-
-        if (ppMethodDesc)
-        {
-            DWORD methodDescRVA;
-
-            COUNT_T iIndex = (COUNT_T)(FunctionEntry - pLayoutInfo->m_pRuntimeFunctions[0]);
-            if (iIndex >= pLayoutInfo->m_nRuntimeFunctions[0])
-            {
-                iIndex = (COUNT_T)(FunctionEntry - pLayoutInfo->m_pRuntimeFunctions[1]);
-                _ASSERTE(iIndex < pLayoutInfo->m_nRuntimeFunctions[1]);
-                methodDescRVA = pLayoutInfo->m_MethodDescs[1][iIndex];
-            }
-            else
-            {
-                methodDescRVA = pLayoutInfo->m_MethodDescs[0][iIndex];
-            }
-            _ASSERTE(methodDescRVA != NULL);
-
-            // Note that the MethodDesc does not have to be restored. (It happens when we are called
-            // from SetupGcCoverageForNativeMethod.)
-            *ppMethodDesc = PTR_MethodDesc((methodDescRVA & ~HAS_EXCEPTION_INFO_MASK) + ImageBase);
-        }
-
-        if (pCodeInfo)
-        {
-            PTR_RUNTIME_FUNCTION ColdFunctionTable = pLayoutInfo->m_pRuntimeFunctions[2];
-
-            PTR_RUNTIME_FUNCTION ColdFunctionEntry =  ColdFunctionTable + ColdMethodIndex;
-            DWORD coldCodeOffset = (DWORD)(RelativePc - RUNTIME_FUNCTION__BeginAddress(ColdFunctionEntry));
-            pCodeInfo->m_relOffset = pLayoutInfo->m_ColdCodeMap[ColdMethodIndex].hotCodeSize + coldCodeOffset;
-
-            // We are using RUNTIME_FUNCTION as METHODTOKEN
-            pCodeInfo->m_methodToken = METHODTOKEN(pRangeSection, dac_cast<TADDR>(FunctionEntry));
-
-#ifdef FEATURE_EH_FUNCLETS
-            PTR_RUNTIME_FUNCTION RawColdFunctionEntry = ColdFunctionTable + RawColdMethodIndex;
-#ifdef TARGET_AMD64
-            if ((RawColdFunctionEntry->UnwindData & RUNTIME_FUNCTION_INDIRECT) != 0)
-            {
-                RawColdFunctionEntry = PTR_RUNTIME_FUNCTION(ImageBase + (RawColdFunctionEntry->UnwindData & ~RUNTIME_FUNCTION_INDIRECT));
-            }
-#endif // TARGET_AMD64
-            pCodeInfo->m_pFunctionEntry = RawColdFunctionEntry;
-#endif
-        }
-    }
-    else
-    {
-        PTR_DWORD pRuntimeFunctionLookupTable = dac_cast<PTR_DWORD>(pLayoutInfo->m_UnwindInfoLookupTable[iRange]);
-
-        _ASSERTE(pRuntimeFunctionLookupTable != NULL);
-
-        DWORD RelativeToCodeStart = (DWORD)(currentInstr - dac_cast<TADDR>(pLayoutInfo->m_CodeSections[iRange].StartAddress()));
-        COUNT_T iStrideIndex = RelativeToCodeStart / RUNTIME_FUNCTION_LOOKUP_STRIDE;
-
-        // The lookup table may not be big enough to cover the entire code range if there was padding inserted during NGen image layout.
-        // The last entry is lookup table entry covers the rest of the code range in this case.
-        if (iStrideIndex >= pLayoutInfo->m_UnwindInfoLookupTableEntryCount[iRange])
-            iStrideIndex = pLayoutInfo->m_UnwindInfoLookupTableEntryCount[iRange] - 1;
-
-        int Low = pRuntimeFunctionLookupTable[iStrideIndex];
-        int High = pRuntimeFunctionLookupTable[iStrideIndex+1];
-
-        PTR_RUNTIME_FUNCTION FunctionTable = pLayoutInfo->m_pRuntimeFunctions[iRange];
-        PTR_DWORD pMethodDescs = pLayoutInfo->m_MethodDescs[iRange];
-
-        int MethodIndex = NativeUnwindInfoLookupTable::LookupUnwindInfoForMethod(RelativePc,
-                                                                               FunctionTable,
-                                                                               Low,
-                                                                               High);
-
-        if (MethodIndex < 0)
-            return FALSE;
-
-#ifdef FEATURE_EH_FUNCLETS
-        // Save the raw entry
-        PTR_RUNTIME_FUNCTION RawFunctionEntry = FunctionTable + MethodIndex;;
-
-        // Skip funclets to get the method desc
-        while (pMethodDescs[MethodIndex] == 0)
-            MethodIndex--;
-#endif
-
-        FunctionEntry = FunctionTable + MethodIndex;
-
-        if (ppMethodDesc)
-        {
-            DWORD methodDescRVA = pMethodDescs[MethodIndex];
-            _ASSERTE(methodDescRVA != NULL);
-
-            // Note that the MethodDesc does not have to be restored. (It happens when we are called
-            // from SetupGcCoverageForNativeMethod.)
-            *ppMethodDesc = PTR_MethodDesc((methodDescRVA & ~HAS_EXCEPTION_INFO_MASK) + ImageBase);
-
-            // We are likely executing the code already or going to execute it soon. However, there are a few cases like
-            // code:MethodTable::GetMethodDescForSlot where it is not the case. Log the code access here to avoid these
-            // cases from touching cold code maps.
-            g_IBCLogger.LogMethodCodeAccess(*ppMethodDesc);
-        }
-
-        // Get the function entry that corresponds to the real method desc.
-        _ASSERTE((RelativePc >= RUNTIME_FUNCTION__BeginAddress(FunctionEntry)));
-
-        if (pCodeInfo)
-        {
-            pCodeInfo->m_relOffset = (DWORD)
-                (RelativePc - RUNTIME_FUNCTION__BeginAddress(FunctionEntry));
-
-            // We are using RUNTIME_FUNCTION as METHODTOKEN
-            pCodeInfo->m_methodToken = METHODTOKEN(pRangeSection, dac_cast<TADDR>(FunctionEntry));
-
-#ifdef FEATURE_EH_FUNCLETS
-            AMD64_ONLY(_ASSERTE((RawFunctionEntry->UnwindData & RUNTIME_FUNCTION_INDIRECT) == 0));
-            pCodeInfo->m_pFunctionEntry = RawFunctionEntry;
-#endif
-        }
-    }
-
-    return TRUE;
-}
-
-#if defined(FEATURE_EH_FUNCLETS)
-PTR_RUNTIME_FUNCTION NativeImageJitManager::LazyGetFunctionEntry(EECodeInfo * pCodeInfo)
-{
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-    if (!pCodeInfo->IsValid())
-    {
-        return NULL;
-    }
-
-    // code:NativeImageJitManager::JitCodeToMethodInfo computes PTR_RUNTIME_FUNCTION eagerly. This path is only
-    // reachable via EECodeInfo::GetMainFunctionInfo, and so we can just return the main entry.
-    _ASSERTE(pCodeInfo->GetRelOffset() == 0);
-
-    return dac_cast<PTR_RUNTIME_FUNCTION>(pCodeInfo->GetMethodToken().m_pCodeHeader);
-}
-
-TADDR NativeImageJitManager::GetFuncletStartAddress(EECodeInfo * pCodeInfo)
-{
-    LIMITED_METHOD_DAC_CONTRACT;
-
-#if defined(TARGET_ARM) || defined(TARGET_ARM64)
-    NGenLayoutInfo * pLayoutInfo = JitTokenToZapModule(pCodeInfo->GetMethodToken())->GetNGenLayoutInfo();
-
-    if (pLayoutInfo->m_CodeSections[2].IsInRange(pCodeInfo->GetCodeAddress()))
-    {
-        // If the address is in the cold section, then we assume it is cold main function
-        // code, NOT a funclet. So, don't do the backward walk: just return the start address
-        // of the main function.
-        // @ARMTODO: Handle hot/cold splitting with EH funclets
-        return pCodeInfo->GetStartAddress();
-    }
-#endif
-
-    return IJitManager::GetFuncletStartAddress(pCodeInfo);
-}
-
-DWORD NativeImageJitManager::GetFuncletStartOffsets(const METHODTOKEN& MethodToken, DWORD* pStartFuncletOffsets, DWORD dwLength)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    PTR_RUNTIME_FUNCTION pFirstFuncletFunctionEntry = dac_cast<PTR_RUNTIME_FUNCTION>(MethodToken.m_pCodeHeader) + 1;
-
-    TADDR moduleBase = JitTokenToModuleBase(MethodToken);
-    DWORD nFunclets = 0;
-    MethodRegionInfo regionInfo;
-    JitTokenToMethodRegionInfo(MethodToken, &regionInfo);
-
-    // pFirstFuncletFunctionEntry will work for ARM when passed to GetFuncletStartOffsetsHelper()
-    // even if it is a fragment of the main body and not a RUNTIME_FUNCTION for the beginning
-    // of the first hot funclet, because GetFuncletStartOffsetsHelper() will skip all the function
-    // fragments until the first funclet, if any, is found.
-
-    GetFuncletStartOffsetsHelper(regionInfo.hotStartAddress, regionInfo.hotSize, 0,
-        pFirstFuncletFunctionEntry, moduleBase,
-        &nFunclets, pStartFuncletOffsets, dwLength);
-
-    // There are no funclets in cold section on ARM yet
-    // @ARMTODO: support hot/cold splitting in functions with EH
-#if !defined(TARGET_ARM) && !defined(TARGET_ARM64)
-    if (regionInfo.coldSize != NULL)
-    {
-        NGenLayoutInfo * pLayoutInfo = JitTokenToZapModule(MethodToken)->GetNGenLayoutInfo();
-
-        int iColdMethodIndex = NativeUnwindInfoLookupTable::LookupUnwindInfoForMethod(
-                                                    (DWORD)(regionInfo.coldStartAddress - moduleBase),
-                                                    pLayoutInfo->m_pRuntimeFunctions[2],
-                                                    0,
-                                                    pLayoutInfo->m_nRuntimeFunctions[2] - 1);
-
-        PTR_RUNTIME_FUNCTION pFunctionEntry = pLayoutInfo->m_pRuntimeFunctions[2] + iColdMethodIndex;
-
-        _ASSERTE(regionInfo.coldStartAddress == moduleBase + RUNTIME_FUNCTION__BeginAddress(pFunctionEntry));
-
-#ifdef TARGET_AMD64
-        // Skip cold part of the method body
-        if ((pFunctionEntry->UnwindData & RUNTIME_FUNCTION_INDIRECT) != 0)
-            pFunctionEntry++;
-#endif
-
-        GetFuncletStartOffsetsHelper(regionInfo.coldStartAddress, regionInfo.coldSize, regionInfo.hotSize,
-            pFunctionEntry, moduleBase,
-            &nFunclets, pStartFuncletOffsets, dwLength);
-    }
-#endif // !TARGET_ARM && !_TARGET_ARM64
-
-    return nFunclets;
-}
-
-BOOL NativeImageJitManager::IsFilterFunclet(EECodeInfo * pCodeInfo)
-{
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    if (!pCodeInfo->IsFunclet())
-        return FALSE;
-
-    //
-    // The generic IsFilterFunclet implementation is touching exception handling tables.
-    // It is bad for working set because of it is sometimes called during GC stackwalks.
-    // The optimized version for native images does not touch exception handling tables.
-    //
-
-    NGenLayoutInfo * pLayoutInfo = JitTokenToZapModule(pCodeInfo->GetMethodToken())->GetNGenLayoutInfo();
-
-    SIZE_T size;
-    PTR_VOID pUnwindData = GetUnwindDataBlob(pCodeInfo->GetModuleBase(), pCodeInfo->GetFunctionEntry(), &size);
-    _ASSERTE(pUnwindData != NULL);
-
-    // Personality routine is always the last element of the unwind data
-    DWORD rvaPersonalityRoutine = *(dac_cast<PTR_DWORD>(dac_cast<TADDR>(pUnwindData) + size) - 1);
-
-    BOOL fRet = (pLayoutInfo->m_rvaFilterPersonalityRoutine == rvaPersonalityRoutine);
-
-    // Verify that the optimized implementation is in sync with the slow implementation
-    _ASSERTE(fRet == IJitManager::IsFilterFunclet(pCodeInfo));
-
-    return fRet;
-}
-
-#endif  // FEATURE_EH_FUNCLETS
-
-StubCodeBlockKind NativeImageJitManager::GetStubCodeBlockKind(RangeSection * pRangeSection, PCODE currentPC)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    Module * pZapModule = dac_cast<PTR_Module>(pRangeSection->pHeapListOrZapModule);
-
-    if (pZapModule->IsZappedPrecode(currentPC))
-    {
-        return STUB_CODE_BLOCK_PRECODE;
-    }
-
-    NGenLayoutInfo * pLayoutInfo = pZapModule->GetNGenLayoutInfo();
-    _ASSERTE(pLayoutInfo != NULL);
-
-    if (pLayoutInfo->m_JumpStubs.IsInRange(currentPC))
-    {
-        return STUB_CODE_BLOCK_JUMPSTUB;
-    }
-
-    if (pLayoutInfo->m_StubLinkStubs.IsInRange(currentPC))
-    {
-        return STUB_CODE_BLOCK_STUBLINK;
-    }
-
-    if (pLayoutInfo->m_VirtualMethodThunks.IsInRange(currentPC))
-    {
-        return STUB_CODE_BLOCK_VIRTUAL_METHOD_THUNK;
-    }
-
-    if (pLayoutInfo->m_ExternalMethodThunks.IsInRange(currentPC))
-    {
-        return STUB_CODE_BLOCK_EXTERNAL_METHOD_THUNK;
-    }
-
-    return STUB_CODE_BLOCK_UNKNOWN;
-}
-
-PTR_Module NativeImageJitManager::JitTokenToZapModule(const METHODTOKEN& MethodToken)
-{
-    LIMITED_METHOD_DAC_CONTRACT;
-    return dac_cast<PTR_Module>(MethodToken.m_pRangeSection->pHeapListOrZapModule);
-}
-void NativeImageJitManager::JitTokenToMethodRegionInfo(const METHODTOKEN& MethodToken,
-                                                   MethodRegionInfo * methodRegionInfo)
-{
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-        SUPPORTS_DAC;
-    } CONTRACTL_END;
-
-    _ASSERTE(methodRegionInfo != NULL);
-
-    //
-    // Initialize methodRegionInfo assuming that the method is entirely hot.  This is the common
-    // case (either binary is not procedure split or the current method is all hot).  We can
-    // adjust these values later if necessary.
-    //
-
-    methodRegionInfo->hotStartAddress  = JitTokenToStartAddress(MethodToken);
-    methodRegionInfo->hotSize          = GetCodeManager()->GetFunctionSize(GetGCInfoToken(MethodToken));
-    methodRegionInfo->coldStartAddress = 0;
-    methodRegionInfo->coldSize         = 0;
-
-    RangeSection *rangeSection = MethodToken.m_pRangeSection;
-    PREFIX_ASSUME(rangeSection != NULL);
-
-    Module * pModule = dac_cast<PTR_Module>(rangeSection->pHeapListOrZapModule);
-
-    NGenLayoutInfo * pLayoutInfo = pModule->GetNGenLayoutInfo();
-
-    //
-    // If this module is not procedure split, then we're done.
-    //
-    if (pLayoutInfo->m_CodeSections[2].Size() == 0)
-        return;
-
-    //
-    // Perform a binary search in the cold range section until we find our method
-    //
-
-    TADDR ImageBase = rangeSection->LowAddress;
-
-    int Low = 0;
-    int High = pLayoutInfo->m_nRuntimeFunctions[2] - 1;
-
-    PTR_RUNTIME_FUNCTION pRuntimeFunctionTable = pLayoutInfo->m_pRuntimeFunctions[2];
-    PTR_CORCOMPILE_COLD_METHOD_ENTRY pColdCodeMap = pLayoutInfo->m_ColdCodeMap;
-
-    while (Low <= High)
-    {
-        int Middle = Low + (High - Low) / 2;
-
-        int ColdMethodIndex = Middle;
-
-        PTR_RUNTIME_FUNCTION FunctionEntry;
-
-#ifdef FEATURE_EH_FUNCLETS
-        while (pColdCodeMap[ColdMethodIndex].mainFunctionEntryRVA == 0)
-            ColdMethodIndex--;
-
-        FunctionEntry = dac_cast<PTR_RUNTIME_FUNCTION>(ImageBase + pColdCodeMap[ColdMethodIndex].mainFunctionEntryRVA);
-#else
-        DWORD ColdUnwindData = pRuntimeFunctionTable[ColdMethodIndex].UnwindData;
-        _ASSERTE((ColdUnwindData & RUNTIME_FUNCTION_INDIRECT) != 0);
-        FunctionEntry = dac_cast<PTR_RUNTIME_FUNCTION>(ImageBase + (ColdUnwindData & ~RUNTIME_FUNCTION_INDIRECT));
-#endif
-
-        if (FunctionEntry == dac_cast<PTR_RUNTIME_FUNCTION>(MethodToken.m_pCodeHeader))
-        {
-            PTR_RUNTIME_FUNCTION ColdFunctionEntry = pRuntimeFunctionTable + ColdMethodIndex;
-
-            methodRegionInfo->coldStartAddress = ImageBase + RUNTIME_FUNCTION__BeginAddress(ColdFunctionEntry);
-
-            //
-            // At this point methodRegionInfo->hotSize is set to the total size of
-            // the method obtained from the GC info (we set that in the init code above).
-            // Use that and coldHeader->hotCodeSize to compute the hot and cold code sizes.
-            //
-
-            ULONG hotCodeSize = pColdCodeMap[ColdMethodIndex].hotCodeSize;
-
-            methodRegionInfo->coldSize         = methodRegionInfo->hotSize - hotCodeSize;
-            methodRegionInfo->hotSize          = hotCodeSize;
-
-            return;
-        }
-        else if (FunctionEntry < dac_cast<PTR_RUNTIME_FUNCTION>(MethodToken.m_pCodeHeader))
-        {
-            Low = Middle + 1;
-        }
-        else
-        {
-            // Use ColdMethodIndex to take advantage of entries skipped while looking for method start
-            High = ColdMethodIndex - 1;
-        }
-    }
-
-    //
-    // We didn't find it.  Therefore this method doesn't have a cold section.
-    //
-
-    return;
-}
-
-#ifdef DACCESS_COMPILE
-
-void NativeImageJitManager::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
-{
-    IJitManager::EnumMemoryRegions(flags);
-}
-
-#if defined(FEATURE_EH_FUNCLETS)
-
-//
-// EnumMemoryRegionsForMethodUnwindInfo - enumerate the memory necessary to read the unwind info for the
-// specified method.
-//
-// Note that in theory, a dump generation library could save the unwind information itself without help
-// from us, since it's stored in the image in the standard function table layout for Win64.  However,
-// dump-generation libraries assume that the image will be available at debug time, and if the image
-// isn't available then it is acceptable for stackwalking to break.  For ngen images (which are created
-// on the client), it usually isn't possible to have the image available at debug time, and so for minidumps
-// we must explicitly ensure the unwind information is saved into the dump.
-//
-// Arguments:
-//     flags - EnumMem flags
-//     pMD   - MethodDesc for the method in question
-//
-void NativeImageJitManager::EnumMemoryRegionsForMethodUnwindInfo(CLRDataEnumMemoryFlags flags, EECodeInfo * pCodeInfo)
-{
-    // Get the RUNTIME_FUNCTION entry for this method
-    PTR_RUNTIME_FUNCTION pRtf = pCodeInfo->GetFunctionEntry();
-
-    if (pRtf==NULL)
-    {
-        return;
-    }
-
-    // Enumerate the function entry and other entries needed to locate it in the program exceptions directory
-    Module * pModule = JitTokenToZapModule(pCodeInfo->GetMethodToken());
-    EnumRuntimeFunctionEntriesToFindEntry(pRtf, pModule->GetFile()->GetLoadedNative());
-
-    SIZE_T size;
-    PTR_VOID pUnwindData = GetUnwindDataBlob(pCodeInfo->GetModuleBase(), pRtf, &size);
-    if (pUnwindData != NULL)
-        DacEnumMemoryRegion(PTR_TO_TADDR(pUnwindData), size);
-}
-
-#endif //FEATURE_EH_FUNCLETS
-#endif // #ifdef DACCESS_COMPILE
-
-#endif // FEATURE_PREJIT
-
-#if defined(FEATURE_PREJIT) || defined(FEATURE_READYTORUN)
+#if defined(FEATURE_READYTORUN)
 
 // Return start of exception info for a method, or 0 if the method has no EH info
 DWORD NativeExceptionInfoLookupTable::LookupExceptionInfoRVAForMethod(PTR_CORCOMPILE_EXCEPTION_LOOKUP_TABLE pExceptionLookupTable,
@@ -6123,8 +5299,8 @@ DWORD NativeExceptionInfoLookupTable::LookupExceptionInfoRVAForMethod(PTR_CORCOM
     COUNT_T start = 0;
     COUNT_T end = numLookupEntries - 2;
 
-    // The last entry in the lookup table (end-1) points to a sentinal entry.
-    // The sentinal entry helps to determine the number of EH clauses for the last table entry.
+    // The last entry in the lookup table (end-1) points to a sentinel entry.
+    // The sentinel entry helps to determine the number of EH clauses for the last table entry.
     _ASSERTE(pExceptionLookupTable->ExceptionLookupEntry(numLookupEntries-1)->MethodStartRVA == (DWORD)-1);
 
     // Binary search the lookup table
@@ -6221,266 +5397,86 @@ int NativeUnwindInfoLookupTable::LookupUnwindInfoForMethod(DWORD RelativePc,
     return -1;
 }
 
-#ifdef FEATURE_PREJIT
-BOOL NativeUnwindInfoLookupTable::HasExceptionInfo(NGenLayoutInfo * pNgenLayout, PTR_RUNTIME_FUNCTION pMainRuntimeFunction)
-{
-    LIMITED_METHOD_DAC_CONTRACT;
-    DWORD methodDescRVA = NativeUnwindInfoLookupTable::GetMethodDescRVA(pNgenLayout, pMainRuntimeFunction);
-    return (methodDescRVA & HAS_EXCEPTION_INFO_MASK);
-}
-
-PTR_MethodDesc NativeUnwindInfoLookupTable::GetMethodDesc(NGenLayoutInfo * pNgenLayout, PTR_RUNTIME_FUNCTION pMainRuntimeFunction, TADDR moduleBase)
-{
-    LIMITED_METHOD_DAC_CONTRACT;
-    DWORD methodDescRVA = NativeUnwindInfoLookupTable::GetMethodDescRVA(pNgenLayout, pMainRuntimeFunction);
-    return PTR_MethodDesc((methodDescRVA & ~HAS_EXCEPTION_INFO_MASK) + moduleBase);
-}
-
-DWORD NativeUnwindInfoLookupTable::GetMethodDescRVA(NGenLayoutInfo * pNgenLayout, PTR_RUNTIME_FUNCTION pMainRuntimeFunction)
-{
-    LIMITED_METHOD_DAC_CONTRACT;
-
-    COUNT_T iIndex = (COUNT_T)(pMainRuntimeFunction - pNgenLayout->m_pRuntimeFunctions[0]);
-    DWORD rva = 0;
-    if (iIndex >= pNgenLayout->m_nRuntimeFunctions[0])
-    {
-        iIndex = (COUNT_T)(pMainRuntimeFunction - pNgenLayout->m_pRuntimeFunctions[1]);
-        _ASSERTE(iIndex < pNgenLayout->m_nRuntimeFunctions[1]);
-        rva = pNgenLayout->m_MethodDescs[1][iIndex];
-    }
-    else
-    {
-        rva = pNgenLayout->m_MethodDescs[0][iIndex];
-    }
-    _ASSERTE(rva != 0);
-
-    return rva;
-}
-#endif // FEATURE_PREJIT
-
-#endif // FEATURE_PREJIT || FEATURE_READYTORUN
-
-
-
-#ifdef FEATURE_PREJIT
-
-MethodIterator::MethodIterator(PTR_Module pModule, MethodIteratorOptions mio)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-    Init(pModule, pModule->GetNativeImage(),  mio);
-}
-
-MethodIterator::MethodIterator(PTR_Module pModule, PEDecoder * pPEDecoder, MethodIteratorOptions mio)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-    Init(pModule, pPEDecoder,  mio);
-}
-
-void MethodIterator::Init(PTR_Module pModule, PEDecoder * pPEDecoder, MethodIteratorOptions mio)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-    m_ModuleBase = dac_cast<TADDR>(pPEDecoder->GetBase());
-
-    methodIteratorOptions = mio;
-
-    m_pNgenLayout = pModule->GetNGenLayoutInfo();
-
-    m_fHotMethodsDone = FALSE;
-    m_CurrentRuntimeFunctionIndex = -1;
-    m_CurrentColdRuntimeFunctionIndex = 0;
-}
-
-BOOL MethodIterator::Next()
+int HotColdMappingLookupTable::LookupMappingForMethod(ReadyToRunInfo* pInfo, ULONG MethodIndex)
 {
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
+        SUPPORTS_DAC;
     } CONTRACTL_END;
 
-    m_CurrentRuntimeFunctionIndex ++;
-
-    if (!m_fHotMethodsDone)
+    if (pInfo->m_nHotColdMap == 0)
     {
-        //iterate the hot methods
-        if (methodIteratorOptions & Hot)
-        {
-#ifdef FEATURE_EH_FUNCLETS
-            //Skip to the next method.
-            // skip over method fragments and funclets.
-            while (m_CurrentRuntimeFunctionIndex < m_pNgenLayout->m_nRuntimeFunctions[0])
-            {
-                if (m_pNgenLayout->m_MethodDescs[0][m_CurrentRuntimeFunctionIndex] != 0)
-                    return TRUE;
-                m_CurrentRuntimeFunctionIndex++;
-            }
-#else
-            if (m_CurrentRuntimeFunctionIndex < m_pNgenLayout->m_nRuntimeFunctions[0])
-                return TRUE;
-#endif
-        }
-        m_CurrentRuntimeFunctionIndex = 0;
-        m_fHotMethodsDone = TRUE;
+        return -1;
     }
 
-    if (methodIteratorOptions & Unprofiled)
+    // Casting the lookup table size to an int is safe:
+    // We index the RUNTIME_FUNCTION table with ints, and the lookup table
+    // contains a subset of the indices in the RUNTIME_FUNCTION table.
+    // Thus, |lookup table| <= |RUNTIME_FUNCTION table|.
+    _ASSERTE(pInfo->m_nHotColdMap <= pInfo->m_nRuntimeFunctions);
+    const int nLookupTable = (int)(pInfo->m_nHotColdMap);
+
+    // The lookup table contains pairs of hot/cold indices, and thus should have an even size.
+    _ASSERTE((nLookupTable % 2) == 0);
+    int high = ((nLookupTable - 1) / 2);
+    int low  = 0;
+
+    const int indexCorrection = (int)(MethodIndex < pInfo->m_pHotColdMap[0]);
+
+    // Binary search the lookup table.
+    // Use linear search once we get down to a small number of elements
+    // to avoid binary search overhead.
+    while (high - low > 10)
     {
-#ifdef FEATURE_EH_FUNCLETS
-         //Skip to the next method.
-        // skip over method fragments and funclets.
-        while (m_CurrentRuntimeFunctionIndex < m_pNgenLayout->m_nRuntimeFunctions[1])
+        const int middle = low + (high - low) / 2;
+        const int index = (middle * 2) + indexCorrection;
+
+        if (MethodIndex < pInfo->m_pHotColdMap[index])
         {
-            if (m_pNgenLayout->m_MethodDescs[1][m_CurrentRuntimeFunctionIndex] != 0)
-                return TRUE;
-            m_CurrentRuntimeFunctionIndex++;
-        }
-#else
-        if (m_CurrentRuntimeFunctionIndex < m_pNgenLayout->m_nRuntimeFunctions[1])
-            return TRUE;
-#endif
-    }
-
-    return FALSE;
-}
-
-PTR_MethodDesc MethodIterator::GetMethodDesc()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    return NativeUnwindInfoLookupTable::GetMethodDesc(m_pNgenLayout, GetRuntimeFunction(), m_ModuleBase);
-}
-
-GCInfoToken MethodIterator::GetGCInfoToken()
-{
-    LIMITED_METHOD_CONTRACT;
-
-    // get the gc info from the RT function
-    SIZE_T size;
-    PTR_VOID pUnwindData = GetUnwindDataBlob(m_ModuleBase, GetRuntimeFunction(), &size);
-    PTR_VOID gcInfo = (PTR_VOID)((PTR_BYTE)pUnwindData + size);
-    // MethodIterator is used to iterate over methods of an NgenImage.
-    // So, GcInfo version is always current
-    return{ gcInfo, GCINFO_VERSION };
-}
-
-TADDR MethodIterator::GetMethodStartAddress()
-{
-    LIMITED_METHOD_CONTRACT;
-
-    return m_ModuleBase + RUNTIME_FUNCTION__BeginAddress(GetRuntimeFunction());
-}
-
-TADDR MethodIterator::GetMethodColdStartAddress()
-{
-    LIMITED_METHOD_CONTRACT;
-
-    PTR_RUNTIME_FUNCTION CurrentFunctionEntry = GetRuntimeFunction();
-
-    //
-    // Catch up with hot code
-    //
-    for ( ; m_CurrentColdRuntimeFunctionIndex < m_pNgenLayout->m_nRuntimeFunctions[2]; m_CurrentColdRuntimeFunctionIndex++)
-    {
-        PTR_RUNTIME_FUNCTION ColdFunctionEntry = m_pNgenLayout->m_pRuntimeFunctions[2] + m_CurrentColdRuntimeFunctionIndex;
-
-        PTR_RUNTIME_FUNCTION FunctionEntry;
-
-#ifdef FEATURE_EH_FUNCLETS
-        DWORD MainFunctionEntryRVA = m_pNgenLayout->m_ColdCodeMap[m_CurrentColdRuntimeFunctionIndex].mainFunctionEntryRVA;
-
-        if (MainFunctionEntryRVA == 0)
-            continue;
-
-        FunctionEntry = dac_cast<PTR_RUNTIME_FUNCTION>(m_ModuleBase + MainFunctionEntryRVA);
-#else
-        DWORD ColdUnwindData = ColdFunctionEntry->UnwindData;
-        _ASSERTE((ColdUnwindData & RUNTIME_FUNCTION_INDIRECT) != 0);
-        FunctionEntry = dac_cast<PTR_RUNTIME_FUNCTION>(m_ModuleBase + (ColdUnwindData & ~RUNTIME_FUNCTION_INDIRECT));
-#endif
-
-        if (CurrentFunctionEntry == FunctionEntry)
-        {
-            // we found a match
-            return m_ModuleBase + RUNTIME_FUNCTION__BeginAddress(ColdFunctionEntry);
+            high = middle - 1;
         }
         else
-        if (CurrentFunctionEntry < FunctionEntry)
         {
-            // method does not have cold code
-            return NULL;
+            low = middle;
         }
     }
 
-    return NULL;
-}
+    // In each pair of indices in lookup table, the first index is of the cold fragment.
+    const bool isColdCode = (indexCorrection == 0);
 
-PTR_RUNTIME_FUNCTION MethodIterator::GetRuntimeFunction()
-{
-    LIMITED_METHOD_DAC_CONTRACT;
-    _ASSERTE(m_CurrentRuntimeFunctionIndex >= 0);
-    _ASSERTE(m_CurrentRuntimeFunctionIndex < (m_fHotMethodsDone ? m_pNgenLayout->m_nRuntimeFunctions[1] : m_pNgenLayout->m_nRuntimeFunctions[0]));
-    return (m_fHotMethodsDone ? m_pNgenLayout->m_pRuntimeFunctions[1] : m_pNgenLayout->m_pRuntimeFunctions[0]) + m_CurrentRuntimeFunctionIndex;
-}
-
-ULONG MethodIterator::GetHotCodeSize()
-{
-    LIMITED_METHOD_CONTRACT;
-    _ASSERTE(GetMethodColdStartAddress() != NULL);
-    return m_pNgenLayout->m_ColdCodeMap[m_CurrentColdRuntimeFunctionIndex].hotCodeSize;
-}
-
-void MethodIterator::GetMethodRegionInfo(IJitManager::MethodRegionInfo *methodRegionInfo)
-{
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-    } CONTRACTL_END;
-
-    methodRegionInfo->hotStartAddress  = GetMethodStartAddress();
-    methodRegionInfo->coldStartAddress = GetMethodColdStartAddress();
-    GCInfoToken gcInfoToken = GetGCInfoToken();
-    methodRegionInfo->hotSize          = ExecutionManager::GetNativeImageJitManager()->GetCodeManager()->GetFunctionSize(gcInfoToken);
-    methodRegionInfo->coldSize         = 0;
-
-    if (methodRegionInfo->coldStartAddress != NULL)
+    for (int i = low; i <= high; ++i)
     {
-        //
-        // At this point methodRegionInfo->hotSize is set to the total size of
-        // the method obtained from the GC info (we set that in the init code above).
-        // Use that and pCMH->hotCodeSize to compute the hot and cold code sizes.
-        //
+        const int index = (i * 2);
 
-        ULONG hotCodeSize = GetHotCodeSize();
+        if (pInfo->m_pHotColdMap[index + indexCorrection] == MethodIndex)
+        {
+            if (isColdCode)
+            {
+                return index + 1;
+            }
 
-        methodRegionInfo->coldSize         = methodRegionInfo->hotSize - hotCodeSize;
-        methodRegionInfo->hotSize          = hotCodeSize;
+            return index;
+        }
+        else if (isColdCode && (MethodIndex > pInfo->m_pHotColdMap[index]))
+        {
+            // If MethodIndex is a cold funclet from a cold block, the above search will fail.
+            // To get its corresponding hot block, find the cold block containing the funclet,
+            // then use the lookup table.
+            // The cold funclet's MethodIndex will be greater than its cold block's MethodIndex,
+            // but less than the next cold block's MethodIndex in the lookup table.
+            const bool isFuncletIndex = ((index + 2) == nLookupTable) || (MethodIndex < pInfo->m_pHotColdMap[index + 2]);
+
+            if (isFuncletIndex)
+            {
+                return index + 1;
+            }
+        }
     }
+
+    return -1;
 }
 
-#endif // FEATURE_PREJIT
-
-
-
-#ifdef FEATURE_READYTORUN
 
 //***************************************************************************************
 //***************************************************************************************
@@ -6499,11 +5495,10 @@ ReadyToRunInfo * ReadyToRunJitManager::JitTokenToReadyToRunInfo(const METHODTOKE
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        HOST_NOCALLS;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
-    return dac_cast<PTR_Module>(MethodToken.m_pRangeSection->pHeapListOrZapModule)->GetReadyToRunInfo();
+    return MethodToken.m_pRangeSection->_pR2RModule->GetReadyToRunInfo();
 }
 
 UINT32 ReadyToRunJitManager::JitTokenToGCInfoVersion(const METHODTOKEN& MethodToken)
@@ -6511,13 +5506,12 @@ UINT32 ReadyToRunJitManager::JitTokenToGCInfoVersion(const METHODTOKEN& MethodTo
     CONTRACTL{
         NOTHROW;
         GC_NOTRIGGER;
-        HOST_NOCALLS;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
     READYTORUN_HEADER * header = JitTokenToReadyToRunInfo(MethodToken)->GetReadyToRunHeader();
 
-    return GCInfoToken::ReadyToRunVersionToGcInfoVersion(header->MajorVersion);
+    return GCInfoToken::ReadyToRunVersionToGcInfoVersion(header->MajorVersion, header->MinorVersion);
 }
 
 PTR_RUNTIME_FUNCTION ReadyToRunJitManager::JitTokenToRuntimeFunction(const METHODTOKEN& MethodToken)
@@ -6525,7 +5519,6 @@ PTR_RUNTIME_FUNCTION ReadyToRunJitManager::JitTokenToRuntimeFunction(const METHO
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        HOST_NOCALLS;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
@@ -6537,7 +5530,6 @@ TADDR ReadyToRunJitManager::JitTokenToStartAddress(const METHODTOKEN& MethodToke
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        HOST_NOCALLS;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
@@ -6550,26 +5542,16 @@ GCInfoToken ReadyToRunJitManager::GetGCInfoToken(const METHODTOKEN& MethodToken)
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        HOST_NOCALLS;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
     PTR_RUNTIME_FUNCTION pRuntimeFunction = JitTokenToRuntimeFunction(MethodToken);
     TADDR baseAddress = JitTokenToModuleBase(MethodToken);
 
-#ifndef DACCESS_COMPILE
-    if (g_IBCLogger.InstrEnabled())
-    {
-        ReadyToRunInfo * pInfo = JitTokenToReadyToRunInfo(MethodToken);
-        MethodDesc * pMD = pInfo->GetMethodDescForEntryPoint(JitTokenToStartAddress(MethodToken));
-        g_IBCLogger.LogMethodGCInfoAccess(pMD);
-    }
-#endif
-
     SIZE_T nUnwindDataSize;
     PTR_VOID pUnwindData = GetUnwindDataBlob(baseAddress, pRuntimeFunction, &nUnwindDataSize);
 
-    // GCInfo immediatelly follows unwind data
+    // GCInfo immediately follows unwind data
     PTR_BYTE gcInfo = dac_cast<PTR_BYTE>(pUnwindData) + nUnwindDataSize;
     UINT32 gcInfoVersion = JitTokenToGCInfoVersion(MethodToken);
 
@@ -6594,7 +5576,7 @@ unsigned ReadyToRunJitManager::InitializeEHEnumeration(const METHODTOKEN& Method
     PTR_CORCOMPILE_EXCEPTION_LOOKUP_TABLE pExceptionLookupTable = dac_cast<PTR_CORCOMPILE_EXCEPTION_LOOKUP_TABLE>(pLayout->GetRvaData(pExceptionInfoDir->VirtualAddress));
 
     COUNT_T numLookupTableEntries = (COUNT_T)(pExceptionInfoDir->Size / sizeof(CORCOMPILE_EXCEPTION_LOOKUP_TABLE_ENTRY));
-    // at least 2 entries (1 valid entry + 1 sentinal entry)
+    // at least 2 entries (1 valid entry + 1 sentinel entry)
     _ASSERTE(numLookupTableEntries >= 2);
 
     DWORD methodStartRVA = (DWORD)(JitTokenToStartAddress(MethodToken) - JitTokenToModuleBase(MethodToken));
@@ -6626,7 +5608,7 @@ PTR_EXCEPTION_CLAUSE_TOKEN ReadyToRunJitManager::GetNextEHClause(EH_CLAUSE_ENUME
 
     CORCOMPILE_EXCEPTION_CLAUSE* pClause = &(dac_cast<PTR_CORCOMPILE_EXCEPTION_CLAUSE>(pEnumState->pExceptionClauseArray)[iCurrentPos]);
 
-    // copy to the input parmeter, this is a nice abstraction for the future
+    // copy to the input parameter, this is a nice abstraction for the future
     // if we want to compress the Clause encoding, we can do without affecting the call sites
     pEHClauseOut->TryStartPC = pClause->TryStartPC;
     pEHClauseOut->TryEndPC = pClause->TryEndPC;
@@ -6649,9 +5631,9 @@ StubCodeBlockKind ReadyToRunJitManager::GetStubCodeBlockKind(RangeSection * pRan
     }
     CONTRACTL_END;
 
-    DWORD rva = (DWORD)(currentPC - pRangeSection->LowAddress);
+    DWORD rva = (DWORD)(currentPC - pRangeSection->_range.RangeStart());
 
-    PTR_ReadyToRunInfo pReadyToRunInfo = dac_cast<PTR_Module>(pRangeSection->pHeapListOrZapModule)->GetReadyToRunInfo();
+    PTR_ReadyToRunInfo pReadyToRunInfo = pRangeSection->_pR2RModule->GetReadyToRunInfo();
 
     PTR_IMAGE_DATA_DIRECTORY pDelayLoadMethodCallThunksDir = pReadyToRunInfo->GetDelayMethodCallThunksSection();
     if (pDelayLoadMethodCallThunksDir != NULL)
@@ -6686,38 +5668,7 @@ TypeHandle ReadyToRunJitManager::ResolveEHClause(EE_ILEXCEPTION_CLAUSE* pEHClaus
     PREFIX_ASSUME(pModule != NULL);
 
     SigTypeContext typeContext(pMD);
-    VarKind k = hasNoVars;
-
     mdToken typeTok = pEHClause->ClassToken;
-
-    // In the vast majority of cases the code un der the "if" below
-    // will not be executed.
-    //
-    // First grab the representative instantiations.  For code
-    // shared by multiple generic instantiations these are the
-    // canonical (representative) instantiation.
-    if (TypeFromToken(typeTok) == mdtTypeSpec)
-    {
-        PCCOR_SIGNATURE pSig;
-        ULONG cSig;
-        IfFailThrow(pModule->GetMDImport()->GetTypeSpecFromToken(typeTok, &pSig, &cSig));
-
-        SigPointer psig(pSig, cSig);
-        k = psig.IsPolyType(&typeContext);
-
-        // Grab the active class and method instantiation.  This exact instantiation is only
-        // needed in the corner case of "generic" exception catching in shared
-        // generic code.  We don't need the exact instantiation if the token
-        // doesn't contain E_T_VAR or E_T_MVAR.
-        if ((k & hasSharableVarsMask) != 0)
-        {
-            Instantiation classInst;
-            Instantiation methodInst;
-            pCf->GetExactGenericInstantiations(&classInst,&methodInst);
-            SigTypeContext::InitTypeContext(pMD,classInst, methodInst,&typeContext);
-        }
-    }
-
     return ClassLoader::LoadTypeDefOrRefOrSpecThrowing(pModule, typeTok, &typeContext,
                                                           ClassLoader::ReturnNullIfNotFound);
 }
@@ -6761,6 +5712,17 @@ BOOL ReadyToRunJitManager::GetBoundariesAndVars(
         FALSE);          // no patchpoint info
 
     return TRUE;
+}
+
+BOOL ReadyToRunJitManager::GetRichDebugInfo(
+    const DebugInfoRequest& request,
+    IN FP_IDS_NEW fpNew, IN void* pNewData,
+    OUT ICorDebugInfo::InlineTreeNode** ppInlineTree,
+    OUT ULONG32* pNumInlineTree,
+    OUT ICorDebugInfo::RichOffsetMapping** ppRichMappings,
+    OUT ULONG32* pNumRichMappings)
+{
+    return FALSE;
 }
 
 #ifdef DACCESS_COMPILE
@@ -6812,8 +5774,6 @@ BOOL ReadyToRunJitManager::JitCodeToMethodInfo(RangeSection * pRangeSection,
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
-    // READYTORUN: FUTURE: Hot-cold spliting
-
     // If the address is in a thunk, return NULL.
     if (GetStubCodeBlockKind(pRangeSection, currentPC) != STUB_CODE_BLOCK_UNKNOWN)
     {
@@ -6822,11 +5782,11 @@ BOOL ReadyToRunJitManager::JitCodeToMethodInfo(RangeSection * pRangeSection,
 
     TADDR currentInstr = PCODEToPINSTR(currentPC);
 
-    TADDR ImageBase = pRangeSection->LowAddress;
+    TADDR ImageBase = pRangeSection->_range.RangeStart();
 
     DWORD RelativePc = (DWORD)(currentInstr - ImageBase);
 
-    Module * pModule = dac_cast<PTR_Module>(pRangeSection->pHeapListOrZapModule);
+    Module * pModule = pRangeSection->_pR2RModule;
     ReadyToRunInfo * pInfo = pModule->GetReadyToRunInfo();
 
     COUNT_T nRuntimeFunctions = pInfo->m_nRuntimeFunctions;
@@ -6852,6 +5812,15 @@ BOOL ReadyToRunJitManager::JitCodeToMethodInfo(RangeSection * pRangeSection,
     // Save the raw entry
     PTR_RUNTIME_FUNCTION RawFunctionEntry = pRuntimeFunctions + MethodIndex;
 
+    ULONG UMethodIndex = (ULONG)MethodIndex;
+
+    const int lookupIndex = HotColdMappingLookupTable::LookupMappingForMethod(pInfo, (ULONG)MethodIndex);
+    if ((lookupIndex != -1) && ((lookupIndex & 1) == 1))
+    {
+        // If the MethodIndex happens to be the cold code block, turn it into the associated hot code block
+        MethodIndex = pInfo->m_pHotColdMap[lookupIndex];
+    }
+
     MethodDesc *pMethodDesc;
     while ((pMethodDesc = pInfo->GetMethodDescForEntryPoint(ImageBase + RUNTIME_FUNCTION__BeginAddress(pRuntimeFunctions + MethodIndex))) == NULL)
         MethodIndex--;
@@ -6871,9 +5840,6 @@ BOOL ReadyToRunJitManager::JitCodeToMethodInfo(RangeSection * pRangeSection,
 
     if (pCodeInfo)
     {
-        pCodeInfo->m_relOffset = (DWORD)
-            (RelativePc - RUNTIME_FUNCTION__BeginAddress(FunctionEntry));
-
         // We are using RUNTIME_FUNCTION as METHODTOKEN
         pCodeInfo->m_methodToken = METHODTOKEN(pRangeSection, dac_cast<TADDR>(FunctionEntry));
 
@@ -6881,6 +5847,17 @@ BOOL ReadyToRunJitManager::JitCodeToMethodInfo(RangeSection * pRangeSection,
         AMD64_ONLY(_ASSERTE((RawFunctionEntry->UnwindData & RUNTIME_FUNCTION_INDIRECT) == 0));
         pCodeInfo->m_pFunctionEntry = RawFunctionEntry;
 #endif
+        MethodRegionInfo methodRegionInfo;
+        JitTokenToMethodRegionInfo(pCodeInfo->m_methodToken, &methodRegionInfo);
+        if ((methodRegionInfo.coldSize > 0) && (currentInstr >= methodRegionInfo.coldStartAddress))
+        {
+            pCodeInfo->m_relOffset = (DWORD)
+                (methodRegionInfo.hotSize + (currentInstr - methodRegionInfo.coldStartAddress));
+        }
+        else
+        {
+            pCodeInfo->m_relOffset = (DWORD)(currentInstr - methodRegionInfo.hotStartAddress);
+        }
     }
 
     return TRUE;
@@ -6910,8 +5887,6 @@ TADDR ReadyToRunJitManager::GetFuncletStartAddress(EECodeInfo * pCodeInfo)
 {
     LIMITED_METHOD_DAC_CONTRACT;
 
-    // READYTORUN: FUTURE: Hot-cold spliting
-
     return IJitManager::GetFuncletStartAddress(pCodeInfo);
 }
 
@@ -6933,9 +5908,70 @@ DWORD ReadyToRunJitManager::GetFuncletStartOffsets(const METHODTOKEN& MethodToke
         pFirstFuncletFunctionEntry, moduleBase,
         &nFunclets, pStartFuncletOffsets, dwLength);
 
-    // READYTORUN: FUTURE: Hot/cold splitting
+    // Technically, the cold code is not a funclet, but it looks like the debugger wants it
+    if (regionInfo.coldSize > 0)
+    {
+        ReadyToRunInfo * pInfo = JitTokenToReadyToRunInfo(MethodToken);
+        PTR_RUNTIME_FUNCTION pRuntimeFunctions = pInfo->m_pRuntimeFunctions;
+        int i = 0;
+        while (true)
+        {
+            pFirstFuncletFunctionEntry = pRuntimeFunctions + i;
+            if (regionInfo.coldStartAddress == moduleBase + RUNTIME_FUNCTION__BeginAddress(pFirstFuncletFunctionEntry))
+            {
+                break;
+            }
+            i++;
+        }
+
+        GetFuncletStartOffsetsHelper(regionInfo.coldStartAddress, regionInfo.coldSize, 0,
+            pFirstFuncletFunctionEntry, moduleBase,
+            &nFunclets, pStartFuncletOffsets, dwLength);
+    }
 
     return nFunclets;
+}
+
+BOOL ReadyToRunJitManager::IsFunclet(EECodeInfo* pCodeInfo)
+{
+    CONTRACTL {
+        NOTHROW;
+        GC_NOTRIGGER;
+        SUPPORTS_DAC;
+    } CONTRACTL_END;
+
+    ReadyToRunInfo * pInfo = JitTokenToReadyToRunInfo(pCodeInfo->GetMethodToken());
+
+    COUNT_T nRuntimeFunctions = pInfo->m_nRuntimeFunctions;
+    PTR_RUNTIME_FUNCTION pRuntimeFunctions = pInfo->m_pRuntimeFunctions;
+
+    ULONG methodIndex = (ULONG)(pCodeInfo->GetFunctionEntry() - pRuntimeFunctions);
+
+    const int lookupIndex = HotColdMappingLookupTable::LookupMappingForMethod(pInfo, methodIndex);
+
+    if ((lookupIndex != -1) && ((lookupIndex & 1) == 1))
+    {
+        // This maps to a hot entry in the lookup table, so check its unwind info
+        SIZE_T unwindSize;
+        PTR_VOID pUnwindData = GetUnwindDataBlob(pCodeInfo->GetModuleBase(), pCodeInfo->GetFunctionEntry(), &unwindSize);
+        _ASSERTE(pUnwindData != NULL);
+
+#ifdef TARGET_AMD64
+        // Chained unwind info is used only for cold part of the main code
+        const UCHAR chainedUnwindFlag = (((PTR_UNWIND_INFO)pUnwindData)->Flags & UNW_FLAG_CHAININFO);
+        return (chainedUnwindFlag == 0);
+#else
+        // TODO: We need a solution for arm64 here
+        return false;
+#endif
+    }
+
+    // Fall back to existing logic if it is not cold
+
+    TADDR funcletStartAddress = GetFuncletStartAddress(pCodeInfo);
+    TADDR methodStartAddress = pCodeInfo->GetStartAddress();
+
+    return (funcletStartAddress != methodStartAddress);
 }
 
 BOOL ReadyToRunJitManager::IsFilterFunclet(EECodeInfo * pCodeInfo)
@@ -6984,17 +6020,54 @@ void ReadyToRunJitManager::JitTokenToMethodRegionInfo(const METHODTOKEN& MethodT
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        HOST_NOCALLS;
         SUPPORTS_DAC;
         PRECONDITION(methodRegionInfo != NULL);
     } CONTRACTL_END;
-
-    // READYTORUN: FUTURE: Hot-cold spliting
 
     methodRegionInfo->hotStartAddress  = JitTokenToStartAddress(MethodToken);
     methodRegionInfo->hotSize          = GetCodeManager()->GetFunctionSize(GetGCInfoToken(MethodToken));
     methodRegionInfo->coldStartAddress = 0;
     methodRegionInfo->coldSize         = 0;
+
+    ReadyToRunInfo * pInfo = JitTokenToReadyToRunInfo(MethodToken);
+    COUNT_T nRuntimeFunctions = pInfo->m_nRuntimeFunctions;
+    PTR_RUNTIME_FUNCTION pRuntimeFunctions = pInfo->m_pRuntimeFunctions;
+
+    PTR_RUNTIME_FUNCTION pRuntimeFunction = dac_cast<PTR_RUNTIME_FUNCTION>(MethodToken.m_pCodeHeader);
+
+    ULONG methodIndex = (ULONG)(pRuntimeFunction - pRuntimeFunctions);
+
+    const int lookupIndex = HotColdMappingLookupTable::LookupMappingForMethod(pInfo, methodIndex);
+
+    // If true, this method has no cold code
+    if (lookupIndex == -1)
+    {
+        return;
+    }
+#ifdef TARGET_X86
+    _ASSERTE(!"hot cold splitting is not supported for x86");
+#else
+    _ASSERTE((lookupIndex & 1) == 0);
+    ULONG coldMethodIndex = pInfo->m_pHotColdMap[lookupIndex];
+    PTR_RUNTIME_FUNCTION pColdRuntimeFunction = pRuntimeFunctions + coldMethodIndex;
+    methodRegionInfo->coldStartAddress = JitTokenToModuleBase(MethodToken)
+        + RUNTIME_FUNCTION__BeginAddress(pColdRuntimeFunction);
+
+    ULONG coldMethodIndexNext;
+    if ((ULONG)(lookupIndex) == (pInfo->m_nHotColdMap - 2))
+    {
+        coldMethodIndexNext = nRuntimeFunctions - 1;
+    }
+    else
+    {
+        coldMethodIndexNext = pInfo->m_pHotColdMap[lookupIndex + 2] - 1;
+    }
+
+    PTR_RUNTIME_FUNCTION pLastRuntimeFunction = pRuntimeFunctions + coldMethodIndexNext;
+    methodRegionInfo->coldSize = RUNTIME_FUNCTION__EndAddress(pLastRuntimeFunction, 0)
+        - RUNTIME_FUNCTION__BeginAddress(pColdRuntimeFunction);
+    methodRegionInfo->hotSize -= methodRegionInfo->coldSize;
+#endif //TARGET_X86
 }
 
 #ifdef DACCESS_COMPILE

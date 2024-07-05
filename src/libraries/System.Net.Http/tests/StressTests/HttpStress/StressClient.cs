@@ -57,6 +57,8 @@ namespace HttpStress
                     return new SocketsHttpHandler()
                     {
                         PooledConnectionLifetime = _config.ConnectionLifetime.GetValueOrDefault(Timeout.InfiniteTimeSpan),
+                        EnableMultipleHttp2Connections = true,
+                        EnableMultipleHttp3Connections = true,
                         SslOptions = new SslClientAuthenticationOptions
                         {
                             RemoteCertificateValidationCallback = delegate { return true; }
@@ -65,8 +67,8 @@ namespace HttpStress
                 }
             }
 
-            return new HttpClient(CreateHttpHandler()) 
-            { 
+            return new HttpClient(CreateHttpHandler())
+            {
                 BaseAddress = _baseAddress,
                 Timeout = _config.DefaultTimeout,
                 DefaultRequestVersion = _config.HttpVersion,
@@ -106,6 +108,7 @@ namespace HttpStress
             }
             _stopwatch.Stop();
             _cts.Dispose();
+            _eventListener?.Dispose();
         }
 
         public void PrintFinalReport()
@@ -125,7 +128,6 @@ namespace HttpStress
         public void Dispose()
         {
             Stop();
-            _eventListener?.Dispose();
         }
 
         private async Task InitializeClient()
@@ -140,10 +142,10 @@ namespace HttpStress
 
             async Task SendTestRequestToServer(int maxRetries)
             {
-                using HttpClient client = CreateHttpClient();
-                client.Timeout = TimeSpan.FromSeconds(5);
                 for (int remainingRetries = maxRetries; ; remainingRetries--)
                 {
+                    using HttpClient client = CreateHttpClient();
+                    client.Timeout = TimeSpan.FromSeconds(5);
                     var sw = Stopwatch.StartNew();
                     try
                     {
@@ -283,7 +285,7 @@ namespace HttpStress
             public void RecordFailure(Exception exn, int operationIndex, TimeSpan elapsed, bool isCancelled, int taskNum, long iteration)
             {
                 DateTime timestamp = DateTime.Now;
-                
+
                 Interlocked.Increment(ref _totalRequests);
                 Interlocked.Increment(ref _failures[operationIndex]);
 

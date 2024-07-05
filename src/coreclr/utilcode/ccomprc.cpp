@@ -136,7 +136,7 @@ HRESULT CCompRC::Init(LPCWSTR pResourceFile)
         {
             NewArrayHolder<WCHAR> pwszResourceFile(NULL);
 
-            DWORD lgth = (DWORD) wcslen(pResourceFile) + 1;
+            DWORD lgth = (DWORD) u16_strlen(pResourceFile) + 1;
             pwszResourceFile = new(nothrow) WCHAR[lgth];
             if (pwszResourceFile)
             {
@@ -221,9 +221,7 @@ void CCompRC::Destroy()
     // Free all resource libraries
 
     //*****************************************************************************
-    // Free the loaded library if we ever loaded it and only if we are not on
-    // Win 95 which has a known bug with DLL unloading (it randomly unloads a
-    // dll on shut down, not necessarily the one you asked for).  This is done
+    // Free the loaded library if we ever loaded it. This is done
     // only in debug mode to make coverage runs accurate.
     //*****************************************************************************
 
@@ -296,7 +294,7 @@ CCompRC* CCompRC::GetDefaultResourceDll()
 //*****************************************************************************
 //*****************************************************************************
 
-// String resouces packaged as PE files only exist on Windows
+// String resources packaged as PE files only exist on Windows
 #ifdef HOST_WINDOWS
 HRESULT CCompRC::GetLibrary(LocaleID langId, HRESOURCEDLL* phInst)
 {
@@ -461,7 +459,7 @@ Exit:
 // We load the localized libraries and cache the handle for future use.
 // Mutliple threads may call this, so the cache structure is thread safe.
 //*****************************************************************************
-HRESULT CCompRC::LoadString(ResourceCategory eCategory, UINT iResourceID, __out_ecount(iMax) LPWSTR szBuffer, int iMax,  int *pcwchUsed)
+HRESULT CCompRC::LoadString(ResourceCategory eCategory, UINT iResourceID, _Out_writes_(iMax) LPWSTR szBuffer, int iMax,  int *pcwchUsed)
 {
     WRAPPER_NO_CONTRACT;
     LocaleIDValue langIdValue;
@@ -487,8 +485,11 @@ HRESULT CCompRC::LoadString(ResourceCategory eCategory, UINT iResourceID, __out_
     return LoadString(eCategory, langId, iResourceID, szBuffer, iMax, pcwchUsed);
 }
 
-HRESULT CCompRC::LoadString(ResourceCategory eCategory, LocaleID langId, UINT iResourceID, __out_ecount(iMax) LPWSTR szBuffer, int iMax, int *pcwchUsed)
+HRESULT CCompRC::LoadString(ResourceCategory eCategory, LocaleID langId, UINT iResourceID, _Out_writes_(iMax) LPWSTR szBuffer, int iMax, int *pcwchUsed)
 {
+#ifdef DBI_COMPONENT_MONO
+    return E_NOTIMPL;
+#else
     CONTRACTL
     {
         GC_NOTRIGGER;
@@ -511,7 +512,7 @@ HRESULT CCompRC::LoadString(ResourceCategory eCategory, LocaleID langId, UINT iR
         // Now that we have the proper dll handle, load the string
         _ASSERTE(hInst != NULL);
 
-        length = ::WszLoadString(hInst, iResourceID, szBuffer, iMax);
+        length = ::LoadString(hInst, iResourceID, szBuffer, iMax);
         if(length > 0)
         {
             if(pcwchUsed)
@@ -535,11 +536,12 @@ HRESULT CCompRC::LoadString(ResourceCategory eCategory, LocaleID langId, UINT iR
     return LoadNativeStringResource(NATIVE_STRING_RESOURCE_TABLE(NATIVE_STRING_RESOURCE_NAME), iResourceID,
       szBuffer, iMax, pcwchUsed);
 #endif // HOST_WINDOWS
+#endif
 }
 
 #ifndef DACCESS_COMPILE
 
-// String resouces packaged as PE files only exist on Windows
+// String resources packaged as PE files only exist on Windows
 #ifdef HOST_WINDOWS
 HRESULT CCompRC::LoadResourceFile(HRESOURCEDLL * pHInst, LPCWSTR lpFileName)
 {
@@ -553,7 +555,7 @@ HRESULT CCompRC::LoadResourceFile(HRESOURCEDLL * pHInst, LPCWSTR lpFileName)
         dwLoadLibraryFlags = 0;
     }
 
-    if((*pHInst = WszLoadLibraryEx(lpFileName, NULL, dwLoadLibraryFlags)) == NULL)
+    if((*pHInst = WszLoadLibrary(lpFileName, NULL, dwLoadLibraryFlags)) == NULL)
     {
         return HRESULT_FROM_GetLastError();
     }
@@ -567,7 +569,6 @@ HRESULT CCompRC::LoadResourceFile(HRESOURCEDLL * pHInst, LPCWSTR lpFileName)
 //  1. Dll in localized path (<dir passed>\<lang name (en-US format)>\mscorrc.dll)
 //  2. Dll in localized (parent) path (<dir passed>\<lang name> (en format)\mscorrc.dll)
 //  3. Dll in root path (<dir passed>\mscorrc.dll)
-//  4. Dll in current path   (<current dir>\mscorrc.dll)
 //*****************************************************************************
 HRESULT CCompRC::LoadLibraryHelper(HRESOURCEDLL *pHInst,
                                    SString& rcPath)
@@ -617,7 +618,7 @@ HRESULT CCompRC::LoadLibraryHelper(HRESOURCEDLL *pHInst,
 
             PathString rcPathName(rcPath);
 
-            if (!rcPathName.EndsWith(W("\\")))
+            if (!rcPathName.EndsWith(SL(W("\\"))))
             {
                 rcPathName.Append(W("\\"));
             }
@@ -633,9 +634,6 @@ HRESULT CCompRC::LoadLibraryHelper(HRESOURCEDLL *pHInst,
                 rcPathName.Append(m_pResourceFile);
             }
 
-            // Feedback for debugging to eliminate unecessary loads.
-            DEBUG_STMT(DbgWriteEx(W("Loading %s to load strings.\n"), rcPath.GetUnicode()));
-
             // Load the resource library as a data file, so that the OS doesn't have
             // to allocate it as code.  This only works so long as the file contains
             // only strings.
@@ -647,12 +645,6 @@ HRESULT CCompRC::LoadLibraryHelper(HRESOURCEDLL *pHInst,
         }
     }
     EX_CATCH_HRESULT(hr);
-
-    // Last ditch search effort in current directory
-    if (FAILED(hr))
-    {
-        hr = LoadResourceFile(pHInst, m_pResourceFile);
-    }
 
     return hr;
 }
@@ -675,10 +667,6 @@ HRESULT CCompRC::LoadLibraryThrows(HRESOURCEDLL * pHInst)
 
     _ASSERTE(pHInst != NULL);
 
-#ifdef CROSSGEN_COMPILE
-    // The resources are embeded into the .exe itself for crossgen
-    *pHInst = (HINSTANCE)GetClrModuleBase();
-#else
 
 #ifdef SELF_NO_HOST
     _ASSERTE(!"CCompRC::LoadLibraryThrows not implemented for SELF_NO_HOST");
@@ -695,7 +683,6 @@ HRESULT CCompRC::LoadLibraryThrows(HRESOURCEDLL * pHInst)
     hr = LoadLibraryHelper(pHInst, rcPath);
 #endif
 
-#endif // CROSSGEN_COMPILE
 
     return hr;
 }

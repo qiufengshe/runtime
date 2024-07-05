@@ -65,13 +65,24 @@ namespace R2RTest
         {
             ProcessParameters processParameters = base.CompilationProcess(outputFileName, inputAssemblyFileNames);
             processParameters.Arguments = $"{Crossgen2Path} {processParameters.Arguments}";
+            // DOTNET_ variables
+            processParameters.EnvironmentOverrides["DOTNET_GCStress"] = "";
+            processParameters.EnvironmentOverrides["DOTNET_HeapVerify"] = "";
+            processParameters.EnvironmentOverrides["DOTNET_ReadyToRun"] = "";
+            processParameters.EnvironmentOverrides["DOTNET_GCName"] = "";
+
+            // COMPlus_ variables
+            processParameters.EnvironmentOverrides["COMPlus_GCStress"] = "";
+            processParameters.EnvironmentOverrides["COMPlus_HeapVerify"] = "";
+            processParameters.EnvironmentOverrides["COMPlus_ReadyToRun"] = "";
+            processParameters.EnvironmentOverrides["COMPlus_GCName"] = "";
             return processParameters;
         }
 
         protected override ProcessParameters ExecutionProcess(IEnumerable<string> modules, IEnumerable<string> folders, bool noEtw)
         {
             ProcessParameters processParameters = base.ExecutionProcess(modules, folders, noEtw);
-            processParameters.EnvironmentOverrides["COMPLUS_ReadyToRun"] = "1";
+            processParameters.EnvironmentOverrides["DOTNET_ReadyToRun"] = "1";
             return processParameters;
         }
 
@@ -85,6 +96,19 @@ namespace R2RTest
 
             // Output
             yield return $"-o:{outputFileName}";
+
+            if (_options.Pdb)
+            {
+                yield return $"--pdb";
+                yield return $"--pdb-path:{Path.GetDirectoryName(outputFileName)}";
+            }
+
+            if (_options.Perfmap)
+            {
+                yield return $"--perfmap";
+                yield return $"--perfmap-path:{Path.GetDirectoryName(outputFileName)}";
+                yield return $"--perfmap-format-version:{_options.PerfmapFormatVersion}";
+            }
 
             if (_options.TargetArch != null)
             {
@@ -114,6 +138,15 @@ namespace R2RTest
             if (CompositeMode)
             {
                 yield return "--composite";
+            }
+
+            if (_options.MibcPath != null && _options.MibcPath.Length > 0)
+            {
+                yield return "--embed-pgo-data";
+                foreach (FileInfo mibc in _options.MibcPath)
+                {
+                    yield return $"-m:{mibc.FullName}";
+                }
             }
 
             if (!string.IsNullOrEmpty(Crossgen2RunnerOptions.CompositeRoot))

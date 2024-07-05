@@ -30,7 +30,6 @@ namespace Internal.TypeSystem.Ecma
             public const int AttributeMetadataCache = 0x02000;
             public const int Intrinsic              = 0x04000;
             public const int UnmanagedCallersOnly   = 0x08000;
-            public const int RuntimeExport          = 0x10000;
         };
 
         private EcmaType _type;
@@ -82,7 +81,7 @@ namespace Internal.TypeSystem.Ecma
             var metadataReader = MetadataReader;
             BlobReader signatureReader = metadataReader.GetBlobReader(metadataReader.GetMethodDefinition(_handle).Signature);
 
-            EcmaSignatureParser parser = new EcmaSignatureParser(Module, signatureReader);
+            EcmaSignatureParser parser = new EcmaSignatureParser(Module, signatureReader, NotFoundBehavior.Throw);
             var signature = parser.ParseMethodSignature();
             return (_signature = signature);
         }
@@ -199,14 +198,6 @@ namespace Internal.TypeSystem.Ecma
                         if (metadataReader.StringComparer.Equals(nameHandle, "UnmanagedCallersOnlyAttribute"))
                         {
                             flags |= MethodFlags.UnmanagedCallersOnly;
-                        }
-                    }
-                    else
-                    if (metadataReader.StringComparer.Equals(namespaceHandle, "System.Runtime"))
-                    {
-                        if (metadataReader.StringComparer.Equals(nameHandle, "RuntimeExportAttribute"))
-                        {
-                            flags |= MethodFlags.RuntimeExport;
                         }
                     }
                 }
@@ -341,14 +332,6 @@ namespace Internal.TypeSystem.Ecma
             }
         }
 
-        public override bool IsRuntimeExport
-        {
-            get
-            {
-                return (GetMethodFlags(MethodFlags.AttributeMetadataCache | MethodFlags.RuntimeExport) & MethodFlags.RuntimeExport) != 0;
-            }
-        }
-
         public override bool IsSpecialName
         {
             get
@@ -362,11 +345,27 @@ namespace Internal.TypeSystem.Ecma
             get
             {
                 MethodAttributes attributes = Attributes;
-                return attributes.IsRuntimeSpecialName() 
+                return attributes.IsRuntimeSpecialName()
                     && attributes.IsPublic()
                     && Signature.Length == 0
                     && Name == ".ctor"
                     && !_type.IsAbstract;
+            }
+        }
+
+        public override bool IsPublic
+        {
+            get
+            {
+                return Attributes.IsPublic();
+            }
+        }
+
+        public override bool IsStaticConstructor
+        {
+            get
+            {
+                return Attributes.IsRuntimeSpecialName() && Name == ".cctor";
             }
         }
 
@@ -546,7 +545,7 @@ namespace Internal.TypeSystem.Ecma
         public override ParameterMetadata[] GetParameterMetadata()
         {
             MetadataReader metadataReader = MetadataReader;
-            
+
             // Spot check the enums match
             Debug.Assert((int)ParameterAttributes.In == (int)ParameterMetadataAttributes.In);
             Debug.Assert((int)ParameterAttributes.Out == (int)ParameterMetadataAttributes.Out);
@@ -573,7 +572,7 @@ namespace Internal.TypeSystem.Ecma
             {
                 MetadataReader metadataReader = MetadataReader;
                 BlobReader marshalAsReader = metadataReader.GetBlobReader(parameter.GetMarshallingDescriptor());
-                EcmaSignatureParser parser = new EcmaSignatureParser(Module, marshalAsReader);
+                EcmaSignatureParser parser = new EcmaSignatureParser(Module, marshalAsReader, NotFoundBehavior.Throw);
                 MarshalAsDescriptor marshalAs = parser.ParseMarshalAsDescriptor();
                 Debug.Assert(marshalAs != null);
                 return marshalAs;

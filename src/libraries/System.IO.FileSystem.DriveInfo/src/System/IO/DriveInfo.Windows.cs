@@ -5,8 +5,8 @@ using System;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Runtime.Versioning;
+using System.Text;
 
 namespace System.IO
 {
@@ -149,7 +149,7 @@ namespace System.IO
                     bool r = Interop.Kernel32.SetVolumeLabel(Name, value);
                     if (!r)
                     {
-                        int errorCode = Marshal.GetLastWin32Error();
+                        int errorCode = Marshal.GetLastPInvokeError();
                         // Provide better message
                         if (errorCode == Interop.Errors.ERROR_ACCESS_DENIED)
                             throw new UnauthorizedAccessException(SR.InvalidOperation_SetVolumeLabelFailed);

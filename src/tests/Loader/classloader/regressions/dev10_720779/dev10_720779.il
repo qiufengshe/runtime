@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 .assembly extern System.Console { }
+.assembly extern xunit.core {}
 /*
 We basically have an interface I<T,U>, class Base that implements I<string,int> and class Derived 
 that inherits from Base, and implements I<int,int>. I<T,U> has a method string Method(). 
@@ -15,7 +16,7 @@ where MyClosedDel is:
 
 */
 .assembly extern mscorlib {}
-.assembly Generated0 {}
+.assembly 'dev10_720779' {}
 
 
 
@@ -58,7 +59,7 @@ where MyClosedDel is:
   .method public hidebysig newslot virtual instance string Invoke() runtime managed {}
   .method public hidebysig newslot virtual instance string EndInvoke(class [mscorlib]System.IAsyncResult result) runtime managed {}
 }
-.class private auto ansi beforefieldinit Framework {
+.class public auto ansi beforefieldinit Framework {
 	.method public hidebysig static string DelCall0(object inst, class [mscorlib]System.Type t, string mName) cil managed {
 	
 		//CS:
@@ -109,6 +110,9 @@ where MyClosedDel is:
 	} // end of method Test::CheckResult
     .method public hidebysig static int32  Main() cil managed
     {
+        .custom instance void [xunit.core]Xunit.FactAttribute::.ctor() = (
+            01 00 00 00
+        )
         .entrypoint
         .maxstack  10
         .locals init (object V_0)

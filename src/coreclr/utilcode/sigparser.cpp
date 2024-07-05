@@ -74,18 +74,18 @@ HRESULT SigParser::SkipExactlyOne()
             case ELEMENT_TYPE_ARRAY:
                 {
                     IfFailRet(SkipExactlyOne());     // Skip element type
-                    ULONG rank;
+                    uint32_t rank;
                     IfFailRet(GetData(&rank));    // Get rank
                     if (rank)
                     {
-                        ULONG nsizes;
+                        uint32_t nsizes;
                         IfFailRet(GetData(&nsizes)); // Get # of sizes
                         while (nsizes--)
                         {
                             IfFailRet(GetData(NULL));           // Skip size
                         }
 
-                        ULONG nlbounds;
+                        uint32_t nlbounds;
                         IfFailRet(GetData(&nlbounds)); // Get # of lower bounds
                         while (nlbounds--)
                         {
@@ -106,7 +106,7 @@ HRESULT SigParser::SkipExactlyOne()
 
             case ELEMENT_TYPE_GENERICINST:
               IfFailRet(SkipExactlyOne());          // Skip generic type
-              ULONG argCnt;
+              uint32_t argCnt;
               IfFailRet(GetData(&argCnt)); // Get number of parameters
               while (argCnt--)
               {
@@ -126,7 +126,7 @@ HRESULT SigParser::SkipExactlyOne()
 //
 HRESULT
 SigParser::SkipMethodHeaderSignature(
-    ULONG * pcArgs)
+    uint32_t * pcArgs, bool skipReturnType /*= true*/)
 {
     CONTRACTL
     {
@@ -141,7 +141,7 @@ SigParser::SkipMethodHeaderSignature(
     HRESULT hr = S_OK;
 
     // Skip calling convention
-    ULONG uCallConv;
+    uint32_t uCallConv;
     IfFailRet(GetCallingConvInfo(&uCallConv));
 
     if ((uCallConv == IMAGE_CEE_CS_CALLCONV_FIELD) ||
@@ -157,8 +157,11 @@ SigParser::SkipMethodHeaderSignature(
     // Get arg count;
     IfFailRet(GetData(pcArgs));
 
-    // Skip return type;
-    IfFailRet(SkipExactlyOne());
+    if (skipReturnType)
+    {
+        // Skip return type;
+        IfFailRet(SkipExactlyOne());
+    }
 
     return hr;
 } // SigParser::SkipMethodHeaderSignature
@@ -180,7 +183,7 @@ HRESULT SigParser::SkipSignature()
 
     HRESULT hr = S_OK;
 
-    ULONG cArgs;
+    uint32_t cArgs;
 
     IfFailRet(SkipMethodHeaderSignature(&cArgs));
 

@@ -1,7 +1,8 @@
-if(CLR_CMAKE_TARGET_OSX OR CLR_CMAKE_TARGET_FREEBSD)
+if(CLR_CMAKE_TARGET_OSX OR CLR_CMAKE_TARGET_FREEBSD OR CLR_CMAKE_TARGET_HAIKU)
   # On OSX and *BSD, we use the libunwind that's part of the OS
+  # On Haiku, we used a special port of libunwind
   set(CLR_CMAKE_USE_SYSTEM_LIBUNWIND 1)
-endif(CLR_CMAKE_TARGET_OSX OR CLR_CMAKE_TARGET_FREEBSD)
+endif(CLR_CMAKE_TARGET_OSX OR CLR_CMAKE_TARGET_FREEBSD OR CLR_CMAKE_TARGET_HAIKU)
 
 if(NOT DEFINED ENV{ROOTFS_DIR})
   include_directories(SYSTEM /usr/local/include)
@@ -10,16 +11,16 @@ elseif (CLR_CMAKE_TARGET_FREEBSD)
 endif()
 
 if(NOT CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
-  include_directories(libunwind/include)
-  include_directories(libunwind/include/tdep)
-  include_directories(${CMAKE_CURRENT_BINARY_DIR}/libunwind/include)
-  include_directories(${CMAKE_CURRENT_BINARY_DIR}/libunwind/include/tdep)
+  include_directories(${CLR_SRC_NATIVE_DIR}/external/libunwind/include)
+  include_directories(${CLR_SRC_NATIVE_DIR}/external/libunwind/include/tdep)
+  include_directories(${CLR_ARTIFACTS_OBJ_DIR}/external/libunwind/include)
+  include_directories(${CLR_ARTIFACTS_OBJ_DIR}/external/libunwind/include/tdep)
 
-  add_subdirectory(libunwind)
+  add_subdirectory(${CLR_SRC_NATIVE_DIR}/external/libunwind_extras ${CLR_ARTIFACTS_OBJ_DIR}/external/libunwind)
 elseif(NOT CLR_CMAKE_TARGET_OSX)
   find_unwind_libs(UNWIND_LIBS)
 else()
-  add_subdirectory(libunwind)
+  add_subdirectory(${CLR_SRC_NATIVE_DIR}/external/libunwind_extras ${CLR_ARTIFACTS_OBJ_DIR}/external/libunwind)
 endif(NOT CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
 
 include(configure.cmake)
@@ -33,8 +34,6 @@ if(CORECLR_SET_RPATH)
     set(MACOSX_RPATH ON)
 endif(CORECLR_SET_RPATH)
 
-cmake_policy(SET CMP0042 NEW)
-
 # Include directories
 
 include_directories(include)
@@ -45,10 +44,21 @@ if(CLR_CMAKE_HOST_ARCH_AMD64)
   set(PAL_ARCH_SOURCES_DIR amd64)
 elseif(CLR_CMAKE_HOST_ARCH_ARM)
   set(PAL_ARCH_SOURCES_DIR arm)
+elseif(CLR_CMAKE_HOST_ARCH_ARMV6)
+  set(PAL_ARCH_SOURCES_DIR arm)
+  add_definitions(-D__armv6__)
 elseif(CLR_CMAKE_HOST_ARCH_ARM64)
   set(PAL_ARCH_SOURCES_DIR arm64)
+elseif(CLR_CMAKE_HOST_ARCH_LOONGARCH64)
+  set(PAL_ARCH_SOURCES_DIR loongarch64)
+elseif(CLR_CMAKE_HOST_ARCH_RISCV64)
+  set(PAL_ARCH_SOURCES_DIR riscv64)
 elseif(CLR_CMAKE_HOST_ARCH_I386)
   set(PAL_ARCH_SOURCES_DIR i386)
+elseif(CLR_CMAKE_HOST_ARCH_S390X)
+  set(PAL_ARCH_SOURCES_DIR s390x)
+elseif(CLR_CMAKE_HOST_ARCH_POWERPC64)
+  set(PAL_ARCH_SOURCES_DIR ppc64le)
 endif()
 
 if(CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
@@ -61,7 +71,6 @@ if(CLR_CMAKE_TARGET_OSX)
     add_definitions(-DXSTATE_SUPPORTED)
   endif()
   set(PLATFORM_SOURCES
-    arch/${PAL_ARCH_SOURCES_DIR}/activationhandlerwrapper.S
     arch/${PAL_ARCH_SOURCES_DIR}/context.S
     arch/${PAL_ARCH_SOURCES_DIR}/dispatchexceptionwrapper.S
     exception/machexception.cpp
@@ -75,20 +84,28 @@ endif(FEATURE_ENABLE_NO_ADDRESS_SPACE_RANDOMIZATION)
 add_definitions(-DLP64COMPATIBLE)
 add_definitions(-DCORECLR)
 add_definitions(-DPIC)
-add_definitions(-D_FILE_OFFSET_BITS=64)
 
-if(CLR_CMAKE_HOST_ARCH_AMD64 AND CLR_CMAKE_TARGET_LINUX AND NOT CLR_CMAKE_HOST_ALPINE_LINUX)
+if(CLR_CMAKE_HOST_ARCH_AMD64 AND CLR_CMAKE_TARGET_LINUX AND NOT CLR_CMAKE_TARGET_LINUX_MUSL)
   # Currently the _xstate is not available on Alpine Linux
   add_definitions(-DXSTATE_SUPPORTED)
-endif(CLR_CMAKE_HOST_ARCH_AMD64 AND CLR_CMAKE_TARGET_LINUX AND NOT CLR_CMAKE_HOST_ALPINE_LINUX)
+endif(CLR_CMAKE_HOST_ARCH_AMD64 AND CLR_CMAKE_TARGET_LINUX AND NOT CLR_CMAKE_TARGET_LINUX_MUSL)
 
-if(CLR_CMAKE_HOST_ALPINE_LINUX)
+if(CLR_CMAKE_HOST_ARCH_ARM64 AND CLR_CMAKE_TARGET_LINUX AND NOT CLR_CMAKE_TARGET_LINUX_MUSL)
+  # Currently the _xstate is not available on Alpine Linux
+  add_definitions(-DXSTATE_SUPPORTED)
+endif(CLR_CMAKE_HOST_ARCH_ARM64 AND CLR_CMAKE_TARGET_LINUX AND NOT CLR_CMAKE_TARGET_LINUX_MUSL)
+
+if(CLR_CMAKE_TARGET_LINUX_MUSL)
   # Setting RLIMIT_NOFILE breaks debugging of coreclr on Alpine Linux for some reason
   add_definitions(-DDONT_SET_RLIMIT_NOFILE)
   # On Alpine Linux, we need to ensure that the reported stack range for the primary thread is
   # larger than the initial committed stack size.
   add_definitions(-DENSURE_PRIMARY_STACK_SIZE)
-endif(CLR_CMAKE_HOST_ALPINE_LINUX)
+endif(CLR_CMAKE_TARGET_LINUX_MUSL)
+
+if(CLR_CMAKE_TARGET_HAIKU)
+  add_definitions(-D_GNU_SOURCE)
+endif(CLR_CMAKE_TARGET_HAIKU)
 
 # turn off capability to remove unused functions (which was enabled in debug build with sanitizers)
 set(CMAKE_SHARED_LINKER_FLAGS_DEBUG "${CMAKE_SHARED_LINKER_FLAGS_DEBUG} -Wl,--no-gc-sections")
@@ -97,7 +114,6 @@ set(ARCH_SOURCES
   arch/${PAL_ARCH_SOURCES_DIR}/context2.S
   arch/${PAL_ARCH_SOURCES_DIR}/debugbreak.S
   arch/${PAL_ARCH_SOURCES_DIR}/exceptionhelper.S
-  arch/${PAL_ARCH_SOURCES_DIR}/processor.cpp
 )
 
 if(NOT CLR_CMAKE_TARGET_OSX)
@@ -113,27 +129,12 @@ if(CLR_CMAKE_HOST_ARCH_ARM)
   endif()
 endif(CLR_CMAKE_HOST_ARCH_ARM)
 
-if (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND (CLR_CMAKE_HOST_ARCH_AMD64 OR CLR_CMAKE_HOST_ARCH_I386))
   add_compile_options(-Wa,--divide)
 endif()
 
-include_directories("${CLR_SRC_NATIVE_DIR}/common")
-
 set(SOURCES
-  cruntime/file.cpp
-  cruntime/filecrt.cpp
-  cruntime/malloc.cpp
-  cruntime/math.cpp
-  cruntime/misc.cpp
-  cruntime/path.cpp
-  cruntime/printf.cpp
-  cruntime/printfcpp.cpp
-  cruntime/silent_printf.cpp
-  cruntime/string.cpp
-  cruntime/stringtls.cpp
-  cruntime/thread.cpp
   cruntime/wchar.cpp
-  cruntime/wchartls.cpp
   debug/debug.cpp
   exception/seh.cpp
   exception/signal.cpp
@@ -147,29 +148,24 @@ set(SOURCES
   init/pal.cpp
   init/sxs.cpp
   loader/module.cpp
-  loader/modulename.cpp
   locale/unicode.cpp
-  locale/unicodedata.cpp
-  locale/utf8.cpp
+  ${CLR_SRC_NATIVE_DIR}/minipal/utf8.c
+  ${CLR_SRC_NATIVE_DIR}/minipal/unicodedata.c
   map/common.cpp
   map/map.cpp
   map/virtual.cpp
-  memory/local.cpp
   misc/cgroup.cpp
   misc/dbgmsg.cpp
   misc/environ.cpp
   misc/error.cpp
   misc/errorstrings.cpp
   misc/fmtmessage.cpp
-  misc/jitsupport.cpp
   misc/miscpalapi.cpp
-  misc/msgbox.cpp
   misc/perfjitdump.cpp
   misc/strutil.cpp
   misc/sysinfo.cpp
   misc/time.cpp
   misc/utils.cpp
-  numa/numa.cpp
   objmgr/palobjbase.cpp
   objmgr/shmobject.cpp
   objmgr/shmobjectmanager.cpp
@@ -178,33 +174,22 @@ set(SOURCES
   safecrt/memmove_s.cpp
   safecrt/mbusafecrt.cpp
   safecrt/safecrt_input_s.cpp
-  safecrt/safecrt_output_l.cpp
-  safecrt/safecrt_output_s.cpp
   safecrt/safecrt_winput_s.cpp
-  safecrt/safecrt_woutput_s.cpp
   safecrt/splitpath_s.cpp
   safecrt/sprintf_s.cpp
   safecrt/sscanf_s.cpp
   safecrt/strcat_s.cpp
   safecrt/strcpy_s.cpp
-  safecrt/strlen_s.cpp
   safecrt/strncat_s.cpp
   safecrt/strncpy_s.cpp
-  safecrt/strtok_s.cpp
-  safecrt/swprintf.cpp
   safecrt/vsprintf.cpp
-  safecrt/vswprint.cpp
   safecrt/wcscat_s.cpp
   safecrt/wcscpy_s.cpp
   safecrt/wcslen_s.cpp
   safecrt/wcslwr_s.cpp
   safecrt/wcsncat_s.cpp
   safecrt/wcsncpy_s.cpp
-  safecrt/wcstok_s.cpp
   safecrt/wmakepath_s.cpp
-  safecrt/wsplitpath_s.cpp
-  safecrt/xtoa_s.cpp
-  safecrt/xtow_s.cpp
   sharedmemory/sharedmemory.cpp
   shmemory/shmemory.cpp
   sync/cs.cpp
@@ -241,10 +226,14 @@ if(CLR_CMAKE_TARGET_OSX)
     ${LIBUNWIND_DAC_OBJECTS}
   )
 
-  target_compile_definitions(coreclrpal_dac PUBLIC
-    "-D_XOPEN_SOURCE"
-    "-DUNW_REMOTE_ONLY"
+  target_include_directories(coreclrpal_dac PUBLIC
+    ${CLR_SRC_NATIVE_DIR}/external/libunwind/include
+    ${CLR_SRC_NATIVE_DIR}/external/libunwind/include/tdep
+    ${CLR_ARTIFACTS_OBJ_DIR}/external/libunwind/include
+    ${CLR_ARTIFACTS_OBJ_DIR}/external/libunwind/include/tdep
   )
+
+  target_compile_definitions(coreclrpal_dac PUBLIC -DUNW_REMOTE_ONLY)
 else()
   if(NOT FEATURE_CROSSBITNESS)
     add_library(coreclrpal_dac STATIC
@@ -253,16 +242,6 @@ else()
   endif(NOT FEATURE_CROSSBITNESS)
 endif(CLR_CMAKE_TARGET_OSX)
 
-if(NOT FEATURE_CROSSBITNESS)
-  target_include_directories(coreclrpal_dac PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/libunwind/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/libunwind/include/tdep
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}/libunwind/include
-    ${CMAKE_CURRENT_BINARY_DIR}/libunwind/include/tdep
-  )
-endif(NOT FEATURE_CROSSBITNESS)
-
 # There is only one function exported in 'tracepointprovider.cpp' namely 'PAL_InitializeTracing',
 # which is guarded with '#if defined(__linux__)'. On macOS, Xcode issues the following warning:
 #
@@ -270,12 +249,7 @@ endif(NOT FEATURE_CROSSBITNESS)
 # > warning for library: libtracepointprovider.a the table of contents is empty (no object file members in the library define global symbols)
 #
 if(CLR_CMAKE_TARGET_LINUX)
-  add_library(tracepointprovider_obj
-    OBJECT
-    misc/tracepointprovider.cpp
-  )
-  add_library(tracepointprovider INTERFACE)
-  target_sources(tracepointprovider INTERFACE $<TARGET_OBJECTS:tracepointprovider_obj>)
+  add_library(tracepointprovider OBJECT misc/tracepointprovider.cpp)
 endif(CLR_CMAKE_TARGET_LINUX)
 
 if(CLR_CMAKE_TARGET_OSX)
@@ -284,6 +258,7 @@ if(CLR_CMAKE_TARGET_OSX)
   find_library(SECURITY Security)
   find_library(SYSTEM System)
   target_link_libraries(coreclrpal
+    PUBLIC
     ${COREFOUNDATION}
     ${CORESERVICES}
     ${SECURITY}
@@ -293,33 +268,50 @@ endif(CLR_CMAKE_TARGET_OSX)
 
 if(CLR_CMAKE_TARGET_FREEBSD)
   target_link_libraries(coreclrpal
+    PUBLIC
     pthread
     rt
     ${UNWIND_LIBS}
   )
 endif(CLR_CMAKE_TARGET_FREEBSD)
 
+if(CLR_CMAKE_TARGET_HAIKU)
+  target_link_libraries(coreclrpal
+    PUBLIC
+    bsd
+    ${UNWIND_LIBS}
+  )
+endif(CLR_CMAKE_TARGET_HAIKU)
+
 if(CLR_CMAKE_TARGET_LINUX)
   # On Android, we don't need to link with gcc_s, pthread and rt
   if(NOT CLR_CMAKE_TARGET_ANDROID)
     target_link_libraries(coreclrpal
+      PUBLIC
       gcc_s
       pthread
       rt
     )
   else(NOT CLR_CMAKE_TARGET_ANDROID)
     target_link_libraries(coreclrpal
+      PUBLIC
       ${ANDROID_GLOB}
       ${LZMA})
   endif(NOT CLR_CMAKE_TARGET_ANDROID)
 
   target_link_libraries(coreclrpal
+    PUBLIC
     dl
   )
 
   if(CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
-    target_link_libraries(coreclrpal ${UNWIND_LIBS})
+    target_link_libraries(coreclrpal PUBLIC ${UNWIND_LIBS})
   endif(CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
+
+  # bundled libunwind requires using libucontext on alpine and x86 and ppc64le
+  if(CLR_CMAKE_TARGET_LINUX_MUSL AND (CLR_CMAKE_TARGET_ARCH_I386 OR CLR_CMAKE_TARGET_ARCH_POWERPC64))
+    target_link_libraries(coreclrpal PUBLIC ucontext)
+  endif(CLR_CMAKE_TARGET_LINUX_MUSL AND (CLR_CMAKE_TARGET_ARCH_I386 OR CLR_CMAKE_TARGET_ARCH_POWERPC64))
 
 endif(CLR_CMAKE_TARGET_LINUX)
 
@@ -330,6 +322,7 @@ if(CLR_CMAKE_TARGET_NETBSD)
   add_definitions(-D_KMEMUSER)
   find_library(KVM kvm)
   target_link_libraries(coreclrpal
+    PUBLIC
     pthread
     rt
     ${UNWIND}
@@ -339,6 +332,7 @@ endif(CLR_CMAKE_TARGET_NETBSD)
 
 if(CLR_CMAKE_TARGET_SUNOS)
   target_link_libraries(coreclrpal
+    PUBLIC
     pthread
     rt
   )
@@ -349,4 +343,4 @@ if(FEATURE_EVENT_TRACE)
 endif(FEATURE_EVENT_TRACE)
 
 # Install the static PAL library for VS
-_install (TARGETS coreclrpal DESTINATION lib)
+install_clr (TARGETS coreclrpal DESTINATIONS lib)

@@ -1,17 +1,9 @@
-include(FindPythonInterp)
-
-function(addprefix var prefix list)
-  set(f)
-  foreach(i ${list})
-    set(f ${f} ${prefix}/${i})
-  endforeach()
-  set(${var} ${f} PARENT_SCOPE)
-endfunction()
+include(FindPython)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 set(GENERATE_SCRIPT ${CLR_DIR}/scripts/genEventPipe.py)
-set(GENERATE_COMMAND ${PYTHON_EXECUTABLE} ${GENERATE_SCRIPT} --man ${EVENT_MANIFEST} --exc ${EVENT_EXCLUSIONS} --intermediate ${CMAKE_CURRENT_BINARY_DIR} ${NONEXTERN_ARG})
+set(GENERATE_COMMAND ${Python_EXECUTABLE} ${GENERATE_SCRIPT} --man ${EVENT_MANIFEST} --exc ${EVENT_EXCLUSIONS} --intermediate ${CMAKE_CURRENT_BINARY_DIR} ${NONEXTERN_ARG})
 
 execute_process(
   COMMAND ${GENERATE_COMMAND} --dry-run
@@ -36,124 +28,16 @@ add_custom_command(OUTPUT ${GEN_EVENTPIPE_SOURCES}
   COMMAND ${GENERATE_COMMAND}
   DEPENDS ${GENERATE_SCRIPT} ${EVENT_MANIFEST} ${EVENT_EXCLUSIONS})
 
-set (EVENTPIPE_SOURCES "")
-set (EVENTPIPE_HEADERS "")
-set (CORECLR_EVENTPIPE_SHIM_SOURCES "")
-set (CORECLR_EVENTPIPE_SHIM_HEADERS "")
+list(APPEND CORECLR_EVENTPIPE_SHIM_SOURCES
+  ep-rt-coreclr.cpp
+)
 
-if(FEATURE_PERFTRACING_C_LIB)
-
-  set (SHARED_EVENTPIPE_SOURCE_PATH "${SHARED_EVENTPIPE_DIR}")
-  set (CORECLR_EVENTPIPE_SHIM_SOURCE_PATH "${CORECLR_EVENTPIPE_SHIM_DIR}")
-
-  include (${SHARED_EVENTPIPE_SOURCE_PATH}/CMakeLists.txt)
-
-  list(APPEND EVENTPIPE_SOURCES
-    ${SHARED_EVENTPIPE_SOURCES}
-    ${SHARED_DIAGNOSTIC_SERVER_SOURCES}
-  )
-
-  list(APPEND EVENTPIPE_HEADERS
-    ${SHARED_EVENTPIPE_HEADERS}
-    ${SHARED_DIAGNOSTIC_SERVER_HEADERS}
-  )
-
-  addprefix(EVENTPIPE_SOURCES ${SHARED_EVENTPIPE_SOURCE_PATH} "${EVENTPIPE_SOURCES}")
-  addprefix(EVENTPIPE_HEADERS ${SHARED_EVENTPIPE_SOURCE_PATH} "${EVENTPIPE_HEADERS}")
-
-  set_source_files_properties(${EVENTPIPE_SOURCES} PROPERTIES LANGUAGE CXX)
-
-  if(CLR_CMAKE_HOST_UNIX)
-    set_source_files_properties(${EVENTPIPE_SOURCES} PROPERTIES COMPILE_OPTIONS -xc++)
-  endif(CLR_CMAKE_HOST_UNIX)
-
-  list(APPEND CORECLR_EVENTPIPE_SHIM_SOURCES
-    ep-rt-coreclr.cpp
-  )
-
-  list(APPEND CORECLR_EVENTPIPE_SHIM_HEADERS
-    ds-rt-coreclr.h
-    ds-rt-types-coreclr.h
-    ep-rt-coreclr.h
-    ep-rt-config-coreclr.h
-    ep-rt-types-coreclr.h
-  )
-
-  addprefix(CORECLR_EVENTPIPE_SHIM_SOURCES ${CORECLR_EVENTPIPE_SHIM_SOURCE_PATH} "${CORECLR_EVENTPIPE_SHIM_SOURCES}")
-  addprefix(CORECLR_EVENTPIPE_SHIM_HEADERS ${CORECLR_EVENTPIPE_SHIM_SOURCE_PATH} "${CORECLR_EVENTPIPE_SHIM_HEADERS}")
-else(FEATURE_PERFTRACING_C_LIB)
-  list(APPEND EVENTPIPE_SOURCES
-    eventpipe.cpp
-    eventpipeblock.cpp
-    eventpipebuffer.cpp
-    eventpipebuffermanager.cpp
-    eventpipecommontypes.cpp
-    eventpipeconfiguration.cpp
-    eventpipeevent.cpp
-    eventpipeeventinstance.cpp
-    eventpipeeventpayload.cpp
-    eventpipeeventsource.cpp
-    eventpipefile.cpp
-    eventpipejsonfile.cpp
-    eventpipemetadatagenerator.cpp
-    eventpipeprovider.cpp
-    eventpipethread.cpp
-    eventpipesession.cpp
-    eventpipesessionprovider.cpp
-    fastserializer.cpp
-    sampleprofiler.cpp
-  )
-
-  list(APPEND EVENTPIPE_HEADERS
-    eventpipe.h
-    eventpipeblock.h
-    eventpipebuffer.h
-    eventpipebuffermanager.h
-    eventpipecommontypes.h
-    eventpipeconfiguration.h
-    eventpipeevent.h
-    eventpipeeventinstance.h
-    eventpipeeventpayload.h
-    eventpipeeventsource.h
-    eventpipefile.h
-    eventpipejsonfile.h
-    eventpipemetadatagenerator.h
-    eventpipeprovider.h
-    eventpipesession.h
-    eventpipesessionprovider.h
-    eventpipethread.h
-    fastserializer.h
-    sampleprofiler.h
-    stackcontents.h
-  )
-
-  list(APPEND EVENTPIPE_SOURCES
-    diagnosticserver.cpp
-    dumpdiagnosticprotocolhelper.cpp
-    eventpipeprotocolhelper.cpp
-    ipcstreamfactory.cpp
-    processdiagnosticsprotocolhelper.cpp
-    profilerdiagnosticprotocolhelper.cpp
-  )
-
-  list(APPEND EVENTPIPE_HEADERS
-    diagnosticserver.h
-    diagnosticsprotocol.h
-    dumpdiagnosticprotocolhelper.h
-    eventpipeprotocolhelper.h
-    ipcstreamfactory.h
-    processdiagnosticsprotocolhelper.h
-    profilerdiagnosticprotocolhelper.h
-  )
-
-  addprefix(EVENTPIPE_SOURCES ${VM_DIR} "${EVENTPIPE_SOURCES}")
-  addprefix(EVENTPIPE_HEADERS ${VM_DIR} "${EVENTPIPE_HEADERS}")
-endif(FEATURE_PERFTRACING_C_LIB)
-
-list(APPEND EVENTPIPE_SOURCES
-  ${CORECLR_EVENTPIPE_SHIM_SOURCES}
-  ${CORECLR_EVENTPIPE_SHIM_HEADERS}
-  ${EVENTPIPE_HEADERS}
+list(APPEND CORECLR_EVENTPIPE_SHIM_HEADERS
+  ds-rt-coreclr.h
+  ds-rt-types-coreclr.h
+  ep-rt-coreclr.h
+  ep-rt-config-coreclr.h
+  ep-rt-types-coreclr.h
 )
 
 add_library_clr(eventpipe_gen_objs OBJECT ${GEN_EVENTPIPE_SOURCES})
@@ -161,10 +45,23 @@ target_precompile_headers(eventpipe_gen_objs PRIVATE [["common.h"]])
 set_target_properties(eventpipe_gen_objs PROPERTIES LINKER_LANGUAGE CXX)
 add_dependencies(eventpipe_gen_objs eventing_headers)
 
-add_library_clr(eventpipe_objs OBJECT ${EVENTPIPE_SOURCES})
-target_precompile_headers(eventpipe_objs PRIVATE [["common.h"]])
-set_target_properties(eventpipe_objs PROPERTIES LINKER_LANGUAGE CXX)
+add_library_clr(eventpipe_objs OBJECT ${CORECLR_EVENTPIPE_SHIM_SOURCES} ${CORECLR_EVENTPIPE_SHIM_HEADERS})
+set_target_properties(eventpipe_objs PROPERTIES
+    LINKER_LANGUAGE CXX
+    UNITY_BUILD ON
+    UNITY_BUILD_BATCH_SIZE 0
+)
 add_dependencies(eventpipe_objs eventing_headers)
+target_link_libraries(eventpipe_objs PRIVATE dn-diagnosticserver dn-eventpipe)
+
+# The CoreCLR EventPipe runtime is C++, but the EventPipe and DiagnosticServer sources are C.
+# Forcibly override them to build as C++.
+get_property(diagnosticserver_sources TARGET dn-diagnosticserver PROPERTY INTERFACE_SOURCES)
+get_property(eventpipe_sources TARGET dn-eventpipe PROPERTY INTERFACE_SOURCES)
+set_source_files_properties(${diagnosticserver_sources} ${eventpipe_sources} PROPERTIES LANGUAGE CXX)
+
+# Build EventPipe and DiagnosticServer as unity-builds.
+set (SHARED_EVENTPIPE_SOURCE_PATH "${CLR_SRC_NATIVE_DIR}/eventpipe")
 
 add_library(eventpipe INTERFACE)
-target_sources(eventpipe INTERFACE $<TARGET_OBJECTS:eventpipe_gen_objs> $<TARGET_OBJECTS:eventpipe_objs>)
+target_sources(eventpipe INTERFACE $<TARGET_OBJECTS:eventpipe_gen_objs> $<TARGET_OBJECTS:eventpipe_objs> $<TARGET_OBJECTS:dn-containers>)

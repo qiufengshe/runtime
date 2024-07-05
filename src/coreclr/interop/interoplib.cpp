@@ -35,7 +35,7 @@ namespace InteropLib
             HRESULT hr;
 
             // Convert input to appropriate types.
-            auto vtables = static_cast<ABI::ComInterfaceEntry*>(vtablesRaw);
+            auto vtables = static_cast<::ABI::ComInterfaceEntry*>(vtablesRaw);
 
             ManagedObjectWrapper* mow;
             RETURN_IF_FAILED(ManagedObjectWrapper::Create(flags, instance, vtableCount, vtables, &mow));
@@ -46,7 +46,7 @@ namespace InteropLib
 
         void DestroyWrapperForObject(_In_ void* wrapperMaybe) noexcept
         {
-            ManagedObjectWrapper* wrapper = ManagedObjectWrapper::MapFromIUnknown(static_cast<IUnknown*>(wrapperMaybe));
+            ManagedObjectWrapper* wrapper = ManagedObjectWrapper::MapFromIUnknownWithQueryInterface(static_cast<IUnknown*>(wrapperMaybe));
 
             // A caller should not be destroying a wrapper without knowing if the wrapper is valid.
             _ASSERTE(wrapper != nullptr);
@@ -69,11 +69,9 @@ namespace InteropLib
             *object = nullptr;
 
             // Attempt to get the managed object wrapper.
-            ManagedObjectWrapper *mow = ManagedObjectWrapper::MapFromIUnknown(wrapper);
+            ManagedObjectWrapper *mow = ManagedObjectWrapper::MapFromIUnknownWithQueryInterface(wrapper);
             if (mow == nullptr)
                 return E_INVALIDARG;
-
-            (void)mow->AddRef();
 
             *object = mow->Target;
             return S_OK;
@@ -81,7 +79,7 @@ namespace InteropLib
 
         HRESULT MarkComActivated(_In_ IUnknown* wrapperMaybe) noexcept
         {
-            ManagedObjectWrapper* wrapper = ManagedObjectWrapper::MapFromIUnknown(wrapperMaybe);
+            ManagedObjectWrapper* wrapper = ManagedObjectWrapper::MapFromIUnknownWithQueryInterface(wrapperMaybe);
             if (wrapper == nullptr)
                 return E_INVALIDARG;
 
@@ -91,19 +89,20 @@ namespace InteropLib
 
         HRESULT IsComActivated(_In_ IUnknown* wrapperMaybe) noexcept
         {
-            ManagedObjectWrapper* wrapper = ManagedObjectWrapper::MapFromIUnknown(wrapperMaybe);
+            ManagedObjectWrapper* wrapper = ManagedObjectWrapper::MapFromIUnknownWithQueryInterface(wrapperMaybe);
             if (wrapper == nullptr)
                 return E_INVALIDARG;
 
             return wrapper->IsSet(CreateComInterfaceFlagsEx::IsComActivated) ? S_OK : S_FALSE;
         }
 
-        HRESULT GetIdentityForCreateWrapperForExternal(
+        HRESULT DetermineIdentityAndInnerForExternal(
             _In_ IUnknown* external,
             _In_ enum CreateObjectFlags flags,
-            _Outptr_ IUnknown** identity) noexcept
+            _Outptr_ IUnknown** identity,
+            _Inout_ IUnknown** innerMaybe) noexcept
         {
-            _ASSERTE(external != nullptr && identity != nullptr);
+            _ASSERTE(external != nullptr && identity != nullptr && innerMaybe != nullptr);
 
             IUnknown* checkForIdentity = external;
 
@@ -124,12 +123,27 @@ namespace InteropLib
                 // interface QI. Once we have the IReferenceTracker
                 // instance we can be sure the QI for IUnknown will really
                 // be the true identity.
-                HRESULT hr = external->QueryInterface(&trackerObject);
+                HRESULT hr = external->QueryInterface(IID_IReferenceTracker, (void**)&trackerObject);
                 if (SUCCEEDED(hr))
                     checkForIdentity = trackerObject.p;
             }
 
-            return checkForIdentity->QueryInterface(identity);
+            HRESULT hr;
+
+            IUnknown* identityLocal;
+            RETURN_IF_FAILED(checkForIdentity->QueryInterface(IID_IUnknown, (void **)&identityLocal));
+
+            // Set the inner if scenario dictates an update.
+            if (*innerMaybe == nullptr          // User didn't supply inner - .NET 5 API scenario sanity check.
+                && checkForIdentity != external // Target of check was changed - .NET 5 API scenario sanity check.
+                && external != identityLocal    // The supplied object doesn't match the computed identity.
+                && refTrackerInnerScenario)     // The appropriate flags were set.
+            {
+                *innerMaybe = external;
+            }
+
+            *identity = identityLocal;
+            return S_OK;
         }
 
         HRESULT CreateWrapperForExternal(
@@ -148,19 +162,41 @@ namespace InteropLib
 
             result->Context = wrapperContext->GetRuntimeContext();
             result->FromTrackerRuntime = (wrapperContext->GetReferenceTracker() != nullptr);
-            result->ManagedObjectWrapper = (ManagedObjectWrapper::MapFromIUnknown(external) != nullptr);
+            result->ManagedObjectWrapper = (ManagedObjectWrapper::MapFromIUnknownWithQueryInterface(external) != nullptr);
             return S_OK;
         }
 
-        void DestroyWrapperForExternal(_In_ void* contextMaybe) noexcept
+        void NotifyWrapperForExternalIsBeingCollected(_In_ void* contextMaybe) noexcept
+         {
+             NativeObjectWrapperContext* context = NativeObjectWrapperContext::MapFromRuntimeContext(contextMaybe);
+
+             // A caller should not be destroying a context without knowing if the context is valid.
+             _ASSERTE(context != nullptr);
+
+            // Check if the tracker object manager should be informed of collection.
+            IReferenceTracker* trackerMaybe = context->GetReferenceTracker();
+            if (trackerMaybe != nullptr)
+            {
+                // We only call this during a GC so ignore the failure as
+                // there is no way we can handle it at this point.
+                HRESULT hr = TrackerObjectManager::BeforeWrapperFinalized(trackerMaybe);
+                _ASSERTE(SUCCEEDED(hr));
+                (void)hr;
+            }
+        }
+
+        void DestroyWrapperForExternal(_In_ void* contextMaybe, _In_ bool notifyIsBeingCollected) noexcept
         {
             NativeObjectWrapperContext* context = NativeObjectWrapperContext::MapFromRuntimeContext(contextMaybe);
 
             // A caller should not be destroying a context without knowing if the context is valid.
             _ASSERTE(context != nullptr);
 
-            NativeObjectWrapperContext::Destroy(context);
-        }
+            if (notifyIsBeingCollected)
+                NotifyWrapperForExternalIsBeingCollected(contextMaybe);
+
+             NativeObjectWrapperContext::Destroy(context);
+         }
 
         void SeparateWrapperFromTrackerRuntime(_In_ void* contextMaybe) noexcept
         {

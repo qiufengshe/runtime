@@ -36,10 +36,9 @@ SET_DEFAULT_DEBUG_CHANNEL(PAL); // some headers have code with asserts, so do th
 #include "pal/utils.h"
 #include "pal/debug.h"
 #include "pal/init.h"
-#include "pal/numa.h"
 #include "pal/stackstring.hpp"
 #include "pal/cgroup.h"
-#include <getexepath.h>
+#include <minipal/getexepath.h>
 
 #if HAVE_MACH_EXCEPTIONS
 #include "../exception/machexception.h"
@@ -88,18 +87,22 @@ int CacheLineSize;
 #endif
 #endif
 
+#ifdef __FreeBSD__
+#include <sys/user.h>
+#endif
+
 #include <algorithm>
+#include <clrconfignocache.h>
 
 using namespace CorUnix;
 
-//
-// $$TODO The C++ compiler doesn't like pal/cruntime.h so duplicate the
-// necessary prototype here
-//
-
-extern "C" BOOL CRTInitStdStreams( void );
-
 extern bool g_running_in_exe;
+
+#if defined(HOST_ARM64)
+// Flag to check if atomics feature is available on
+// the machine
+bool g_arm64_atomics_present = false;
+#endif
 
 Volatile<INT> init_count = 0;
 Volatile<BOOL> shutdown_intent = 0;
@@ -134,7 +137,7 @@ static bool RunningNatively()
 {
     int ret = 0;
     size_t sz = sizeof(ret);
-    if (sysctlbyname("sysctl.proc_native", &ret, &sz, NULL, 0) != 0)
+    if (sysctlbyname("sysctl.proc_native", &ret, &sz, nullptr, 0) != 0)
     {
         // if the sysctl failed, we'll assume this OS does not support
         // binary translation - so we must be running natively.
@@ -207,7 +210,7 @@ int
 PALAPI
 PAL_InitializeDLL()
 {
-    return Initialize(0, NULL, g_initializeDLLFlags);
+    return Initialize(0, nullptr, g_initializeDLLFlags);
 }
 
 /*++
@@ -268,19 +271,23 @@ Abstract:
 void
 InitializeDefaultStackSize()
 {
-    char* defaultStackSizeStr = getenv("COMPlus_DefaultStackSize");
-    if (defaultStackSizeStr != NULL)
+    CLRConfigNoCache defStackSize = CLRConfigNoCache::Get("DefaultStackSize", /*noprefix*/ false, &getenv);
+    if (defStackSize.IsSet())
     {
-        errno = 0;
-        // Like all numeric values specific by the COMPlus_xxx variables, it is a
-        // hexadecimal string without any prefix.
-        long int size = strtol(defaultStackSizeStr, NULL, 16);
-
-        if (errno == 0)
+        DWORD size;
+        if (defStackSize.TryAsInteger(16, size))
         {
-            g_defaultStackSize = std::max(size, (long int)PTHREAD_STACK_MIN);
+            g_defaultStackSize = std::max(size, (DWORD)PTHREAD_STACK_MIN);
         }
     }
+
+#ifdef HOST_APPLE
+    // Match Windows stack size
+    if (g_defaultStackSize == 0)
+    {
+        g_defaultStackSize = 1536 * 1024;
+    }
+#endif
 
 #ifdef ENSURE_PRIMARY_STACK_SIZE
     if (g_defaultStackSize == 0)
@@ -311,10 +318,10 @@ Initialize(
     DWORD flags)
 {
     PAL_ERROR palError = ERROR_GEN_FAILURE;
-    CPalThread *pThread = NULL;
-    CSharedMemoryObjectManager *pshmom = NULL;
-    LPWSTR command_line = NULL;
-    LPWSTR exe_path = NULL;
+    CPalThread *pThread = nullptr;
+    CSharedMemoryObjectManager *pshmom = nullptr;
+    LPWSTR command_line = nullptr;
+    LPWSTR exe_path = nullptr;
     int retval = -1;
     bool fFirstTimeInit = false;
 
@@ -336,18 +343,18 @@ Initialize(
 
     CriticalSectionSubSysInitialize();
 
-    if(NULL == init_critsec)
+    if(nullptr == init_critsec)
     {
         pthread_mutex_lock(&init_critsec_mutex); // prevents race condition of two threads
                                                  // initializing the critical section.
-        if(NULL == init_critsec)
+        if(nullptr == init_critsec)
         {
             static CRITICAL_SECTION temp_critsec;
 
             // Want this critical section to NOT be internal to avoid the use of unsafe region markers.
             InternalInitializeCriticalSectionAndSpinCount(&temp_critsec, 0, false);
 
-            if(NULL != InterlockedCompareExchangePointer(&init_critsec, &temp_critsec, NULL))
+            if(nullptr != InterlockedCompareExchangePointer(&init_critsec, &temp_critsec, nullptr))
             {
                 // Another thread got in before us! shouldn't happen, if the PAL
                 // isn't initialized there shouldn't be any other threads
@@ -358,7 +365,7 @@ Initialize(
         pthread_mutex_unlock(&init_critsec_mutex);
     }
 
-    InternalEnterCriticalSection(pThread, init_critsec); // here pThread is always NULL
+    InternalEnterCriticalSection(pThread, init_critsec); // here pThread is always nullptr
 
     if (init_count == 0)
     {
@@ -406,15 +413,11 @@ Initialize(
 #endif // ENSURE_PRIMARY_STACK_SIZE
 
 #ifdef FEATURE_ENABLE_NO_ADDRESS_SPACE_RANDOMIZATION
-        char* useDefaultBaseAddr = getenv("COMPlus_UseDefaultBaseAddr");
-        if (useDefaultBaseAddr != NULL)
+        CLRConfigNoCache useDefaultBaseAddr = CLRConfigNoCache::Get("UseDefaultBaseAddr", /*noprefix*/ false, &getenv);
+        if (useDefaultBaseAddr.IsSet())
         {
-            errno = 0;
-            // Like all numeric values specific by the COMPlus_xxx variables, it is a
-            // hexadecimal string without any prefix.
-            long int flag = strtol(useDefaultBaseAddr, NULL, 16);
-
-            if (errno == 0)
+            DWORD flag;
+            if (useDefaultBaseAddr.TryAsInteger(16, flag))
             {
                 g_useDefaultBaseAddr = (BOOL) flag;
             }
@@ -508,7 +511,7 @@ Initialize(
         //
 
         pshmom = InternalNew<CSharedMemoryObjectManager>();
-        if (NULL == pshmom)
+        if (nullptr == pshmom)
         {
             ERROR("Unable to allocate new object manager\n");
             palError = ERROR_OUTOFMEMORY;
@@ -531,7 +534,7 @@ Initialize(
         g_pSynchronizationManager =
             CPalSynchMgrController::CreatePalSynchronizationManager();
 
-        if (NULL == g_pSynchronizationManager)
+        if (nullptr == g_pSynchronizationManager)
         {
             palError = ERROR_NOT_ENOUGH_MEMORY;
             ERROR("Failure creating synchronization manager\n");
@@ -545,11 +548,11 @@ Initialize(
 
     palError = ERROR_GEN_FAILURE;
 
-    if (argc > 0 && argv != NULL)
+    if (argc > 0 && argv != nullptr)
     {
         /* build the command line */
         command_line = INIT_FormatCommandLine(argc, argv);
-        if (NULL == command_line)
+        if (nullptr == command_line)
         {
             ERROR("Error building command line\n");
             palError = ERROR_PALINIT_COMMAND_LINE;
@@ -558,7 +561,7 @@ Initialize(
 
         /* find out the application's full path */
         exe_path = INIT_GetCurrentEXEPath();
-        if (NULL == exe_path)
+        if (nullptr == exe_path)
         {
             ERROR("Unable to find exe path\n");
             palError = ERROR_PALINIT_CONVERT_EXE_PATH;
@@ -576,7 +579,7 @@ Initialize(
         }
 
         // InitializeProcessCommandLine took ownership of this memory.
-        command_line = NULL;
+        command_line = nullptr;
 
 #ifdef PAL_PERF
         // Initialize the Profiling structure
@@ -597,7 +600,7 @@ Initialize(
         }
 
         // LOADSetExeName took ownership of this memory.
-        exe_path = NULL;
+        exe_path = nullptr;
     }
 
     if (init_count == 0)
@@ -663,20 +666,6 @@ Initialize(
             }
         }
 
-        if (FALSE == CRTInitStdStreams())
-        {
-            ERROR("Unable to initialize CRT standard streams\n");
-            palError = ERROR_PALINIT_STD_STREAMS;
-            goto CLEANUP15;
-        }
-
-        if (FALSE == NUMASupportInitialize())
-        {
-            ERROR("Unable to initialize NUMA support\n");
-            palError = ERROR_PALINIT_NUMA;
-            goto CLEANUP15;
-        }
-
         TRACE("First-time PAL initialization complete.\n");
         init_count++;
 
@@ -696,10 +685,6 @@ Initialize(
     }
     goto done;
 
-    NUMASupportCleanup();
-    /* No cleanup required for CRTInitStdStreams */
-CLEANUP15:
-    FILECleanupStdHandles();
 CLEANUP14:
     SEHCleanup();
 CLEANUP13:
@@ -742,7 +727,7 @@ done:
 
     if (fFirstTimeInit && 0 == retval)
     {
-        _ASSERTE(NULL != pThread);
+        _ASSERTE(nullptr != pThread);
     }
 
     if (retval != 0 && GetLastError() == ERROR_SUCCESS)
@@ -854,14 +839,18 @@ PAL_IsDebuggerPresent()
     close(status_fd);
 
     return debugger_present;
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__FreeBSD__)
     struct kinfo_proc info = {};
     size_t size = sizeof(info);
     int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
-    int ret = sysctl(mib, sizeof(mib)/sizeof(*mib), &info, &size, NULL, 0);
+    int ret = sysctl(mib, sizeof(mib)/sizeof(*mib), &info, &size, nullptr, 0);
 
     if (ret == 0)
+#if defined(__APPLE__)
         return ((info.kp_proc.p_flag & P_TRACED) != 0);
+#else // __FreeBSD__
+        return ((info.ki_flag & P_TRACED) != 0);
+#endif
 
     return FALSE;
 #elif defined(__NetBSD__)
@@ -871,12 +860,12 @@ PAL_IsDebuggerPresent()
 
     struct kinfo_proc *info;
 
-    kd = kvm_open(NULL, NULL, NULL, KVM_NO_FILES, "kvm_open");
-    if (kd == NULL)
+    kd = kvm_open(nullptr, nullptr, nullptr, KVM_NO_FILES, "kvm_open");
+    if (kd == nullptr)
         return FALSE;
 
     info = kvm_getprocs(kd, KERN_PROC_PID, getpid(), &cnt);
-    if (info == NULL || cnt < 1)
+    if (info == nullptr || cnt < 1)
     {
         kvm_close(kd);
         return FALSE;
@@ -960,7 +949,7 @@ PAL_TerminateEx(
 {
     ENTRY_EXTERNAL("PAL_TerminateEx()\n");
 
-    if (NULL == init_critsec)
+    if (nullptr == init_critsec)
     {
         /* note that these macros probably won't output anything, since the
         debug channels haven't been initialized yet */
@@ -1040,14 +1029,14 @@ void PALSetShutdownIntent()
 Function:
   PALInitLock
 
-Take the initializaiton critical section (init_critsec). necessary to serialize
+Take the initialization critical section (init_critsec). necessary to serialize
 TerminateProcess along with PAL_Terminate and PAL_Initialize
 
 (no parameters)
 
 Return value :
     TRUE if critical section existed (and was acquired)
-    FALSE if critical section doens't exist yet
+    FALSE if critical section doesn't exist yet
 --*/
 BOOL PALInitLock(void)
 {
@@ -1057,7 +1046,7 @@ BOOL PALInitLock(void)
     }
 
     CPalThread * pThread =
-        (PALIsThreadDataInitialized() ? InternalGetCurrentThread() : NULL);
+        (PALIsThreadDataInitialized() ? InternalGetCurrentThread() : nullptr);
 
     InternalEnterCriticalSection(pThread, init_critsec);
     return TRUE;
@@ -1079,7 +1068,7 @@ void PALInitUnlock(void)
     }
 
     CPalThread * pThread =
-        (PALIsThreadDataInitialized() ? InternalGetCurrentThread() : NULL);
+        (PALIsThreadDataInitialized() ? InternalGetCurrentThread() : nullptr);
 
     InternalLeaveCriticalSection(pThread, init_critsec);
 }
@@ -1161,7 +1150,7 @@ Note : not all peculiarities of Windows command-line processing are supported;
 static LPWSTR INIT_FormatCommandLine (int argc, const char * const *argv)
 {
     LPWSTR retval;
-    LPSTR command_line=NULL, command_ptr;
+    LPSTR command_line=nullptr, command_ptr;
     LPCSTR arg_ptr;
     INT length, i,j;
     BOOL bQuoted = FALSE;
@@ -1181,12 +1170,12 @@ static LPWSTR INIT_FormatCommandLine (int argc, const char * const *argv)
         length+=3;
         length+=strlen(argv[i])*2;
     }
-    command_line = reinterpret_cast<LPSTR>(InternalMalloc(length));
+    command_line = reinterpret_cast<LPSTR>(malloc(length != 0 ? length : 1));
 
     if(!command_line)
     {
         ERROR("couldn't allocate memory for command line!\n");
-        return NULL;
+        return nullptr;
     }
 
     command_ptr=command_line;
@@ -1225,27 +1214,27 @@ static LPWSTR INIT_FormatCommandLine (int argc, const char * const *argv)
     *command_ptr='\0';
 
     /* convert to Unicode */
-    i = MultiByteToWideChar(CP_ACP, 0,command_line, -1, NULL, 0);
+    i = MultiByteToWideChar(CP_ACP, 0,command_line, -1, nullptr, 0);
     if (i == 0)
     {
         ASSERT("MultiByteToWideChar failure\n");
         free(command_line);
-        return NULL;
+        return nullptr;
     }
 
-    retval = reinterpret_cast<LPWSTR>(InternalMalloc((sizeof(WCHAR)*i)));
-    if(retval == NULL)
+    retval = reinterpret_cast<LPWSTR>(malloc((sizeof(WCHAR)*i)));
+    if(retval == nullptr)
     {
         ERROR("can't allocate memory for Unicode command line!\n");
         free(command_line);
-        return NULL;
+        return nullptr;
     }
 
-    if(!MultiByteToWideChar(CP_ACP, 0,command_line, i, retval, i))
+    if(!MultiByteToWideChar(CP_ACP, 0,command_line, -1, retval, i))
     {
         ASSERT("MultiByteToWideChar failure\n");
         free(retval);
-        retval = NULL;
+        retval = nullptr;
     }
     else
         TRACE("Command line is %s\n", command_line);
@@ -1271,29 +1260,29 @@ static LPWSTR INIT_GetCurrentEXEPath()
     LPWSTR return_value;
     INT return_size;
 
-    char* path = getexepath();
+    char* path = minipal_getexepath();
     if (!path)
     {
         ERROR( "Cannot get current exe path\n" );
-        return NULL;
+        return nullptr;
     }
 
     PathCharString real_path;
     real_path.Set(path, strlen(path));
     free(path);
 
-    return_size = MultiByteToWideChar(CP_ACP, 0, real_path, -1, NULL, 0);
+    return_size = MultiByteToWideChar(CP_ACP, 0, real_path, -1, nullptr, 0);
     if (0 == return_size)
     {
         ASSERT("MultiByteToWideChar failure\n");
-        return NULL;
+        return nullptr;
     }
 
-    return_value = reinterpret_cast<LPWSTR>(InternalMalloc((return_size*sizeof(WCHAR))));
-    if (NULL == return_value)
+    return_value = reinterpret_cast<LPWSTR>(malloc((return_size*sizeof(WCHAR))));
+    if (nullptr == return_value)
     {
         ERROR("Not enough memory to create full path\n");
-        return NULL;
+        return nullptr;
     }
     else
     {
@@ -1302,7 +1291,7 @@ static LPWSTR INIT_GetCurrentEXEPath()
         {
             ASSERT("MultiByteToWideChar failure\n");
             free(return_value);
-            return_value = NULL;
+            return_value = nullptr;
         }
         else
         {
@@ -1370,5 +1359,5 @@ static BOOL INIT_SharedFilesPath(void)
     return gSharedFilesPath->Set(TEMP_DIRECTORY_PATH);
 
     // We can verify statically the non sandboxed case, since the size is known during compile time
-    static_assert_no_msg(string_countof(TEMP_DIRECTORY_PATH) + SHARED_MEMORY_MAX_FILE_PATH_CHAR_COUNT + 1 /* null terminator */ <= MAX_LONGPATH);
+    static_assert_no_msg(STRING_LENGTH(TEMP_DIRECTORY_PATH) + SHARED_MEMORY_MAX_FILE_PATH_CHAR_COUNT + 1 /* null terminator */ <= MAX_LONGPATH);
 }

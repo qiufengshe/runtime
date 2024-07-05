@@ -9,7 +9,7 @@
 #undef BUILD_AS_STANDALONE
 #endif // BUILD_AS_STANDALONE
 
-#define FEATURE_REDHAWK
+#define FEATURE_NATIVEAOT
 
 #if defined(_DEBUG)
 #ifndef _DEBUG_IMPL
@@ -60,7 +60,7 @@
 
 #define LL_INFO10 4
 
-#define STRESS_LOG_VA(msg)                                              do { } WHILE_0
+#define STRESS_LOG_VA(level,msg)                                        do { } WHILE_0
 #define STRESS_LOG0(facility, level, msg)                               do { } WHILE_0
 #define STRESS_LOG1(facility, level, msg, data1)                        do { } WHILE_0
 #define STRESS_LOG2(facility, level, msg, data1, data2)                 do { } WHILE_0
@@ -122,7 +122,7 @@ public:
         return (alloc_context *)&m_alloc_context;
     }
 
-    void SetGCSpecial(bool fGCSpecial)
+    void SetGCSpecial()
     {
     }
 };
@@ -172,5 +172,11 @@ public:
 
 #include "etmdummy.h"
 #define ETW_EVENT_ENABLED(e,f) false
+
+class ThreadStressLog
+{
+public:
+    #include "../../inc/gcmsg.inl"
+};
 
 #endif // __GCENV_H__

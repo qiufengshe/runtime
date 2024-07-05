@@ -2,8 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Diagnostics;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace Internal.TypeSystem
@@ -24,27 +24,27 @@ namespace Internal.TypeSystem
         public override bool Equals(object o)
         {
             // Its only valid to compare two TypeDescs in the same context
-            Debug.Assert(o is not TypeDesc || object.ReferenceEquals(((TypeDesc)o).Context, this.Context));
-            return object.ReferenceEquals(this, o);
+            Debug.Assert(o is not TypeDesc || ReferenceEquals(((TypeDesc)o).Context, this.Context));
+            return ReferenceEquals(this, o);
         }
 
 #if DEBUG
         public static bool operator ==(TypeDesc left, TypeDesc right)
         {
             // Its only valid to compare two TypeDescs in the same context
-            Debug.Assert(left is null || right is null || object.ReferenceEquals(left.Context, right.Context));
-            return object.ReferenceEquals(left, right);
+            Debug.Assert(left is null || right is null || ReferenceEquals(left.Context, right.Context));
+            return ReferenceEquals(left, right);
         }
 
         public static bool operator !=(TypeDesc left, TypeDesc right)
         {
             // Its only valid to compare two TypeDescs in the same context
-            Debug.Assert(left is null || right is null || object.ReferenceEquals(left.Context, right.Context));
-            return !object.ReferenceEquals(left, right);
+            Debug.Assert(left is null || right is null || ReferenceEquals(left.Context, right.Context));
+            return !ReferenceEquals(left, right);
         }
 #endif
 
-        // The most frequently used type properties are cached here to avoid excesive virtual calls
+        // The most frequently used type properties are cached here to avoid excessive virtual calls
         private TypeFlags _typeFlags;
 
         /// <summary>
@@ -117,7 +117,6 @@ namespace Internal.TypeSystem
                 case WellKnownType.RuntimeMethodHandle:
                 case WellKnownType.RuntimeFieldHandle:
                 case WellKnownType.TypedReference:
-                case WellKnownType.ByReferenceOfT:
                     flags = TypeFlags.ValueType;
                     break;
 
@@ -217,6 +216,8 @@ namespace Internal.TypeSystem
                     case TypeFlags.UInt32:
                     case TypeFlags.Int64:
                     case TypeFlags.UInt64:
+                    case TypeFlags.IntPtr:
+                    case TypeFlags.UIntPtr:
                     case TypeFlags.Single:
                     case TypeFlags.Double:
                         return true;
@@ -284,6 +285,14 @@ namespace Internal.TypeSystem
             }
         }
 
+        public bool IsTypedReference
+        {
+            get
+            {
+                return this.IsWellKnownType(WellKnownType.TypedReference);
+            }
+        }
+
         /// <summary>
         /// Gets a value indicating whether this is a generic definition, or
         /// an instance of System.Nullable`1.
@@ -293,18 +302,6 @@ namespace Internal.TypeSystem
             get
             {
                 return this.GetTypeDefinition().IsWellKnownType(WellKnownType.Nullable);
-            }
-        }
-
-        /// <summary>
-        /// Gets a value indicating whether this is a generic definition, or
-        /// an instance of System.ByReference`1.
-        /// </summary>
-        public bool IsByReferenceOfT
-        {
-            get
-            {
-                return this.GetTypeDefinition().IsWellKnownType(WellKnownType.ByReferenceOfT);
             }
         }
 
@@ -475,7 +472,6 @@ namespace Internal.TypeSystem
                 if (!this.IsEnum)
                     return this;
 
-                // TODO: Cache the result?
                 foreach (var field in this.GetFields())
                 {
                     if (!field.IsStatic)
@@ -509,6 +505,16 @@ namespace Internal.TypeSystem
         }
 
         /// <summary>
+        /// Gets a subset of methods returned by <see cref="GetMethods"/> that are virtual.
+        /// </summary>
+        public virtual IEnumerable<MethodDesc> GetVirtualMethods()
+        {
+            foreach (MethodDesc method in GetMethods())
+                if (method.IsVirtual)
+                    yield return method;
+        }
+
+        /// <summary>
         /// Gets a named method on the type. This method only looks at methods defined
         /// in type's metadata. The <paramref name="signature"/> parameter can be null.
         /// If signature is not specified and there are multiple matches, the first one
@@ -533,6 +539,19 @@ namespace Internal.TypeSystem
                 if (method.Name == name)
                 {
                     if (signature == null || signature.Equals(method.Signature.ApplySubstitution(substitution)))
+                        return method;
+                }
+            }
+            return null;
+        }
+
+        public virtual MethodDesc GetMethodWithEquivalentSignature(string name, MethodSignature signature, Instantiation substitution)
+        {
+            foreach (var method in GetMethods())
+            {
+                if (method.Name == name)
+                {
+                    if (signature == null || signature.EquivalentTo(method.Signature.ApplySubstitution(substitution)))
                         return method;
                 }
             }

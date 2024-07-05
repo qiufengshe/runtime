@@ -1,13 +1,14 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.Win32.SafeHandles;
 using System.Collections;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
-using System.Threading;
 using System.Runtime.Versioning;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
 
 namespace System.Net.Sockets
 {
@@ -18,17 +19,19 @@ namespace System.Net.Sockets
         private static CachedSerializedEndPoint? s_cachedMappedAnyV6EndPoint;
         private DynamicWinsockMethods? _dynamicWinsockMethods;
 
+#pragma warning disable CA1822
         internal void ReplaceHandleIfNecessaryAfterFailedConnect() { /* nop on Windows */ }
+#pragma warning restore CA1822
 
         private sealed class CachedSerializedEndPoint
         {
             public readonly IPEndPoint IPEndPoint;
-            public readonly Internals.SocketAddress SocketAddress;
+            public readonly SocketAddress SocketAddress;
 
             public CachedSerializedEndPoint(IPAddress address)
             {
                 IPEndPoint = new IPEndPoint(address, 0);
-                SocketAddress = IPEndPointExtensions.Serialize(IPEndPoint);
+                SocketAddress = IPEndPoint.Serialize();
             }
         }
 
@@ -67,18 +70,19 @@ namespace System.Net.Sockets
             IPAddress tempAddress = _addressFamily == AddressFamily.InterNetwork ? IPAddress.Any : IPAddress.IPv6Any;
             IPEndPoint ep = new IPEndPoint(tempAddress, 0);
 
-            Internals.SocketAddress socketAddress = IPEndPointExtensions.Serialize(ep);
+            SocketAddress socketAddress = ep.Serialize();
+            int size = socketAddress.Buffer.Length;
             unsafe
             {
-                fixed (byte* bufferPtr = socketAddress.Buffer)
-                fixed (int* sizePtr = &socketAddress.InternalSize)
+                fixed (byte* bufferPtr = socketAddress.Buffer.Span)
                 {
-                    errorCode = SocketPal.GetSockName(_handle, bufferPtr, sizePtr);
+                    errorCode = SocketPal.GetSockName(_handle, bufferPtr, &size);
                 }
             }
 
             if (errorCode == SocketError.Success)
             {
+                socketAddress.Size = size;
                 _rightEndPoint = ep.Create(socketAddress);
             }
             else if (errorCode == SocketError.InvalidArgument)
@@ -94,7 +98,7 @@ namespace System.Net.Sockets
         }
 
         private unsafe void LoadSocketTypeFromHandle(
-            SafeSocketHandle handle, out AddressFamily addressFamily, out SocketType socketType, out ProtocolType protocolType, out bool blocking, out bool isListening)
+            SafeSocketHandle handle, out AddressFamily addressFamily, out SocketType socketType, out ProtocolType protocolType, out bool blocking, out bool isListening, out bool isSocket)
         {
             // This can be called without winsock initialized. The handle is not going to be a valid socket handle in that case and the code will throw exception anyway.
             // Initializing winsock will ensure the error SocketError.NotSocket as opposed to SocketError.NotInitialized.
@@ -121,6 +125,7 @@ namespace System.Net.Sockets
             // This affects the result of querying Socket.Blocking, which will mostly only affect user code that happens to query
             // that property, though there are a few places we check it internally, e.g. as part of NetworkStream argument validation.
             blocking = true;
+            isSocket = true;
         }
 
         [SupportedOSPlatform("windows")]
@@ -142,30 +147,6 @@ namespace System.Net.Sockets
             Close(timeout: -1);
 
             return info;
-        }
-
-        public IAsyncResult BeginAccept(int receiveSize, AsyncCallback? callback, object? state)
-        {
-            return BeginAccept(acceptSocket: null, receiveSize, callback, state);
-        }
-
-        // This is the truly async version that uses AcceptEx.
-        public IAsyncResult BeginAccept(Socket? acceptSocket, int receiveSize, AsyncCallback? callback, object? state)
-        {
-            return BeginAcceptCommon(acceptSocket, receiveSize, callback, state);
-        }
-
-        public Socket EndAccept(out byte[] buffer, IAsyncResult asyncResult)
-        {
-            Socket socket = EndAccept(out byte[] innerBuffer, out int bytesTransferred, asyncResult);
-            buffer = new byte[bytesTransferred];
-            Buffer.BlockCopy(innerBuffer, 0, buffer, 0, bytesTransferred);
-            return socket;
-        }
-
-        public Socket EndAccept(out byte[] buffer, out int bytesTransferred, IAsyncResult asyncResult)
-        {
-            return EndAcceptCommon(out buffer!, out bytesTransferred, asyncResult);
         }
 
         private DynamicWinsockMethods GetDynamicWinsockMethods()
@@ -257,12 +238,36 @@ namespace System.Net.Sockets
 
             if (NetEventSource.Log.IsEnabled()) NetEventSource.Info(this, csep.IPEndPoint);
 
+            if (_socketType == SocketType.Stream && _protocolType == ProtocolType.Tcp)
+            {
+                EnableReuseUnicastPort();
+            }
+
             DoBind(csep.IPEndPoint, csep.SocketAddress);
         }
 
+        private void EnableReuseUnicastPort()
+        {
+            // By enabling SO_REUSE_UNICASTPORT, we defer actual port allocation until the ConnectEx call,
+            // so it can bind to ports from the Windows auto-reuse port range, if configured by an admin.
+            // The socket option is supported on Windows 10+, we are ignoring the SocketError in case setsockopt fails.
+            int optionValue = 1;
+            SocketError error = Interop.Winsock.setsockopt(
+                _handle,
+                SocketOptionLevel.Socket,
+                SocketOptionName.ReuseUnicastPort,
+                ref optionValue,
+                sizeof(int));
+
+            if (NetEventSource.Log.IsEnabled() && error != SocketError.Success)
+            {
+                error = SocketPal.GetLastSocketError();
+                NetEventSource.Info($"Enabling SO_REUSE_UNICASTPORT failed with error code: {error}");
+            }
+        }
+
         internal unsafe bool ConnectEx(SafeSocketHandle socketHandle,
-            IntPtr socketAddress,
-            int socketAddressSize,
+            ReadOnlySpan<byte> socketAddress,
             IntPtr buffer,
             int dataLength,
             out int bytesSent,
@@ -270,7 +275,7 @@ namespace System.Net.Sockets
         {
             ConnectExDelegate connectEx = GetDynamicWinsockMethods().GetConnectExDelegate(socketHandle);
 
-            return connectEx(socketHandle, socketAddress, socketAddressSize, buffer, dataLength, out bytesSent, overlapped);
+            return connectEx(socketHandle, socketAddress, buffer, dataLength, out bytesSent, overlapped);
         }
 
         internal unsafe SocketError WSARecvMsg(SafeSocketHandle socketHandle, IntPtr msg, out int bytesTransferred, NativeOverlapped* overlapped, IntPtr completionRoutine)
@@ -392,16 +397,13 @@ namespace System.Net.Sockets
             return acceptSocket;
         }
 
-        private void SendFileInternal(string? fileName, byte[]? preBuffer, byte[]? postBuffer, TransmitFileOptions flags)
+        private void SendFileInternal(string? fileName, ReadOnlySpan<byte> preBuffer, ReadOnlySpan<byte> postBuffer, TransmitFileOptions flags)
         {
-            // Open the file, if any
-            FileStream? fileStream = OpenFile(fileName);
-
             SocketError errorCode;
-            using (fileStream)
-            {
-                SafeFileHandle? fileHandle = fileStream?.SafeFileHandle;
 
+            // Open the file, if any
+            using (SafeFileHandle? fileHandle = OpenFileHandle(fileName))
+            {
                 // This can throw ObjectDisposedException.
                 errorCode = SocketPal.SendFile(_handle, fileHandle, preBuffer, postBuffer, flags);
             }
@@ -419,59 +421,6 @@ namespace System.Net.Sockets
             {
                 SetToDisconnected();
                 _remoteEndPoint = null;
-            }
-        }
-
-        private IAsyncResult BeginSendFileInternal(string? fileName, byte[]? preBuffer, byte[]? postBuffer, TransmitFileOptions flags, AsyncCallback? callback, object? state)
-        {
-            FileStream? fileStream = OpenFile(fileName);
-
-            TransmitFileAsyncResult asyncResult = new TransmitFileAsyncResult(this, state, callback);
-            asyncResult.StartPostingAsyncOp(false);
-
-            SocketError errorCode = SocketPal.SendFileAsync(_handle, fileStream, preBuffer, postBuffer, flags, asyncResult);
-
-            // Check for synchronous exception
-            if (!CheckErrorAndUpdateStatus(errorCode))
-            {
-                UpdateSendSocketErrorForDisposed(ref errorCode);
-                throw new SocketException((int)errorCode);
-            }
-
-            asyncResult.FinishPostingAsyncOp(ref Caches.SendClosureCache);
-
-            return asyncResult;
-        }
-
-        private void EndSendFileInternal(IAsyncResult asyncResult)
-        {
-            TransmitFileAsyncResult? castedAsyncResult = asyncResult as TransmitFileAsyncResult;
-            if (castedAsyncResult == null || castedAsyncResult.AsyncObject != this)
-            {
-                throw new ArgumentException(SR.net_io_invalidasyncresult, nameof(asyncResult));
-            }
-
-            if (castedAsyncResult.EndCalled)
-            {
-                throw new InvalidOperationException(SR.Format(SR.net_io_invalidendcall, "EndSendFile"));
-            }
-
-            castedAsyncResult.InternalWaitForCompletion();
-            castedAsyncResult.EndCalled = true;
-
-            // If the user passed the Disconnect and/or ReuseSocket flags, then TransmitFile disconnected the socket.
-            // Update our state to reflect this.
-            if (castedAsyncResult.DoDisconnect)
-            {
-                SetToDisconnected();
-                _remoteEndPoint = null;
-            }
-
-            SocketError errorCode = (SocketError)castedAsyncResult.ErrorCode;
-            if (errorCode != SocketError.Success)
-            {
-                UpdateSendSocketErrorForDisposed(ref errorCode);
-                UpdateStatusAfterSocketErrorAndThrowException(errorCode);
             }
         }
 

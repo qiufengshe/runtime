@@ -9,7 +9,7 @@ using Xunit;
 
 namespace System.Security.Cryptography.EcDsa.Tests
 {
-    [SkipOnMono("Not supported on Browser", TestPlatforms.Browser)]
+    [SkipOnPlatform(TestPlatforms.Browser, "Not supported on Browser")]
     public abstract class ECDsaSignatureFormatTests : DsaFamilySignatureFormatTests
     {
         protected override bool SupportsSha2 => true;
@@ -42,7 +42,10 @@ namespace System.Security.Cryptography.EcDsa.Tests
                 yield return OpenKey(EccTestData.BrainpoolP160r1Key1);
             }
 
-            yield return CreateKey(ECCurve.NamedCurves.nistP384);
+            if (ECDsaFactory.IsCurveValid(ECCurve.NamedCurves.nistP384.Oid))
+            {
+                yield return CreateKey(ECCurve.NamedCurves.nistP384);
+            }
 
             yield return OpenKey(EccTestData.GetNistP521DiminishedCoordsParameters());
 
@@ -357,7 +360,7 @@ namespace System.Security.Cryptography.EcDsa.Tests
                 Assert.Equal(0, written);
             }
 
-            Assert.True(false, $"TrySignHash eventually succeeds with a {expectedSize}/{maxSize}-byte destination");
+            Assert.Fail($"TrySignHash eventually succeeds with a {expectedSize}/{maxSize}-byte destination");
         }
 
         [Fact]
@@ -387,7 +390,7 @@ namespace System.Security.Cryptography.EcDsa.Tests
                 Assert.Equal(0, written);
             }
 
-            Assert.True(false, $"TrySignData eventually succeeds with a {expectedSize}/{maxSize}-byte destination");
+            Assert.Fail($"TrySignData eventually succeeds with a {expectedSize}/{maxSize}-byte destination");
         }
     }
 }

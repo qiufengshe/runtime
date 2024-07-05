@@ -16,46 +16,6 @@ typedef DPTR(SLOT) PTR_SLOT;
 
 typedef LPVOID  DictionaryEntry;
 
-/* Define the implementation dependent size types */
-
-#ifndef _INTPTR_T_DEFINED
-#ifdef  HOST_64BIT
-typedef __int64             intptr_t;
-#else
-typedef int                 intptr_t;
-#endif
-#define _INTPTR_T_DEFINED
-#endif
-
-#ifndef _UINTPTR_T_DEFINED
-#ifdef  HOST_64BIT
-typedef unsigned __int64    uintptr_t;
-#else
-typedef unsigned int        uintptr_t;
-#endif
-#define _UINTPTR_T_DEFINED
-#endif
-
-#ifndef _PTRDIFF_T_DEFINED
-#ifdef  HOST_64BIT
-typedef __int64             ptrdiff_t;
-#else
-typedef int                 ptrdiff_t;
-#endif
-#define _PTRDIFF_T_DEFINED
-#endif
-
-
-#ifndef _SIZE_T_DEFINED
-#ifdef  HOST_64BIT
-typedef unsigned __int64 size_t;
-#else
-typedef unsigned int     size_t;
-#endif
-#define _SIZE_T_DEFINED
-#endif
-
-
 #include "util.hpp"
 #include <corpriv.h>
 #include <cordbpriv.h>
@@ -88,18 +48,10 @@ class Crst;
 #ifdef FEATURE_COMINTEROP
 class RCWCleanupList;
 #endif // FEATURE_COMINTEROP
-class BBSweep;
 
-//
-// loader handles are opaque types that track object pointers that have a lifetime
-// that matches that of a loader allocator
-//
-struct LOADERHANDLE__
-{
-    void* unused;
-};
 typedef TADDR LOADERHANDLE;
-
+typedef Object* RUNTIMETYPEHANDLE;
+typedef DPTR(LOADERHANDLE) PTR_LOADERHANDLE;
 
 #ifdef DACCESS_COMPILE
 void OBJECTHANDLE_EnumMemoryRegions(OBJECTHANDLE handle);
@@ -157,6 +109,8 @@ class OBJECTREF {
     };
 
     public:
+        enum class tagVolatileLoadWithoutBarrier { tag };
+
         //-------------------------------------------------------------
         // Default constructor, for non-initializing declarations:
         //
@@ -168,6 +122,12 @@ class OBJECTREF {
         // Copy constructor, for passing OBJECTREF's as function arguments.
         //-------------------------------------------------------------
         OBJECTREF(const OBJECTREF & objref);
+
+        //-------------------------------------------------------------
+        // Copy constructor, for passing OBJECTREF's as function arguments
+        // using a volatile without barrier load
+        //-------------------------------------------------------------
+        OBJECTREF(const OBJECTREF * pObjref, tagVolatileLoadWithoutBarrier tag);
 
         //-------------------------------------------------------------
         // To allow NULL to be used as an OBJECTREF.
@@ -204,8 +164,28 @@ class OBJECTREF {
         //-------------------------------------------------------------
         OBJECTREF& operator=(const OBJECTREF &objref);
         OBJECTREF& operator=(TADDR nul);
+        
+        // We use this delayed check to avoid ambiguous overload issues with TADDR
+        // on platforms where NULL is defined as anything other than a uintptr_t constant
+        // or nullptr_t exactly.
+        // Without this, any valid "null pointer constant" that is not directly either type
+        // will be implicitly convertible to both TADDR and std::nullptr_t, causing ambiguity.
+        // With this, this constructor (and all similarly declared operators) drop out of
+        // consideration when used with NULL (and not nullptr_t).
+        // With this workaround, we get identical behavior between the Checked OBJECTREF builds
+        // and the release builds.
+        template<typename T, typename = typename std::enable_if<std::is_same<T, std::nullptr_t>::value>::type>
+        OBJECTREF(T)
+            : OBJECTREF(TADDR(0))
+        {
+        }
+        template<typename T, typename = typename std::enable_if<std::is_same<T, std::nullptr_t>::value>::type>
+        OBJECTREF& operator=(T)
+        {
+            return *this = TADDR(0);
+        }
 
-            // allow explict casts
+            // allow explicit casts
         explicit OBJECTREF(Object *pObject);
 
         void Validate(BOOL bDeep = TRUE, BOOL bVerifyNextHeader = TRUE, BOOL bVerifySyncBlock = TRUE);
@@ -224,17 +204,8 @@ template <class T>
 class REF : public OBJECTREF
 {
     public:
-
-        //-------------------------------------------------------------
-        // Default constructor, for non-initializing declarations:
-        //
-        //      OBJECTREF or;
-        //-------------------------------------------------------------
-      REF() :OBJECTREF ()
-        {
-            LIMITED_METHOD_CONTRACT;
-            // no op
-        }
+        REF() = default;
+        using OBJECTREF::OBJECTREF;
 
         //-------------------------------------------------------------
         // Copy constructor, for passing OBJECTREF's as function arguments.
@@ -243,16 +214,6 @@ class REF : public OBJECTREF
         {
             LIMITED_METHOD_CONTRACT;
             //no op
-        }
-
-
-        //-------------------------------------------------------------
-        // To allow NULL to be used as an OBJECTREF.
-        //-------------------------------------------------------------
-      REF(TADDR nul) : OBJECTREF (nul)
-        {
-            LIMITED_METHOD_CONTRACT;
-            // no op
         }
 
       explicit REF(T* pObject) : OBJECTREF(pObject)
@@ -302,6 +263,7 @@ class REF : public OBJECTREF
 #define OBJECTREFToObject(objref)  ((objref).operator-> ())
 #define ObjectToSTRINGREF(obj)     (STRINGREF(obj))
 #define STRINGREFToObject(objref)  (*( (StringObject**) &(objref) ))
+#define VolatileLoadWithoutBarrierOBJECTREF(pObj) (OBJECTREF(pObj, OBJECTREF::tagVolatileLoadWithoutBarrier::tag))
 
 // the while (0) syntax below is to force a trailing semicolon on users of the macro
 #define VALIDATEOBJECT(obj) do {if ((obj) != NULL) (obj)->Validate();} while (0)
@@ -316,6 +278,7 @@ class REF : public OBJECTREF
 #define OBJECTREFToObject(objref) ((PTR_Object) (objref))
 #define ObjectToSTRINGREF(obj)    ((PTR_StringObject) (obj))
 #define STRINGREFToObject(objref) ((PTR_StringObject) (objref))
+#define VolatileLoadWithoutBarrierOBJECTREF(pObj) VolatileLoadWithoutBarrier(pObj)
 
 #endif // _DEBUG_IMPL
 
@@ -333,10 +296,18 @@ class Module;
 // For [<I1, etc. up to and including [Object
 GARY_DECL(TypeHandle, g_pPredefinedArrayTypes, ELEMENT_TYPE_MAX);
 
-extern "C" Volatile<LONG>   g_TrapReturningThreads;
-
-EXTERN BBSweep              g_BBSweep;
-EXTERN IBCLogger            g_IBCLogger;
+// g_TrapReturningThreads == 0 disables thread polling/traping.
+// This allows to short-circuit further examining of thread states in the most
+// common scenario - when we are not interested in trapping anything.
+// 
+// The bit #1 is reserved for controlling thread suspension.
+// Setting bit #1 allows to atomically indicate/check that EE suspension is in progress.
+// There could be only one EE suspension in progress at a time. (it requires holding ThreadStore lock)
+// .
+// Other bits are used as a counter to enable thread trapping for other reasons, such as ThreadAbort.
+// There could be several active reasons for thread trapping at a time, like aborting multiple threads,
+// thus g_TrapReturningThreads value could be > 3.
+extern "C" volatile int32_t g_TrapReturningThreads;
 
 #ifdef _DEBUG
 // next two variables are used to enforce an ASSERT in Thread::DbgFindThread
@@ -357,22 +328,22 @@ GPTR_DECL(MethodTable,      g_pStringClass);
 GPTR_DECL(MethodTable,      g_pArrayClass);
 GPTR_DECL(MethodTable,      g_pSZArrayHelperClass);
 GPTR_DECL(MethodTable,      g_pNullableClass);
-GPTR_DECL(MethodTable,      g_pByReferenceClass);
 GPTR_DECL(MethodTable,      g_pExceptionClass);
 GPTR_DECL(MethodTable,      g_pThreadAbortExceptionClass);
 GPTR_DECL(MethodTable,      g_pOutOfMemoryExceptionClass);
 GPTR_DECL(MethodTable,      g_pStackOverflowExceptionClass);
 GPTR_DECL(MethodTable,      g_pExecutionEngineExceptionClass);
-GPTR_DECL(MethodTable,      g_pThreadAbortExceptionClass);
 GPTR_DECL(MethodTable,      g_pDelegateClass);
 GPTR_DECL(MethodTable,      g_pMulticastDelegateClass);
 GPTR_DECL(MethodTable,      g_pFreeObjectMethodTable);
 GPTR_DECL(MethodTable,      g_pValueTypeClass);
 GPTR_DECL(MethodTable,      g_pEnumClass);
 GPTR_DECL(MethodTable,      g_pThreadClass);
-GPTR_DECL(MethodTable,      g_pOverlappedDataClass);
 
 GPTR_DECL(MethodTable,      g_TypedReferenceMT);
+
+GPTR_DECL(MethodTable,      g_pWeakReferenceClass);
+GPTR_DECL(MethodTable,      g_pWeakReferenceOfTClass);
 
 #ifdef FEATURE_COMINTEROP
 GPTR_DECL(MethodTable,      g_pBaseCOMObject);
@@ -391,6 +362,16 @@ GVAL_DECL(DWORD,            g_debuggerWordTLSIndex);
 #endif
 GVAL_DECL(DWORD,            g_TlsIndex);
 
+#ifdef FEATURE_EH_FUNCLETS
+GPTR_DECL(MethodTable,      g_pEHClass);
+GPTR_DECL(MethodTable,      g_pExceptionServicesInternalCallsClass);
+GPTR_DECL(MethodTable,      g_pStackFrameIteratorClass);
+GVAL_DECL(bool,             g_isNewExceptionHandlingEnabled);
+#endif
+
+// Full path to the managed entry assembly - stored for ease of identifying the entry asssembly for diagnostics
+GVAL_DECL(PTR_WSTR, g_EntryAssemblyPath);
+
 // Global System Information
 extern SYSTEM_INFO g_SystemInfo;
 
@@ -402,6 +383,8 @@ EXTERN OBJECTHANDLE         g_pPreallocatedExecutionEngineException;
 
 // we use this as a dummy object to indicate free space in the handle tables -- this object is never visible to the world
 EXTERN OBJECTHANDLE         g_pPreallocatedSentinelObject;
+
+EXTERN MethodTable*         g_pCastHelpers;
 
 GPTR_DECL(Thread,g_pFinalizerThread);
 GPTR_DECL(Thread,g_pSuspensionThread);
@@ -470,36 +453,37 @@ EXTERN BOOL g_fComStarted;
 GVAL_DECL(DWORD, g_fEEShutDown);
 EXTERN DWORD g_fFastExitProcess;
 EXTERN BOOL g_fFatalErrorOccurredOnGCThread;
-EXTERN Volatile<LONG> g_fForbidEnterEE;
 GVAL_DECL(bool, g_fProcessDetach);
+#ifdef FEATURE_METADATA_UPDATER
+GVAL_DECL(bool, g_metadataUpdatesApplied);
+#endif
 EXTERN bool g_fManagedAttach;
-EXTERN bool g_fNoExceptions;
+
+#ifdef HOST_WINDOWS
+typedef BOOLEAN (WINAPI* PRTLDLLSHUTDOWNINPROGRESS)();
+EXTERN PRTLDLLSHUTDOWNINPROGRESS g_pfnRtlDllShutdownInProgress;
+#endif
 
 // Indicates whether we're executing shut down as a result of DllMain
 // (DLL_PROCESS_DETACH). See comments at code:EEShutDown for details.
-inline BOOL    IsAtProcessExit()
+inline bool IsAtProcessExit()
 {
     SUPPORTS_DAC;
+#if defined(DACCESS_COMPILE) || !defined(HOST_WINDOWS)
     return g_fProcessDetach;
+#else
+    // RtlDllShutdownInProgress provides more accurate information about whether the process is shutting down.
+    // Use it if it is available to avoid shutdown deadlocks.
+    // https://learn.microsoft.com/windows/win32/devnotes/rtldllshutdowninprogress
+    return g_pfnRtlDllShutdownInProgress();
+#endif
 }
-
-enum FWStatus
-{
-    FWS_WaitInterrupt = 0x00000001,
-};
-
-EXTERN DWORD g_FinalizerWaiterStatus;
 
 #if defined(TARGET_UNIX) && defined(FEATURE_EVENT_TRACE)
 extern Volatile<BOOL> g_TriggerHeapDump;
 #endif // TARGET_UNIX
 
 #ifndef DACCESS_COMPILE
-//
-// Allow use of native images?
-//
-extern bool g_fAllowNativeImages;
-
 //
 // Default install library
 //
@@ -613,53 +597,6 @@ GVAL_DECL(SIZE_T, g_runtimeVirtualSize);
 #define MAXULONGLONG                     UI64(0xffffffffffffffff)
 #endif
 
-struct TPIndex
-{
-    DWORD m_dwIndex;
-    TPIndex ()
-    : m_dwIndex(0)
-    {}
-    explicit TPIndex (DWORD id)
-    : m_dwIndex(id)
-    {}
-    BOOL operator==(const TPIndex& tpindex) const
-    {
-        return m_dwIndex == tpindex.m_dwIndex;
-    }
-    BOOL operator!=(const TPIndex& tpindex) const
-    {
-        return m_dwIndex != tpindex.m_dwIndex;
-    }
-};
-
-// Every Module is assigned a ModuleIndex, regardless of whether the Module is domain
-// neutral or domain specific. When a domain specific Module is unloaded, its ModuleIndex
-// can be reused.
-
-// ModuleIndexes are not the same as ModuleIDs. The main purpose of a ModuleIndex is
-// to have a compact way to refer to any Module (domain neutral or domain specific).
-// The main purpose of a ModuleID is to facilitate looking up the DomainLocalModule
-// that corresponds to a given Module in a given AppDomain.
-
-struct ModuleIndex
-{
-    SIZE_T m_dwIndex;
-    ModuleIndex ()
-    : m_dwIndex(0)
-    {}
-    explicit ModuleIndex (SIZE_T id)
-    : m_dwIndex(id)
-    { LIMITED_METHOD_DAC_CONTRACT; }
-    BOOL operator==(const ModuleIndex& ad) const
-    {
-        return m_dwIndex == ad.m_dwIndex;
-    }
-    BOOL operator!=(const ModuleIndex& ad) const
-    {
-        return m_dwIndex != ad.m_dwIndex;
-    }
-};
-
 //-----------------------------------------------------------------------------
 // GSCookies (guard-stack cookies) for detecting buffer overruns
 //-----------------------------------------------------------------------------
@@ -699,43 +636,15 @@ PTR_GSCookie GetProcessGSCookiePtr() { return  PTR_GSCookie(&s_gsCookie); }
 inline
 GSCookie GetProcessGSCookie() { return *(RAW_KEYWORD(volatile) GSCookie *)(&s_gsCookie); }
 
-class CEECompileInfo;
-extern CEECompileInfo *g_pCEECompileInfo;
+#ifdef TARGET_WINDOWS
+typedef BOOL(WINAPI* PINITIALIZECONTEXT2)(PVOID Buffer, DWORD ContextFlags, PCONTEXT* Context, PDWORD ContextLength, ULONG64 XStateCompactionMask);
+extern PINITIALIZECONTEXT2 g_pfnInitializeContext2;
 
-#ifdef FEATURE_READYTORUN_COMPILER
-extern bool g_fReadyToRunCompilation;
-extern bool g_fLargeVersionBubble;
-#endif
+#ifdef TARGET_X86
+typedef VOID(__cdecl* PRTLRESTORECONTEXT)(PCONTEXT ContextRecord, struct _EXCEPTION_RECORD* ExceptionRecord);
+extern PRTLRESTORECONTEXT g_pfnRtlRestoreContext;
+#endif // TARGET_X86
 
-// Returns true if this is NGen compilation process.
-// This is a superset of CompilationDomain::IsCompilationDomain() as there is more
-// than one AppDomain in ngen (the DefaultDomain)
-inline BOOL IsCompilationProcess()
-{
-#ifdef CROSSGEN_COMPILE
-    return TRUE;
-#else
-    return FALSE;
-#endif
-}
-
-// Flag for cross-platform ngen: Removes all execution of managed or third-party code in the ngen compilation process.
-inline BOOL NingenEnabled()
-{
-#ifdef CROSSGEN_COMPILE
-    return TRUE;
-#else
-    return FALSE;
-#endif
-}
-
-// Passed to JitManager APIs to determine whether to avoid calling into the host.
-// The profiling API stackwalking uses this to ensure to avoid re-entering the host
-// (particularly SQL) from a hijacked thread.
-enum HostCallPreference
-{
-    AllowHostCalls,
-    NoHostCalls,
-};
+#endif // TARGET_WINDOWS
 
 #endif /* _VARS_HPP */

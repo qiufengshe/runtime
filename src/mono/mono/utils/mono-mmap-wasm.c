@@ -10,9 +10,6 @@
 #if HAVE_SYS_MMAN_H
 #include <sys/mman.h>
 #endif
-#ifdef HAVE_SYS_SYSCTL_H
-#include <sys/sysctl.h>
-#endif
 #include <signal.h>
 #include <fcntl.h>
 #include <string.h>
@@ -25,7 +22,9 @@
 #include "mono-proclib.h"
 #include <mono/utils/mono-threads.h>
 #include <mono/utils/atomic.h>
-#include <mono/utils/mono-counters.h>
+#include <mono/utils/options.h>
+
+#include "mono-wasm-pagemgr.h"
 
 #define BEGIN_CRITICAL_SECTION do { \
 	MonoThreadInfo *__info = mono_thread_info_current_unchecked (); \
@@ -35,11 +34,12 @@
 	if (__info) __info->inside_critical_region = FALSE;	\
 } while (0)	\
 
-static void* malloced_shared_area = NULL;
-
 int
 mono_pagesize (void)
 {
+	if (mono_opt_wasm_mmap)
+		return MWPM_PAGE_SIZE;
+
 	static int saved_pagesize = 0;
 
 	if (saved_pagesize)
@@ -64,6 +64,12 @@ mono_valloc_granule (void)
 static int
 prot_from_flags (int flags)
 {
+#if HOST_WASI
+	// The mmap in wasi-sdk rejects PROT_NONE, but otherwise disregards the flags
+	// We just need to pass an acceptable value
+	return PROT_READ;
+#endif
+
 	int prot = PROT_NONE;
 	/* translate the protection bits */
 	if (flags & MONO_MMAP_READ)
@@ -72,6 +78,7 @@ prot_from_flags (int flags)
 		prot |= PROT_WRITE;
 	if (flags & MONO_MMAP_EXEC)
 		prot |= PROT_EXEC;
+
 	return prot;
 }
 
@@ -89,8 +96,8 @@ mono_setmmapjit (int flag)
 	/* Ignored on HOST_WASM */
 }
 
-void*
-mono_valloc (void *addr, size_t size, int flags, MonoMemAccountType type)
+static void*
+valloc_impl (void *addr, size_t size, int flags, MonoMemAccountType type)
 {
 	void *ptr;
 	int mflags = 0;
@@ -107,7 +114,16 @@ mono_valloc (void *addr, size_t size, int flags, MonoMemAccountType type)
 	mflags |= MAP_PRIVATE;
 
 	BEGIN_CRITICAL_SECTION;
-	ptr = mmap (addr, size, prot, mflags, -1, 0);
+	if (mono_opt_wasm_mmap) {
+		// FIXME: Make this work if the requested address range is free
+		if ((flags & MONO_MMAP_FIXED) && addr)
+			return NULL;
+
+		ptr = mwpm_alloc_range (size, (flags & MONO_MMAP_NOZERO) == 0);
+		if (!ptr)
+			return NULL;
+	} else
+		ptr = mmap (addr, size, prot, mflags, -1, 0);
 	END_CRITICAL_SECTION;
 
 	if (ptr == MAP_FAILED)
@@ -116,6 +132,19 @@ mono_valloc (void *addr, size_t size, int flags, MonoMemAccountType type)
 	mono_account_mem (type, (ssize_t)size);
 
 	return ptr;
+}
+
+void*
+mono_valloc (void *addr, size_t size, int flags, MonoMemAccountType type)
+{
+#if HOST_WASI
+	// WASI implements mmap using malloc, so the returned address is not page aligned
+	// and our code depends on it
+	g_assert (!addr);
+	return mono_valloc_aligned (size, mono_pagesize (), flags, type);
+#else
+	return valloc_impl (addr, size, flags, type);
+#endif
 }
 
 static GHashTable *valloc_hash;
@@ -128,8 +157,12 @@ typedef struct {
 void*
 mono_valloc_aligned (size_t size, size_t alignment, int flags, MonoMemAccountType type)
 {
+	// We don't need padding if the alignment is compatible with the page size
+	if (mono_opt_wasm_mmap && ((MWPM_PAGE_SIZE % alignment) == 0))
+		return valloc_impl (NULL, size, flags, type);
+
 	/* Allocate twice the memory to be able to put the block on an aligned address */
-	char *mem = (char *) mono_valloc (NULL, size + alignment, flags, type);
+	char *mem = (char *) valloc_impl (NULL, size + alignment, flags, type);
 	char *aligned;
 
 	if (!mem)
@@ -154,7 +187,6 @@ int
 mono_vfree (void *addr, size_t length, MonoMemAccountType type)
 {
 	VallocInfo *info = (VallocInfo*)(valloc_hash ? g_hash_table_lookup (valloc_hash, addr) : NULL);
-	int res;
 
 	if (info) {
 		/*
@@ -162,13 +194,22 @@ mono_vfree (void *addr, size_t length, MonoMemAccountType type)
 		 * mono_valloc_align (), free the original mapping.
 		 */
 		BEGIN_CRITICAL_SECTION;
-		res = munmap (info->addr, info->size);
+		if (mono_opt_wasm_mmap)
+			mwpm_free_range (info->addr, info->size);
+		else
+			munmap (info->addr, info->size);
 		END_CRITICAL_SECTION;
 		g_free (info);
 		g_hash_table_remove (valloc_hash, addr);
 	} else {
+		// FIXME: We could be trying to unmap part of an aligned mapping, in which case the
+		//  hash lookup failed because addr isn't exactly the start of the mapping.
+		// Ideally if the custom page manager is enabled, we won't have done aligned alloc.
 		BEGIN_CRITICAL_SECTION;
-		res = munmap (addr, length);
+		if (mono_opt_wasm_mmap)
+			mwpm_free_range (addr, length);
+		else
+			munmap (addr, length);
 		END_CRITICAL_SECTION;
 	}
 
@@ -190,8 +231,6 @@ mono_file_map (size_t length, int flags, int fd, guint64 offset, void **ret_hand
 		mflags |= MAP_SHARED;
 	if (flags & MONO_MMAP_FIXED)
 		mflags |= MAP_FIXED;
-	if (flags & MONO_MMAP_32BIT)
-		mflags |= MAP_32BIT;
 
 	if (length == 0)
 		/* emscripten throws an exception on 0 length */
@@ -227,40 +266,6 @@ mono_file_unmap (void *addr, void *handle)
 
 int
 mono_mprotect (void *addr, size_t length, int flags)
-{
-	return 0;
-}
-
-void*
-mono_shared_area (void)
-{
-	if (!malloced_shared_area)
-		malloced_shared_area = mono_malloc_shared_area (getpid ());
-	/* get the pid here */
-	return malloced_shared_area;
-}
-
-void
-mono_shared_area_remove (void)
-{
-	if (malloced_shared_area)
-		g_free (malloced_shared_area);
-	malloced_shared_area = NULL;
-}
-
-void*
-mono_shared_area_for_pid (void *pid)
-{
-	return NULL;
-}
-
-void
-mono_shared_area_unload (void *area)
-{
-}
-
-int
-mono_shared_area_instances (void **array, int count)
 {
 	return 0;
 }

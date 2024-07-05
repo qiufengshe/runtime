@@ -1,4 +1,5 @@
 .assembly extern System.Runtime {  }
+.assembly extern xunit.core {}
 
 .assembly genericldtoken { }
 
@@ -18,12 +19,15 @@
   }
 }
 
-.class private auto ansi beforefieldinit Program
+.class public auto ansi beforefieldinit Program
        extends [System.Runtime]System.Object
 {
-  .method private hidebysig static int32 
-          Main(string[] args) cil managed
+  .method public hidebysig static int32 
+          Main() cil managed
   {
+    .custom instance void [xunit.core]Xunit.FactAttribute::.ctor() = (
+        01 00 00 00
+    )
     .entrypoint
     // Code size       124 (0x7c)
     .maxstack  5

@@ -9,7 +9,7 @@ namespace Microsoft.Extensions.Logging.Debug
     /// <summary>
     /// A logger that writes messages in the debug output window only when a debugger is attached.
     /// </summary>
-    internal partial class DebugLogger : ILogger
+    internal sealed partial class DebugLogger : ILogger
     {
         private readonly string _name;
 
@@ -23,7 +23,7 @@ namespace Microsoft.Extensions.Logging.Debug
         }
 
         /// <inheritdoc />
-        public IDisposable BeginScope<TState>(TState state)
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull
         {
             return NullScope.Instance;
         }
@@ -31,23 +31,19 @@ namespace Microsoft.Extensions.Logging.Debug
         /// <inheritdoc />
         public bool IsEnabled(LogLevel logLevel)
         {
-            // If the filter is null, everything is enabled
-            // unless the debugger is not attached
+            // Everything is enabled unless the debugger is not attached
             return Debugger.IsAttached && logLevel != LogLevel.None;
         }
 
         /// <inheritdoc />
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             if (!IsEnabled(logLevel))
             {
                 return;
             }
 
-            if (formatter == null)
-            {
-                throw new ArgumentNullException(nameof(formatter));
-            }
+            ThrowHelper.ThrowIfNull(formatter);
 
             string message = formatter(state, exception);
 
@@ -56,7 +52,7 @@ namespace Microsoft.Extensions.Logging.Debug
                 return;
             }
 
-            message = $"{ logLevel }: {message}";
+            message = $"{logLevel}: {message}";
 
             if (exception != null)
             {

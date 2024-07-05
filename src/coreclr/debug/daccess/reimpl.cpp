@@ -63,7 +63,7 @@ DacGetThread(ULONG32 osThread)
     return NULL;
 }
 
-EXTERN_C Thread* GetThread()
+Thread* GetThread()
 {
     // In dac mode it's unlikely that the thread calling dac
     // is actually the same "current thread" that the runtime cares
@@ -73,6 +73,11 @@ EXTERN_C Thread* GetThread()
     // to specific Thread objects.
     DacError(E_UNEXPECTED);
     return NULL;
+}
+
+Thread* GetThreadNULLOk()
+{
+    return GetThread();
 }
 
 BOOL
@@ -102,7 +107,7 @@ DacGetThreadContext(Thread* thread, T_CONTEXT* context)
     HRESULT status =
         g_dacImpl->m_pTarget->
         GetThreadContext(thread->GetOSThreadId(), contextFlags,
-                         sizeof(*context), (PBYTE)context);
+                         sizeof(DT_CONTEXT), (PBYTE)context);
     if (status != S_OK)
     {
         DacError(status);

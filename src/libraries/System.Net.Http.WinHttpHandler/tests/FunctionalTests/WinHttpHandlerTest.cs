@@ -80,7 +80,6 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
 
         [OuterLoop]
         [Fact]
-        [OuterLoop]
         public async Task SendAsync_SlowServerAndCancel_ThrowsTaskCanceledException()
         {
             var handler = new WinHttpHandler();
@@ -97,19 +96,39 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
             }
         }
 
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/20675")]
         [OuterLoop]
         [Fact]
-        [OuterLoop]
-        public void SendAsync_SlowServerRespondsAfterDefaultReceiveTimeout_ThrowsHttpRequestException()
+        public async Task SendAsync_SlowServerRespondsAfterDefaultReceiveTimeout_ThrowsHttpRequestException()
         {
             var handler = new WinHttpHandler();
             using (var client = new HttpClient(handler))
             {
-                Task<HttpResponseMessage> t = client.GetAsync(SlowServer);
+                var triggerResponseWrite = new TaskCompletionSource<bool>();
+                var triggerRequestWait = new TaskCompletionSource<bool>();
 
-                AggregateException ag = Assert.Throws<AggregateException>(() => t.Wait());
-                Assert.IsType<HttpRequestException>(ag.InnerException);
+                await LoopbackServer.CreateServerAsync(async (server, url) =>
+                {
+                    Task serverTask = server.AcceptConnectionAsync(async connection =>
+                    {
+                        await connection.SendResponseAsync($"HTTP/1.1 200 OK\r\nContent-Length: 16000\r\n\r\n");
+
+                        triggerRequestWait.SetResult(true);
+                        await triggerResponseWrite.Task;
+                    });
+
+                    HttpRequestException ex = await Assert.ThrowsAsync<HttpRequestException>(async () =>
+                    {
+                        Task<HttpResponseMessage> t = client.GetAsync(url);
+                        await triggerRequestWait.Task;
+                        var _ = await t;
+                    });
+                    _output.WriteLine($"ex: {ex}");
+                    Assert.IsType<IOException>(ex.InnerException);
+                    Assert.NotNull(ex.InnerException.InnerException);
+                    Assert.Contains("The operation timed out", ex.InnerException.InnerException.Message);
+
+                    triggerResponseWrite.SetResult(true);
+                });
             }
         }
 
@@ -128,7 +147,7 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
             using (HttpClient client = new HttpClient(handler))
             {
                 HttpRequestException ex = await Assert.ThrowsAsync<HttpRequestException>(() => client.SendAsync(request));
-                _output.WriteLine(ex.ToString());
+                _output.WriteLine($"Ignored exception:{Environment.NewLine}{ex}");
             }
         }
 
@@ -199,12 +218,12 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
             aboveLimitRequest.Content = new StringContent($"{payloadText}-{maxActiveStreamsLimit + 1}");
             Task<HttpResponseMessage> aboveLimitResponseTask = client.SendAsync(aboveLimitRequest, HttpCompletionOption.ResponseContentRead);
 
-            await aboveLimitResponseTask.TimeoutAfter(TestHelper.PassingTestTimeoutMilliseconds);
+            await aboveLimitResponseTask.WaitAsync(TestHelper.PassingTestTimeout);
             await VerifyResponse(aboveLimitResponseTask, $"{payloadText}-{maxActiveStreamsLimit + 1}");
 
             delaySource.SetResult(true);
 
-            await Task.WhenAll(requests.Select(r => r.task).ToArray()).TimeoutAfter(15000);
+            await Task.WhenAll(requests.Select(r => r.task).ToArray()).WaitAsync(TimeSpan.FromSeconds(15));
 
             foreach ((Task<HttpResponseMessage> task, DelayedStream stream) in requests)
             {
@@ -212,7 +231,7 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
                 HttpResponseMessage response = task.Result;
                 Assert.True(response.IsSuccessStatusCode);
                 Assert.Equal(HttpVersion20.Value, response.Version);
-                string responsePayload = await response.Content.ReadAsStringAsync().TimeoutAfter(TestHelper.PassingTestTimeoutMilliseconds);
+                string responsePayload = await response.Content.ReadAsStringAsync().WaitAsync(TestHelper.PassingTestTimeout);
                 Assert.Contains(payloadText, responsePayload);
             }
         }
@@ -236,7 +255,7 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
             _output.WriteLine(responseContent);
 
             // Uncomment this to observe an exchange of "TCP Keep-Alive" and "TCP Keep-Alive ACK" packets:
-            // await Task.Delay(5000); 
+            // await Task.Delay(5000);
         }
 
         private async Task VerifyResponse(Task<HttpResponseMessage> task, string payloadText)
@@ -245,7 +264,7 @@ namespace System.Net.Http.WinHttpHandlerFunctional.Tests
             HttpResponseMessage response = task.Result;
             Assert.True(response.IsSuccessStatusCode);
             Assert.Equal(HttpVersion20.Value, response.Version);
-            string responsePayload = await response.Content.ReadAsStringAsync().TimeoutAfter(TestHelper.PassingTestTimeoutMilliseconds);
+            string responsePayload = await response.Content.ReadAsStringAsync().WaitAsync(TestHelper.PassingTestTimeout);
             Assert.Contains(payloadText, responsePayload);
         }
 

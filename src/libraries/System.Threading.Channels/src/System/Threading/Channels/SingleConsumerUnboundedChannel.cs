@@ -13,7 +13,7 @@ namespace System.Threading.Channels
     /// Provides a buffered channel of unbounded capacity for use by any number
     /// of writers but at most a single reader at a time.
     /// </summary>
-    [DebuggerDisplay("Items={ItemsCountForDebugger}, Closed={ChannelIsClosedForDebugger}")]
+    [DebuggerDisplay("Items = {ItemsCountForDebugger}, Closed = {ChannelIsClosedForDebugger}")]
     [DebuggerTypeProxy(typeof(DebugEnumeratorDebugView<>))]
     internal sealed class SingleConsumerUnboundedChannel<T> : Channel<T>, IDebugEnumerable<T>
     {
@@ -48,7 +48,7 @@ namespace System.Threading.Channels
             Writer = new UnboundedChannelWriter(this);
         }
 
-        [DebuggerDisplay("Items={ItemsCountForDebugger}")]
+        [DebuggerDisplay("Items = {ItemsCountForDebugger}")]
         [DebuggerTypeProxy(typeof(DebugEnumeratorDebugView<>))]
         private sealed class UnboundedChannelReader : ChannelReader<T>, IDebugEnumerable<T>
         {
@@ -64,6 +64,8 @@ namespace System.Threading.Channels
             }
 
             public override Task Completion => _parent._completion.Task;
+
+            public override bool CanPeek => true;
 
             public override ValueTask<T> ReadAsync(CancellationToken cancellationToken)
             {
@@ -132,6 +134,9 @@ namespace System.Threading.Channels
                 return false;
             }
 
+            public override bool TryPeek([MaybeNullWhen(false)] out T item) =>
+                _parent._items.TryPeek(out item);
+
             public override ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken)
             {
                 // Outside of the lock, check if there are any items waiting to be read.  If there are, we're done.
@@ -194,7 +199,7 @@ namespace System.Threading.Channels
             IEnumerator<T> IDebugEnumerable<T>.GetEnumerator() => _parent._items.GetEnumerator();
         }
 
-        [DebuggerDisplay("Items={ItemsCountForDebugger}")]
+        [DebuggerDisplay("Items = {ItemsCountForDebugger}")]
         [DebuggerTypeProxy(typeof(DebugEnumeratorDebugView<>))]
         private sealed class UnboundedChannelWriter : ChannelWriter<T>, IDebugEnumerable<T>
         {

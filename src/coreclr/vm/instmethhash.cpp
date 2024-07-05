@@ -16,11 +16,7 @@
 #include "eeconfig.h"
 #include "generics.h"
 #include "typestring.h"
-#ifdef FEATURE_PREJIT
-#include "zapsig.h"
-#include "compile.h"
-#endif
-#include "ngenhash.inl"
+#include "dacenumerablehash.inl"
 
 PTR_MethodDesc InstMethodHashEntry::GetMethod()
 {
@@ -85,7 +81,7 @@ PTR_LoaderAllocator InstMethodHashTable::GetLoaderAllocator()
     }
     else
     {
-        _ASSERTE(!m_pModule.IsNull());
+        _ASSERTE(m_pModule != NULL);
         return GetModule()->GetLoaderAllocator();
     }
 }
@@ -100,30 +96,19 @@ static DWORD Hash(TypeHandle declaringType, mdMethodDef token, Instantiation ins
 
     DWORD dwHash = 0x87654321;
 #define INST_HASH_ADD(_value) dwHash = ((dwHash << 5) + dwHash) ^ (_value)
+#ifdef TARGET_64BIT
+#define INST_HASH_ADDPOINTER(_value) INST_HASH_ADD((uint32_t)(uintptr_t)_value); INST_HASH_ADD((uint32_t)(((uintptr_t)_value) >> 32))
+#else
+#define INST_HASH_ADDPOINTER(_value) INST_HASH_ADD((uint32_t)(uintptr_t)_value);
+#endif
 
-    INST_HASH_ADD(declaringType.GetCl());
+    INST_HASH_ADDPOINTER(declaringType.AsPtr());
     INST_HASH_ADD(token);
 
     for (DWORD i = 0; i < inst.GetNumArgs(); i++)
     {
         TypeHandle thArg = inst[i];
-
-        if (thArg.GetMethodTable())
-        {
-            INST_HASH_ADD(thArg.GetCl());
-
-            Instantiation sArgInst = thArg.GetInstantiation();
-            for (DWORD j = 0; j < sArgInst.GetNumArgs(); j++)
-            {
-                TypeHandle thSubArg = sArgInst[j];
-                if (thSubArg.GetMethodTable())
-                    INST_HASH_ADD(thSubArg.GetCl());
-                else
-                    INST_HASH_ADD(thSubArg.GetSignatureCorElementType());
-            }
-        }
-        else
-            INST_HASH_ADD(thArg.GetSignatureCorElementType());
+        INST_HASH_ADDPOINTER(thArg.AsPtr());
     }
 
     return dwHash;
@@ -144,13 +129,6 @@ MethodDesc* InstMethodHashTable::FindMethodDesc(TypeHandle declaringType,
     }
     CONTRACTL_END
 
-        // We temporarily disable IBC logging here
-        // because the pMD that we search through may not be restored
-        // and ComputePreferredZapModule will assert on finding an
-        // encode fixup pointer
-        //
-        IBCLoggingDisabler disableIbcLogging;
-
     MethodDesc *pMDResult = NULL;
 
     DWORD dwHash = Hash(declaringType, token, inst);
@@ -161,11 +139,6 @@ MethodDesc* InstMethodHashTable::FindMethodDesc(TypeHandle declaringType,
          pSearch != NULL;
          pSearch = BaseFindNextEntryByHash(&sContext))
     {
-#ifdef FEATURE_PREJIT
-        // This ensures that GetAssemblyIfLoaded operations that may be triggered by signature walks will succeed if at all possible.
-        ClrFlsThreadTypeSwitch genericInstantionCompareHolder(ThreadType_GenericInstantiationCompare);
-#endif
-
         MethodDesc *pMD = pSearch->GetMethod();
 
         if (pMD->GetMemberDef() != token)
@@ -182,16 +155,7 @@ MethodDesc* InstMethodHashTable::FindMethodDesc(TypeHandle declaringType,
         if ( ((dwKeyFlags & InstMethodHashEntry::UnboxingStub)    == 0) != (unboxingStub == 0) )
             continue;
 
-#ifdef FEATURE_PREJIT
-        // Note pMD->GetMethodTable() might not be restored at this point.
-
-        RelativeFixupPointer<PTR_MethodTable> * ppMT = pMD->GetMethodTablePtr();
-        TADDR pMT = ppMT->GetValueMaybeTagged((TADDR)ppMT);
-
-        if (!ZapSig::CompareTaggedPointerToTypeHandle(GetModule(), pMT, declaringType))
-#else
         if (TypeHandle(pMD->GetMethodTable()) != declaringType)
-#endif
         {
             continue;  // Next iteration of the for loop
         }
@@ -207,15 +171,7 @@ MethodDesc* InstMethodHashTable::FindMethodDesc(TypeHandle declaringType,
 
             for (DWORD i = 0; i < inst.GetNumArgs(); i++)
             {
-#ifdef FEATURE_PREJIT
-                // Fetch the type handle as TADDR. It may be may be encoded fixup - TypeHandle debug-only validation
-                // asserts on encoded fixups.
-                TADDR candidateArg = ((FixupPointer<TADDR> *)candidateInst.GetRawArgs())[i].GetValue();
-
-                if (!ZapSig::CompareTaggedPointerToTypeHandle(GetModule(), candidateArg, inst[i]))
-#else
                 if (candidateInst[i] != inst[i])
-#endif
                 {
                     match = false;
                     break;
@@ -354,89 +310,9 @@ void InstMethodHashTable::InsertMethodDesc(MethodDesc *pMD)
     BaseInsertEntry(dwHash, pNewEntry);
 }
 
-#ifdef FEATURE_NATIVE_IMAGE_GENERATION
-
-#ifdef _DEBUG
-void InstMethodHashTableSeal(InstMethodHashTable * pTable) { WRAPPER_NO_CONTRACT; pTable->Seal(); }
-void InstMethodHashTableUnseal(InstMethodHashTable * pTable) { WRAPPER_NO_CONTRACT; pTable->Unseal(); }
-typedef  Wrapper<InstMethodHashTable *, InstMethodHashTableSeal, InstMethodHashTableUnseal> InstMethodHashTableSealHolder;
-#endif
-
-// Save the hash table and any method descriptors referenced by it
-void InstMethodHashTable::Save(DataImage *image, CorProfileData *pProfileData)
-{
-    CONTRACTL
-    {
-        STANDARD_VM_CHECK;
-        PRECONDITION(image->GetModule() == m_pModule);
-    }
-    CONTRACTL_END;
-
-#ifdef _DEBUG
-    // The table should not change while we are walking the buckets
-    InstMethodHashTableSealHolder h(this);
-#endif
-
-    BaseSave(image, pProfileData);
-}
-
-bool InstMethodHashTable::ShouldSave(DataImage *pImage, InstMethodHashEntry_t *pEntry)
-{
-    STANDARD_VM_CONTRACT;
-
-    return !!pImage->GetPreloader()->IsMethodInTransitiveClosureOfInstantiations(CORINFO_METHOD_HANDLE(pEntry->GetMethod()));
-}
-
-bool InstMethodHashTable::IsHotEntry(InstMethodHashEntry_t *pEntry, CorProfileData *pProfileData)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    return true;
-}
-
-bool InstMethodHashTable::SaveEntry(DataImage *pImage, CorProfileData *pProfileData, InstMethodHashEntry_t *pOldEntry, InstMethodHashEntry_t *pNewEntry, EntryMappingTable *pMap)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    return false;
-}
-
-void InstMethodHashTable::Fixup(DataImage *image)
-{
-    STANDARD_VM_CONTRACT;
-
-    BaseFixup(image);
-
-    image->ZeroPointerField(this, offsetof(InstMethodHashTable, m_pLoaderAllocator));
-
-#ifdef _DEBUG
-    // The persisted table should be unsealed.
-    InstMethodHashTable *pNewTable = (InstMethodHashTable*) image->GetImagePointer(this);
-    pNewTable->InitUnseal();
-#endif
-}
-
-void InstMethodHashTable::FixupEntry(DataImage *pImage, InstMethodHashEntry_t *pEntry, void *pFixupBase, DWORD cbFixupOffset)
-{
-    STANDARD_VM_CONTRACT;
-
-    pImage->FixupField(pFixupBase, cbFixupOffset + offsetof(InstMethodHashEntry_t, data), pEntry->GetMethod(), pEntry->GetFlags());
-
-    pEntry->GetMethod()->Fixup(pImage);
-}
-#endif // FEATURE_PREJIT
-
 #endif // #ifndef DACCESS_COMPILE
 
 #ifdef DACCESS_COMPILE
-void
-InstMethodHashTable::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
-{
-    SUPPORTS_DAC;
-
-    BaseEnumMemoryRegions(flags);
-}
-
 void InstMethodHashTable::EnumMemoryRegionsForEntry(InstMethodHashEntry_t *pEntry, CLRDataEnumMemoryFlags flags)
 {
     SUPPORTS_DAC;

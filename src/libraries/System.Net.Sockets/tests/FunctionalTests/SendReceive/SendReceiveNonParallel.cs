@@ -10,7 +10,7 @@ using Xunit.Abstractions;
 
 namespace System.Net.Sockets.Tests
 {
-    [Collection(nameof(NoParallelTests))]
+    [Collection(nameof(DisableParallelization))]
     public abstract class SendReceiveNonParallel<T> : SocketTestHelperBase<T> where T : SocketHelperBase, new()
     {
         public SendReceiveNonParallel(ITestOutputHelper output) : base(output) { }
@@ -122,6 +122,11 @@ namespace System.Net.Sockets.Tests
     public sealed class SendReceiveNonParallel_Task : SendReceiveNonParallel<SocketHelperTask>
     {
         public SendReceiveNonParallel_Task(ITestOutputHelper output) : base(output) { }
+    }
+
+    public sealed class SendReceiveNonParallel_CancellableTask : SendReceiveNonParallel<SocketHelperCancellableTask>
+    {
+        public SendReceiveNonParallel_CancellableTask(ITestOutputHelper output) : base(output) { }
     }
 
     public sealed class SendReceiveNonParallel_Eap : SendReceiveNonParallel<SocketHelperEap>

@@ -3,8 +3,6 @@
 
 /*++
 
-
-
 Module Name:
 
     misc/dbgmsg.cpp
@@ -12,8 +10,6 @@ Module Name:
 Abstract:
     Implementation of Debug Message utilies. Relay channel information,
     output functions, etc.
-
-
 
 --*/
 
@@ -102,7 +98,7 @@ static const char *dbg_channel_names[]=
 };
 
 // Verify the number of elements in dbg_channel_names
-static_assert_no_msg(_countof(dbg_channel_names) == DCI_LAST);
+static_assert_no_msg(ARRAY_SIZE(dbg_channel_names) == DCI_LAST);
 
 static const char *dbg_level_names[]=
 {
@@ -674,10 +670,10 @@ int DBG_change_entrylevel(int new_level)
     {
         return 0;
     }
-    old_level = PtrToInt(pthread_getspecific(entry_level_key));
+    old_level = (int)(intptr_t)pthread_getspecific(entry_level_key);
     if(-1 != new_level)
     {
-        if ((ret = pthread_setspecific(entry_level_key,(LPVOID)(IntToPtr(new_level)))) != 0)
+        if ((ret = pthread_setspecific(entry_level_key,(LPVOID)(intptr_t)new_level)) != 0)
         {
             fprintf(stderr, "ERROR : pthread_setspecific() failed "
                     "error:%d (%s)\n", ret, strerror(ret));

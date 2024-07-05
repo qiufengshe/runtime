@@ -1,13 +1,14 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.ComponentModel;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace System.Net.Sockets
 {
+    [EditorBrowsable(EditorBrowsableState.Never)]
     public static class SocketTaskExtensions
     {
         [EditorBrowsable(EditorBrowsableState.Never)]
@@ -67,6 +68,7 @@ namespace System.Net.Sockets
         [EditorBrowsable(EditorBrowsableState.Never)]
         public static Task<int> SendAsync(this Socket socket, IList<ArraySegment<byte>> buffers, SocketFlags socketFlags) =>
             socket.SendAsync(buffers, socketFlags);
+
         [EditorBrowsable(EditorBrowsableState.Never)]
         public static Task<int> SendToAsync(this Socket socket, ArraySegment<byte> buffer, SocketFlags socketFlags, EndPoint remoteEP) =>
             socket.SendToAsync(buffer, socketFlags, remoteEP);

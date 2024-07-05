@@ -9,13 +9,17 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using static System.Data.Common.UnsafeNativeMethods;
 
+// We need to target netstandard2.0, so keep using ref for MemoryMarshal.Write
+// CS9191: The 'ref' modifier for argument 2 corresponding to 'in' parameter is equivalent to 'in'. Consider using 'in' instead.
+#pragma warning disable CS9191
+
 namespace System.Data.OleDb
 {
     internal sealed class DualCoTaskMem : SafeHandle
     {
         private IntPtr handle2;   // this must be protected so derived classes can use out params.
 
-        private DualCoTaskMem() : base(IntPtr.Zero, true)
+        public DualCoTaskMem() : base(IntPtr.Zero, true)
         {
             this.handle2 = IntPtr.Zero;
         }
@@ -64,14 +68,14 @@ namespace System.Data.OleDb
             base.handle = IntPtr.Zero;
             if (IntPtr.Zero != ptr)
             {
-                SafeNativeMethods.CoTaskMemFree(ptr);
+                Interop.Ole32.CoTaskMemFree(ptr);
             }
 
             ptr = this.handle2;
             this.handle2 = IntPtr.Zero;
             if (IntPtr.Zero != ptr)
             {
-                SafeNativeMethods.CoTaskMemFree(ptr);
+                Interop.Ole32.CoTaskMemFree(ptr);
             }
             return true;
         }
@@ -79,13 +83,13 @@ namespace System.Data.OleDb
 
     internal sealed class RowHandleBuffer : DbBuffer
     {
-        internal RowHandleBuffer(IntPtr rowHandleFetchCount) : base((int)rowHandleFetchCount * ADP.PtrSize)
+        internal RowHandleBuffer(nint rowHandleFetchCount) : base(checked((int)rowHandleFetchCount * IntPtr.Size))
         {
         }
 
         internal IntPtr GetRowHandle(int index)
         {
-            IntPtr value = ReadIntPtr(index * ADP.PtrSize);
+            IntPtr value = ReadIntPtr(index * IntPtr.Size);
             Debug.Assert(ODB.DB_NULL_HROW != value, "bad rowHandle");
             return value;
         }
@@ -659,24 +663,25 @@ namespace System.Data.OleDb
 
     #endregion PROPVARIANT
 
-    internal class NativeOledbWrapper
+    internal static class NativeOledbWrapper
     {
         internal static unsafe OleDbHResult IChapteredRowsetReleaseChapter(System.IntPtr ptr, System.IntPtr chapter)
         {
-            OleDbHResult hr = OleDbHResult.E_UNEXPECTED;
+            OleDbHResult hr;
             IntPtr hchapter = chapter;
-            System.Data.Common.UnsafeNativeMethods.IChapteredRowset? chapteredRowset = null;
             RuntimeHelpers.PrepareConstrainedRegions();
             try
             { }
             finally
             {
                 Guid IID_IChapteredRowset = typeof(System.Data.Common.UnsafeNativeMethods.IChapteredRowset).GUID;
+#pragma warning disable CS9191 // The 'ref' modifier for argument 1 corresponding to 'in' parameter is equivalent to 'in'. Consider using 'in' instead.
                 hr = (OleDbHResult)Marshal.QueryInterface(ptr, ref IID_IChapteredRowset, out var pChapteredRowset);
+#pragma warning restore CS9191
                 if (pChapteredRowset != IntPtr.Zero)
                 {
-                    chapteredRowset = (System.Data.Common.UnsafeNativeMethods.IChapteredRowset)Marshal.GetObjectForIUnknown(pChapteredRowset);
-                    hr = (OleDbHResult)chapteredRowset.ReleaseChapter(hchapter, out var refcount);
+                    var chapteredRowset = (System.Data.Common.UnsafeNativeMethods.IChapteredRowset)Marshal.GetObjectForIUnknown(pChapteredRowset);
+                    hr = (OleDbHResult)chapteredRowset.ReleaseChapter(hchapter, out _);
                     Marshal.ReleaseComObject(chapteredRowset);
                     Marshal.Release(pChapteredRowset);
                 }
@@ -686,18 +691,19 @@ namespace System.Data.OleDb
 
         internal static unsafe OleDbHResult ITransactionAbort(System.IntPtr ptr)
         {
-            OleDbHResult hr = OleDbHResult.E_UNEXPECTED;
-            ITransactionLocal? transactionLocal = null;
+            OleDbHResult hr;
             RuntimeHelpers.PrepareConstrainedRegions();
             try
             { }
             finally
             {
                 Guid IID_ITransactionLocal = typeof(ITransactionLocal).GUID;
+#pragma warning disable CS9191 // The 'ref' modifier for argument 1 corresponding to 'in' parameter is equivalent to 'in'. Consider using 'in' instead.
                 hr = (OleDbHResult)Marshal.QueryInterface(ptr, ref IID_ITransactionLocal, out var pTransaction);
+#pragma warning restore CS9191
                 if (pTransaction != IntPtr.Zero)
                 {
-                    transactionLocal = (ITransactionLocal)Marshal.GetObjectForIUnknown(pTransaction);
+                    ITransactionLocal transactionLocal = (ITransactionLocal)Marshal.GetObjectForIUnknown(pTransaction);
                     hr = (OleDbHResult)transactionLocal.Abort(IntPtr.Zero, false, false);
                     Marshal.ReleaseComObject(transactionLocal);
                     Marshal.Release(pTransaction);
@@ -708,18 +714,19 @@ namespace System.Data.OleDb
 
         internal static unsafe OleDbHResult ITransactionCommit(System.IntPtr ptr)
         {
-            OleDbHResult hr = OleDbHResult.E_UNEXPECTED;
-            ITransactionLocal? transactionLocal = null;
+            OleDbHResult hr;
             RuntimeHelpers.PrepareConstrainedRegions();
             try
             { }
             finally
             {
                 Guid IID_ITransactionLocal = typeof(ITransactionLocal).GUID;
+#pragma warning disable CS9191 // The 'ref' modifier for argument 1 corresponding to 'in' parameter is equivalent to 'in'. Consider using 'in' instead.
                 hr = (OleDbHResult)Marshal.QueryInterface(ptr, ref IID_ITransactionLocal, out var pTransaction);
+#pragma warning restore CS9191
                 if (pTransaction != IntPtr.Zero)
                 {
-                    transactionLocal = (ITransactionLocal)Marshal.GetObjectForIUnknown(pTransaction);
+                    ITransactionLocal transactionLocal = (ITransactionLocal)Marshal.GetObjectForIUnknown(pTransaction);
                     hr = (OleDbHResult)transactionLocal.Commit(false, (uint)XACTTC.XACTTC_SYNC_PHASETWO, 0);
                     Marshal.ReleaseComObject(transactionLocal);
                     Marshal.Release(pTransaction);

@@ -109,7 +109,7 @@ PATCH_LABEL JIT_DebugWriteBarrier\rg
     mov     [edx], edx
     cmp     ecx, [edx]
     pop     edx
-    ja      LOCAL_LABEL(WriteBarrier_NoShadow_\rg)
+    jae     LOCAL_LABEL(WriteBarrier_NoShadow_\rg)
 
     // TODO: In Orcas timeframe if we move to P4+ only on X86 we should enable
     // mfence barriers on either side of these two writes to make sure that
@@ -281,7 +281,7 @@ LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
     mov     eax, [eax]
     cmp     edx, [eax]
     pop     eax
-    ja      LOCAL_LABEL(ByRefWriteBarrier_NoShadow)
+    jae     LOCAL_LABEL(ByRefWriteBarrier_NoShadow)
 
     // TODO: In Orcas timeframe if we move to P4+ only on X86 we should enable
     // mfence barriers on either side of these two writes to make sure that
@@ -377,10 +377,31 @@ LEAF_ENTRY JIT_WriteBarrierGroup, _TEXT
     ret
 LEAF_END JIT_WriteBarrierGroup, _TEXT
 
-#ifdef FEATURE_USE_ASM_GC_WRITE_BARRIERS
-// *******************************************************************************
-//  Write barrier wrappers with fcall calling convention
-//
+// Pointer to JIT_WriteBarrierEAX
+    .data
+    .align 4
+    .global C_FUNC(JIT_WriteBarrierEAX_Loc)
+C_FUNC(JIT_WriteBarrierEAX_Loc):
+    .word 0
+    .text
+
+LEAF_ENTRY JIT_WriteBarrier_Callable, _TEXT
+    mov eax, edx
+    mov edx, ecx
+    push    eax
+    call    1f
+1:
+    pop     eax
+2:
+.att_syntax
+    addl     $_GLOBAL_OFFSET_TABLE_+(2b-1b), %eax
+.intel_syntax noprefix
+    mov     eax, dword ptr [eax + C_FUNC(JIT_WriteBarrierEAX_Loc)@GOT]
+    mov     eax, [eax]
+    xchg    eax, dword ptr [esp]
+    ret
+LEAF_END JIT_WriteBarrier_Callable, _TEXT
+
 .macro UniversalWriteBarrierHelper name
 .align 4
 
@@ -391,6 +412,11 @@ LEAF_ENTRY JIT_\name, _TEXT
 LEAF_END JIT_\name, _TEXT
 
 .endm
+
+#ifdef FEATURE_USE_ASM_GC_WRITE_BARRIERS
+// *******************************************************************************
+//  Write barrier wrappers with fcall calling convention
+//
 
 // Only define these if we're using the ASM GC write barriers; if this flag is not defined,
 // we'll use C++ versions of these write barriers.
@@ -526,87 +552,6 @@ LOCAL_LABEL(LRszMORE32):
 LEAF_END JIT_LRsz, _TEXT
 
 // *********************************************************************/
-//  JIT_Dbl2LngP4x87
-//
-// Purpose:
-//   converts a double to a long truncating toward zero (C semantics)
-//
-// uses stdcall calling conventions
-//
-//   This code is faster on a P4 than the Dbl2Lng code above, but is
-//   slower on a PIII.  Hence we choose this code when on a P4 or above.
-//
-LEAF_ENTRY JIT_Dbl2LngP4x87, _TEXT
-    // get some local space
-    sub 	esp, 8
-
-    #define arg1 [esp + 0x0C]
-    fld     QWORD PTR arg1          // fetch arg
-    fnstcw  WORD PTR arg1           // store FPCW
-    movzx   eax, WORD PTR arg1      // zero extend - wide
-    or      ah, 0x0C                // turn on OE and DE flags
-    mov     DWORD PTR [esp], eax    // store new FPCW bits
-    fldcw   WORD PTR  [esp]         // reload FPCW with new bits
-    fistp   QWORD PTR [esp]         // convert
-
-    // reload FP result
-    mov	    eax, DWORD PTR [esp]
-    mov	    edx, DWORD PTR [esp + 4]
-
-    // reload original FPCW value
-    fldcw   WORD PTR arg1
-    #undef arg1
-
-    // restore stack
-    add     esp, 8
-
-    ret
-LEAF_END JIT_Dbl2LngP4x87, _TEXT
-
-// *********************************************************************/
-//  JIT_Dbl2LngSSE3
-//
-// Purpose:
-//    converts a double to a long truncating toward zero (C semantics)
-//
-//  uses stdcall calling conventions
-//
-//    This code is faster than the above P4 x87 code for Intel processors
-//    equal or later than Core2 and Atom that have SSE3 support
-//
-LEAF_ENTRY JIT_Dbl2LngSSE3, _TEXT
-    // get some local space
-    sub     esp, 8
-
-    fld     QWORD PTR [esp + 0x0C]   // fetch arg
-    fisttp  QWORD PTR [esp]         // convert
-    mov     eax, DWORD PTR [esp]    // reload FP result
-    mov     edx, DWORD PTR [esp + 4]
-
-    // restore stack
-    add     esp, 8
-
-    ret
-LEAF_END JIT_Dbl2LngSSE3, _TEXT
-
-// *********************************************************************/
-// JIT_Dbl2IntSSE2
-//
-// Purpose:
-//  converts a double to a long truncating toward zero (C semantics)
-//
-// uses stdcall calling conventions
-//
-// This code is even faster than the P4 x87 code for Dbl2LongP4x87,
-// but only returns a 32 bit value (only good for int).
-//
-LEAF_ENTRY JIT_Dbl2IntSSE2, _TEXT
-    movsd     xmm0, [esp + 4]
-    cvttsd2si eax, xmm0
-    ret
-LEAF_END JIT_Dbl2IntSSE2, _TEXT
-
-// *********************************************************************/
 // JIT_StackProbe
 //
 // Purpose:
@@ -618,7 +563,7 @@ LEAF_END JIT_Dbl2IntSSE2, _TEXT
 // NOTE: this helper will modify a value of esp and must establish the frame pointer.
 // NOTE: On Linux we must advance the stack pointer as we probe - it is not allowed to access 65535 bytes below esp.
 //
-#define PAGE_SIZE 0x1000
+#define PROBE_PAGE_SIZE 0x1000
 NESTED_ENTRY JIT_StackProbe, _TEXT, NoHandler
     // On entry:
     //   eax - the lowest address of the stack frame being allocated (i.e. [InitialSp - FrameSize])
@@ -627,11 +572,11 @@ NESTED_ENTRY JIT_StackProbe, _TEXT, NoHandler
     PROLOG_BEG
     PROLOG_END
 
-    and     esp, -PAGE_SIZE        // esp points to the **lowest address** on the last probed page
+    and     esp, -PROBE_PAGE_SIZE  // esp points to the **lowest address** on the last probed page
                                    // This is done to make the loop end condition simpler.
 
 LOCAL_LABEL(ProbeLoop):
-    sub     esp, PAGE_SIZE         // esp points to the lowest address of the **next page** to probe
+    sub     esp, PROBE_PAGE_SIZE   // esp points to the lowest address of the **next page** to probe
     test    [esp], eax             // esp points to the lowest address on the **last probed** page
     cmp     esp, eax
     jg      LOCAL_LABEL(ProbeLoop) // if esp > eax, then we need to probe at least one more page.
@@ -653,7 +598,7 @@ NESTED_END JIT_StackProbe, _TEXT
 //  the compares just for EAX, which won't work for other registers.
 //
 //  READ THIS!!!!!!
-//  it is imperative that the addresses of of the values that we overwrite
+//  it is imperative that the addresses of the values that we overwrite
 //  (card table, ephemeral region ranges, etc) are naturally aligned since
 //  there are codepaths that will overwrite these values while the EE is running.
 //

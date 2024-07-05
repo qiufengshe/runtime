@@ -1,14 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.Win32.SafeHandles;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
-using System.Security;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
 
 namespace System.IO.Pipes
 {
@@ -20,12 +19,13 @@ namespace System.IO.Pipes
         private int _inBufferSize;
         private int _outBufferSize;
         private HandleInheritability _inheritability;
+        private readonly CancellationTokenSource _internalTokenSource = new CancellationTokenSource();
 
         private void Create(string pipeName, PipeDirection direction, int maxNumberOfServerInstances,
                 PipeTransmissionMode transmissionMode, PipeOptions options, int inBufferSize, int outBufferSize,
                 HandleInheritability inheritability)
         {
-            Debug.Assert(pipeName != null && pipeName.Length != 0, "fullPipeName is null or empty");
+            Debug.Assert(!string.IsNullOrEmpty(pipeName), "fullPipeName is null or empty");
             Debug.Assert(direction >= PipeDirection.In && direction <= PipeDirection.InOut, "invalid pipe direction");
             Debug.Assert(inBufferSize >= 0, "inBufferSize is negative");
             Debug.Assert(outBufferSize >= 0, "outBufferSize is negative");
@@ -42,7 +42,7 @@ namespace System.IO.Pipes
             // in that the second process to come along and create a stream will find the pipe already in existence and will fail.
             _instance = SharedServer.Get(
                 GetPipePath(".", pipeName),
-                (maxNumberOfServerInstances == MaxAllowedServerInstances) ? int.MaxValue : maxNumberOfServerInstances);
+                (maxNumberOfServerInstances == MaxAllowedServerInstances) ? int.MaxValue : maxNumberOfServerInstances, options);
 
             _direction = direction;
             _options = options;
@@ -77,8 +77,25 @@ namespace System.IO.Pipes
                 Task.FromCanceled(cancellationToken) :
                 WaitForConnectionAsyncCore();
 
-            async Task WaitForConnectionAsyncCore() =>
-               HandleAcceptedSocket(await _instance!.ListeningSocket.AcceptAsync().ConfigureAwait(false));
+            async Task WaitForConnectionAsyncCore()
+            {
+                Socket acceptedSocket;
+                CancellationTokenSource linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(_internalTokenSource.Token, cancellationToken);
+                try
+                {
+                    acceptedSocket = await _instance!.ListeningSocket.AcceptAsync(linkedTokenSource.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new IOException(SR.IO_PipeBroken);
+                }
+                finally
+                {
+                    linkedTokenSource.Dispose();
+                }
+
+                HandleAcceptedSocket(acceptedSocket);
+            }
         }
 
         private void HandleAcceptedSocket(Socket acceptedSocket)
@@ -116,8 +133,18 @@ namespace System.IO.Pipes
             State = PipeState.Connected;
         }
 
-        internal override void DisposeCore(bool disposing) =>
+        internal override void DisposeCore(bool disposing)
+        {
             Interlocked.Exchange(ref _instance, null)?.Dispose(disposing); // interlocked to avoid shared state problems from erroneous double/concurrent disposes
+
+            if (disposing)
+            {
+                if (State != PipeState.Closed)
+                {
+                    _internalTokenSource.Cancel();
+                }
+            }
+        }
 
         public void Disconnect()
         {
@@ -134,19 +161,19 @@ namespace System.IO.Pipes
         {
             CheckWriteOperations();
 
-            SafeHandle? handle = InternalHandle?.NamedPipeSocketHandle;
+            SafeHandle? handle = InternalHandle?.PipeSocketHandle;
             if (handle == null)
             {
                 throw new InvalidOperationException(SR.InvalidOperation_PipeHandleNotSet);
             }
 
-            string name = Interop.Sys.GetPeerUserName(handle);
-            if (name != null)
+            uint peerID;
+            if (Interop.Sys.GetPeerID(handle, out peerID) == -1)
             {
-                return name;
+                throw CreateExceptionForLastError(_instance?.PipeName);
             }
 
-            throw CreateExceptionForLastError(_instance?.PipeName);
+            return Interop.Sys.GetUserNameFromPasswd(peerID);
         }
 
         public override int InBufferSize
@@ -155,7 +182,7 @@ namespace System.IO.Pipes
             {
                 CheckPipePropertyOperations();
                 if (!CanRead) throw new NotSupportedException(SR.NotSupported_UnreadableStream);
-                return InternalHandle?.NamedPipeSocket?.ReceiveBufferSize ?? _inBufferSize;
+                return InternalHandle?.PipeSocket.ReceiveBufferSize ?? _inBufferSize;
             }
         }
 
@@ -165,7 +192,7 @@ namespace System.IO.Pipes
             {
                 CheckPipePropertyOperations();
                 if (!CanWrite) throw new NotSupportedException(SR.NotSupported_UnwritableStream);
-                return InternalHandle?.NamedPipeSocket?.SendBufferSize ?? _outBufferSize;
+                return InternalHandle?.PipeSocket.SendBufferSize ?? _outBufferSize;
             }
         }
 
@@ -173,7 +200,7 @@ namespace System.IO.Pipes
         public void RunAsClient(PipeStreamImpersonationWorker impersonationWorker)
         {
             CheckWriteOperations();
-            SafeHandle? handle = InternalHandle?.NamedPipeSocketHandle;
+            SafeHandle? handle = InternalHandle?.PipeSocketHandle;
             if (handle == null)
             {
                 throw new InvalidOperationException(SR.InvalidOperation_PipeHandleNotSet);
@@ -221,7 +248,7 @@ namespace System.IO.Pipes
             /// <summary>The concurrent number of concurrent streams using this instance.</summary>
             private int _currentCount;
 
-            internal static SharedServer Get(string path, int maxCount)
+            internal static SharedServer Get(string path, int maxCount, PipeOptions pipeOptions)
             {
                 Debug.Assert(!string.IsNullOrEmpty(path));
                 Debug.Assert(maxCount >= 1);
@@ -229,6 +256,7 @@ namespace System.IO.Pipes
                 lock (s_servers)
                 {
                     SharedServer? server;
+                    bool isFirstPipeInstance = (pipeOptions & PipeOptions.FirstPipeInstance) != 0;
                     if (s_servers.TryGetValue(path, out server))
                     {
                         // On Windows, if a subsequent server stream is created for the same pipe and with a different
@@ -240,7 +268,7 @@ namespace System.IO.Pipes
                         {
                             throw new IOException(SR.IO_AllPipeInstancesAreBusy);
                         }
-                        else if (server._currentCount == maxCount)
+                        else if (server._currentCount == maxCount || isFirstPipeInstance)
                         {
                             throw new UnauthorizedAccessException(SR.Format(SR.UnauthorizedAccess_IODenied_Path, path));
                         }
@@ -248,7 +276,7 @@ namespace System.IO.Pipes
                     else
                     {
                         // No instance exists yet for this path. Create one a new.
-                        server = new SharedServer(path, maxCount);
+                        server = new SharedServer(path, maxCount, isFirstPipeInstance);
                         s_servers.Add(path, server);
                     }
 
@@ -283,19 +311,29 @@ namespace System.IO.Pipes
                 }
             }
 
-            private SharedServer(string path, int maxCount)
+            private SharedServer(string path, int maxCount, bool isFirstPipeInstance)
             {
-                // Binding to an existing path fails, so we need to remove anything left over at this location.
-                // There's of course a race condition here, where it could be recreated by someone else between this
-                // deletion and the bind below, in which case we'll simply let the bind fail and throw.
-                Interop.Sys.Unlink(path); // ignore any failures
+                if (!isFirstPipeInstance)
+                {
+                    // Binding to an existing path fails, so we need to remove anything left over at this location.
+                    // There's of course a race condition here, where it could be recreated by someone else between this
+                    // deletion and the bind below, in which case we'll simply let the bind fail and throw.
+                    Interop.Sys.Unlink(path); // ignore any failures
+                }
 
+                bool isSocketBound = false;
                 // Start listening for connections on the path.
                 var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
                 try
                 {
                     socket.Bind(new UnixDomainSocketEndPoint(path));
+                    isSocketBound = true;
                     socket.Listen(int.MaxValue);
+                }
+                catch (SocketException) when (isFirstPipeInstance && !isSocketBound)
+                {
+                    socket.Dispose();
+                    throw new UnauthorizedAccessException(SR.Format(SR.UnauthorizedAccess_IODenied_Path, path));
                 }
                 catch
                 {

@@ -3,6 +3,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Security;
+using Xunit;
 
 
 [SecuritySafeCritical]
@@ -211,7 +212,7 @@ public class MarshalSizeOf2
             Type obj = typeof(TestMultiMemberStruct1);
             int expectedSize;
 
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || (RuntimeInformation.ProcessArchitecture != Architecture.X86))
+            if (OperatingSystem.IsWindows() || (RuntimeInformation.ProcessArchitecture != Architecture.X86))
             {
                 expectedSize = 16; // sizeof(double) + sizeof(int) + padding
             }
@@ -503,7 +504,8 @@ public class MarshalSizeOf2
     #endregion
     #endregion
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         MarshalSizeOf2 test = new MarshalSizeOf2();
 

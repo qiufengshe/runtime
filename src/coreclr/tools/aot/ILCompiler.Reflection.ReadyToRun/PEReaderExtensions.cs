@@ -22,6 +22,9 @@ namespace ILCompiler.Reflection.ReadyToRun
             _ordinalRva = new Dictionary<int, int>();
 
             DirectoryEntry exportTable = peReader.PEHeaders.PEHeader.ExportTableDirectory;
+            if ((exportTable.Size == 0) || (exportTable.RelativeVirtualAddress == 0))
+                return;
+
             PEMemoryBlock peImage = peReader.GetEntireImage();
             BlobReader exportTableHeader = peImage.GetReader(peReader.GetOffset(exportTable.RelativeVirtualAddress), exportTable.Size);
             if (exportTableHeader.Length == 0)
@@ -120,6 +123,17 @@ namespace ILCompiler.Reflection.ReadyToRun
         public static PEExportTable GetExportTable(this PEReader reader)
         {
             return PEExportTable.Parse(reader);
+        }
+
+        /// <summary>
+        /// Check whether the file is a ReadyToRun image and returns the RVA of its ReadyToRun header if positive.
+        /// </summary>
+        /// <param name="reader">PEReader representing the executable to check for the presence of ReadyToRun header</param>
+        /// <param name="rva">RVA of the ReadyToRun header if available, 0 when not</param>
+        /// <returns>true when the PEReader represents a ReadyToRun image, false otherwise</returns>
+        public static bool TryGetReadyToRunHeader(this PEReader reader, out int rva)
+        {
+            return reader.GetExportTable().TryGetValue("RTR_HEADER", out rva);
         }
     }
 }

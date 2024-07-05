@@ -30,7 +30,7 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             bool useInstantiatingStub,
             Signature instanceSignature, 
             MethodDesc callingMethod = null)
-            : base(factory, importSectionNode, helper, instanceSignature, useVirtualCall, callingMethod)
+            : base(factory, importSectionNode, helper, instanceSignature, useVirtualCall, useJumpableStub: false, callingMethod)
         {
             _method = method;
             _useInstantiatingStub = useInstantiatingStub;
@@ -48,8 +48,20 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 MethodDesc canonMethod = _method.Method.GetCanonMethodTarget(CanonicalFormKind.Specific);
                 if (factory.CompilationModuleGroup.ContainsMethodBody(canonMethod, false))
                 {
-                    ISymbolNode canonMethodNode = factory.CompiledMethodNode(canonMethod);
-                    yield return new DependencyListEntry(canonMethodNode, "Canonical method for instantiating stub");
+                    bool useDependency = true;
+                    try
+                    {
+                        factory.DetectGenericCycles(_method.Method, canonMethod);
+                    }
+                    catch (TypeSystemException)
+                    {
+                        useDependency = false;
+                    }
+                    if (useDependency)
+                    {
+                        ISymbolNode canonMethodNode = factory.CompiledMethodNode(canonMethod);
+                        yield return new DependencyListEntry(canonMethodNode, "Canonical method for instantiating stub");
+                    }
                 }
             }
         }

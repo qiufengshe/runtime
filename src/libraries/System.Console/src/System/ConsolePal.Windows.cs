@@ -93,9 +93,8 @@ namespace System
             // stdin, stdout and stderr, but they may not be readable or
             // writable.  Verify this by calling WriteFile in the
             // appropriate modes. This must handle console-less Windows apps.
-            int bytesWritten;
             byte junkByte = 0x41;
-            int r = Interop.Kernel32.WriteFile(outErrHandle, &junkByte, 0, out bytesWritten, IntPtr.Zero);
+            int r = Interop.Kernel32.WriteFile(outErrHandle, &junkByte, 0, out _, IntPtr.Zero);
             return r != 0; // In Win32 apps w/ no console, bResult should be 0 for failure.
         }
 
@@ -109,7 +108,9 @@ namespace System
             if (enc.CodePage != UnicodeCodePage)
             {
                 if (!Interop.Kernel32.SetConsoleCP(enc.CodePage))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                {
+                    HandleSetConsoleEncodingError(Marshal.GetLastPInvokeError());
+                }
             }
         }
 
@@ -123,8 +124,22 @@ namespace System
             if (enc.CodePage != UnicodeCodePage)
             {
                 if (!Interop.Kernel32.SetConsoleOutputCP(enc.CodePage))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                {
+                    HandleSetConsoleEncodingError(Marshal.GetLastPInvokeError());
+                }
             }
+        }
+
+        private static void HandleSetConsoleEncodingError(int lastError)
+        {
+            if (lastError == Interop.Errors.ERROR_INVALID_HANDLE
+                || lastError == Interop.Errors.ERROR_INVALID_ACCESS)
+            {
+                // no console, or not a valid handle, so fail silently
+                return;
+            }
+
+            throw Win32Marshal.GetExceptionForWin32Error(lastError);
         }
 
         /// <summary>Gets whether Console.In is targeting a terminal display.</summary>
@@ -178,24 +193,24 @@ namespace System
         // we will lose repeated keystrokes when someone switches from
         // calling ReadKey to calling Read or ReadLine.  Those methods should
         // ideally flush this cache as well.
-        private static Interop.InputRecord _cachedInputRecord;
+        private static Interop.INPUT_RECORD _cachedInputRecord;
 
         // Skip non key events. Generally we want to surface only KeyDown event
         // and suppress KeyUp event from the same Key press but there are cases
         // where the assumption of KeyDown-KeyUp pairing for a given key press
         // is invalid. For example in IME Unicode keyboard input, we often see
         // only KeyUp until the key is released.
-        private static bool IsKeyDownEvent(Interop.InputRecord ir)
+        private static bool IsKeyDownEvent(Interop.INPUT_RECORD ir)
         {
-            return (ir.eventType == Interop.KEY_EVENT && ir.keyEvent.keyDown != Interop.BOOL.FALSE);
+            return (ir.EventType == Interop.KEY_EVENT && ir.keyEvent.bKeyDown != Interop.BOOL.FALSE);
         }
 
-        private static bool IsModKey(Interop.InputRecord ir)
+        private static bool IsModKey(Interop.INPUT_RECORD ir)
         {
             // We should also skip over Shift, Control, and Alt, as well as caps lock.
             // Apparently we don't need to check for 0xA0 through 0xA5, which are keys like
             // Left Control & Right Control. See the ConsoleKey enum for these values.
-            short keyCode = ir.keyEvent.virtualKeyCode;
+            ushort keyCode = ir.keyEvent.wVirtualKeyCode;
             return ((keyCode >= 0x10 && keyCode <= 0x12)
                     || keyCode == 0x14 || keyCode == 0x90 || keyCode == 0x91);
         }
@@ -219,9 +234,9 @@ namespace System
         // desired effect is to translate the sequence into one Unicode KeyPress.
         // We need to keep track of the Alt+NumPad sequence and surface the final
         // unicode char alone when the Alt key is released.
-        private static bool IsAltKeyDown(Interop.InputRecord ir)
+        private static bool IsAltKeyDown(Interop.INPUT_RECORD ir)
         {
-            return (((ControlKeyState)ir.keyEvent.controlKeyState)
+            return (((ControlKeyState)ir.keyEvent.dwControlKeyState)
                               & (ControlKeyState.LeftAltPressed | ControlKeyState.RightAltPressed)) != 0;
         }
 
@@ -270,17 +285,15 @@ namespace System
         {
             get
             {
-                if (_cachedInputRecord.eventType == Interop.KEY_EVENT)
+                if (_cachedInputRecord.EventType == Interop.KEY_EVENT)
                     return true;
 
-                Interop.InputRecord ir = default;
-                int numEventsRead = 0;
                 while (true)
                 {
-                    bool r = Interop.Kernel32.PeekConsoleInput(InputHandle, out ir, 1, out numEventsRead);
+                    bool r = Interop.Kernel32.PeekConsoleInput(InputHandle, out Interop.INPUT_RECORD ir, 1, out int numEventsRead);
                     if (!r)
                     {
-                        int errorCode = Marshal.GetLastWin32Error();
+                        int errorCode = Marshal.GetLastPInvokeError();
                         if (errorCode == Interop.Errors.ERROR_INVALID_HANDLE)
                             throw new InvalidOperationException(SR.InvalidOperation_ConsoleKeyAvailableOnFile);
                         throw Win32Marshal.GetExceptionForWin32Error(errorCode, "stdin");
@@ -292,10 +305,10 @@ namespace System
                     // Skip non key-down && mod key events.
                     if (!IsKeyDownEvent(ir) || IsModKey(ir))
                     {
-                        r = Interop.Kernel32.ReadConsoleInput(InputHandle, out ir, 1, out numEventsRead);
+                        r = Interop.Kernel32.ReadConsoleInput(InputHandle, out _, 1, out _);
 
                         if (!r)
-                            throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                            throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
                     }
                     else
                     {
@@ -309,21 +322,20 @@ namespace System
 
         public static ConsoleKeyInfo ReadKey(bool intercept)
         {
-            Interop.InputRecord ir;
-            int numEventsRead = -1;
+            Interop.INPUT_RECORD ir;
             bool r;
 
             lock (s_readKeySyncObject)
             {
-                if (_cachedInputRecord.eventType == Interop.KEY_EVENT)
+                if (_cachedInputRecord.EventType == Interop.KEY_EVENT)
                 {
                     // We had a previous keystroke with repeated characters.
                     ir = _cachedInputRecord;
-                    if (_cachedInputRecord.keyEvent.repeatCount == 0)
-                        _cachedInputRecord.eventType = -1;
+                    if (_cachedInputRecord.keyEvent.wRepeatCount == 0)
+                        _cachedInputRecord.EventType = 0;
                     else
                     {
-                        _cachedInputRecord.keyEvent.repeatCount--;
+                        _cachedInputRecord.keyEvent.wRepeatCount--;
                     }
                     // We will return one key from this method, so we decrement the
                     // repeatCount here, leaving the cachedInputRecord in the "queue".
@@ -334,8 +346,8 @@ namespace System
 
                     while (true)
                     {
-                        r = Interop.Kernel32.ReadConsoleInput(InputHandle, out ir, 1, out numEventsRead);
-                        if (!r || numEventsRead == 0)
+                        r = Interop.Kernel32.ReadConsoleInput(InputHandle, out ir, 1, out int numEventsRead);
+                        if (!r)
                         {
                             // This will fail when stdin is redirected from a file or pipe.
                             // We could theoretically call Console.Read here, but I
@@ -343,7 +355,29 @@ namespace System
                             throw new InvalidOperationException(SR.InvalidOperation_ConsoleReadKeyOnFile);
                         }
 
-                        short keyCode = ir.keyEvent.virtualKeyCode;
+                        if (numEventsRead == 0)
+                        {
+                            // This can happen when there are multiple console-attached
+                            // processes waiting for input, and another one is terminated
+                            // while we are waiting for input.
+                            //
+                            // (This is "almost certainly" a bug, but behavior has been
+                            // this way for a long time, so we should handle it:
+                            // https://github.com/microsoft/terminal/issues/15859)
+                            //
+                            // (It's a rare case to have multiple console-attached
+                            // processes waiting for input, but it can happen sometimes,
+                            // such as when ctrl+c'ing a build process that is spawning
+                            // tons of child processes--sometimes, due to the order in
+                            // which processes exit, a managed shell process (like pwsh)
+                            // might get back to the prompt and start trying to read input
+                            // while there are still child processes getting cleaned up.)
+                            //
+                            // In this case, we just need to retry the read.
+                            continue;
+                        }
+
+                        ushort keyCode = ir.keyEvent.wVirtualKeyCode;
 
                         // First check for non-keyboard events & discard them. Generally we tap into only KeyDown events and ignore the KeyUp events
                         // but it is possible that we are dealing with a Alt+NumPad unicode key sequence, the final unicode char is revealed only when
@@ -357,7 +391,7 @@ namespace System
                                 continue;
                         }
 
-                        char ch = (char)ir.keyEvent.uChar;
+                        char ch = ir.keyEvent.uChar;
 
                         // In a Alt+NumPad unicode sequence, when the alt key is released uChar will represent the final unicode character, we need to
                         // surface this. VirtualKeyCode for this event will be Alt from the Alt-Up key event. This is probably not the right code,
@@ -381,9 +415,9 @@ namespace System
                             continue;
                         }
 
-                        if (ir.keyEvent.repeatCount > 1)
+                        if (ir.keyEvent.wRepeatCount > 1)
                         {
-                            ir.keyEvent.repeatCount--;
+                            ir.keyEvent.wRepeatCount--;
                             _cachedInputRecord = ir;
                         }
                         break;
@@ -391,12 +425,12 @@ namespace System
                 }  // we did NOT have a previous keystroke with repeated characters.
             }
 
-            ControlKeyState state = (ControlKeyState)ir.keyEvent.controlKeyState;
+            ControlKeyState state = (ControlKeyState)ir.keyEvent.dwControlKeyState;
             bool shift = (state & ControlKeyState.ShiftPressed) != 0;
             bool alt = (state & (ControlKeyState.LeftAltPressed | ControlKeyState.RightAltPressed)) != 0;
             bool control = (state & (ControlKeyState.LeftCtrlPressed | ControlKeyState.RightCtrlPressed)) != 0;
 
-            ConsoleKeyInfo info = new ConsoleKeyInfo((char)ir.keyEvent.uChar, (ConsoleKey)ir.keyEvent.virtualKeyCode, shift, alt, control);
+            ConsoleKeyInfo info = new ConsoleKeyInfo(ir.keyEvent.uChar, (ConsoleKey)ir.keyEvent.wVirtualKeyCode, shift, alt, control);
 
             if (!intercept)
                 Console.Write(ir.keyEvent.uChar);
@@ -411,9 +445,8 @@ namespace System
                 if (handle == InvalidHandleValue)
                     throw new IOException(SR.IO_NoConsole);
 
-                int mode = 0;
-                if (!Interop.Kernel32.GetConsoleMode(handle, out mode))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                if (!Interop.Kernel32.GetConsoleMode(handle, out int mode))
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
 
                 return (mode & Interop.Kernel32.ENABLE_PROCESSED_INPUT) == 0;
             }
@@ -423,9 +456,8 @@ namespace System
                 if (handle == InvalidHandleValue)
                     throw new IOException(SR.IO_NoConsole);
 
-                int mode = 0;
-                if (!Interop.Kernel32.GetConsoleMode(handle, out mode))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                if (!Interop.Kernel32.GetConsoleMode(handle, out int mode))
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
 
                 if (value)
                 {
@@ -437,7 +469,7 @@ namespace System
                 }
 
                 if (!Interop.Kernel32.SetConsoleMode(handle, mode))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
             }
         }
 
@@ -534,7 +566,7 @@ namespace System
             {
                 Interop.Kernel32.CONSOLE_CURSOR_INFO cci;
                 if (!Interop.Kernel32.GetConsoleCursorInfo(OutputHandle, out cci))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
 
                 return cci.dwSize;
             }
@@ -546,11 +578,11 @@ namespace System
 
                 Interop.Kernel32.CONSOLE_CURSOR_INFO cci;
                 if (!Interop.Kernel32.GetConsoleCursorInfo(OutputHandle, out cci))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
 
                 cci.dwSize = value;
                 if (!Interop.Kernel32.SetConsoleCursorInfo(OutputHandle, ref cci))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
             }
         }
 
@@ -560,19 +592,19 @@ namespace System
             {
                 Interop.Kernel32.CONSOLE_CURSOR_INFO cci;
                 if (!Interop.Kernel32.GetConsoleCursorInfo(OutputHandle, out cci))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
 
-                return cci.bVisible;
+                return cci.bVisible != Interop.BOOL.FALSE;
             }
             set
             {
                 Interop.Kernel32.CONSOLE_CURSOR_INFO cci;
                 if (!Interop.Kernel32.GetConsoleCursorInfo(OutputHandle, out cci))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
 
-                cci.bVisible = value;
+                cci.bVisible = value ? Interop.BOOL.TRUE : Interop.BOOL.FALSE;
                 if (!Interop.Kernel32.SetConsoleCursorInfo(OutputHandle, ref cci))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
             }
         }
 
@@ -604,7 +636,7 @@ namespace System
 
                     if (result == 0)
                     {
-                        int error = Marshal.GetLastWin32Error();
+                        int error = Marshal.GetLastPInvokeError();
                         switch (error)
                         {
                             case Interop.Errors.ERROR_INSUFFICIENT_BUFFER:
@@ -639,7 +671,7 @@ namespace System
             set
             {
                 if (!Interop.Kernel32.SetConsoleTitle(value))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
             }
         }
 
@@ -657,8 +689,7 @@ namespace System
 
             if (frequency < MinBeepFrequency || frequency > MaxBeepFrequency)
                 throw new ArgumentOutOfRangeException(nameof(frequency), frequency, SR.Format(SR.ArgumentOutOfRange_BeepFrequency, MinBeepFrequency, MaxBeepFrequency));
-            if (duration <= 0)
-                throw new ArgumentOutOfRangeException(nameof(duration), duration, SR.ArgumentOutOfRange_NeedPosNum);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(duration);
 
             Interop.Kernel32.Beep(frequency, duration);
         }
@@ -715,7 +746,7 @@ namespace System
             fixed (Interop.Kernel32.CHAR_INFO* pCharInfo = data)
                 r = Interop.Kernel32.ReadConsoleOutput(OutputHandle, pCharInfo, bufferSize, bufferCoord, ref readRegion);
             if (!r)
-                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
 
             // Overwrite old section
             Interop.Kernel32.COORD writeCoord = default;
@@ -730,11 +761,11 @@ namespace System
                 r = Interop.Kernel32.FillConsoleOutputCharacter(OutputHandle, sourceChar, sourceWidth, writeCoord, out numWritten);
                 Debug.Assert(numWritten == sourceWidth, "FillConsoleOutputCharacter wrote the wrong number of chars!");
                 if (!r)
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
 
                 r = Interop.Kernel32.FillConsoleOutputAttribute(OutputHandle, attr, sourceWidth, writeCoord, out numWritten);
                 if (!r)
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
             }
 
             // Write text to new location
@@ -767,25 +798,23 @@ namespace System
 
             // fill the entire screen with blanks
 
-            int numCellsWritten = 0;
             success = Interop.Kernel32.FillConsoleOutputCharacter(hConsole, ' ',
-                conSize, coordScreen, out numCellsWritten);
+                conSize, coordScreen, out _);
             if (!success)
-                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
 
             // now set the buffer's attributes accordingly
 
-            numCellsWritten = 0;
             success = Interop.Kernel32.FillConsoleOutputAttribute(hConsole, csbi.wAttributes,
-                conSize, coordScreen, out numCellsWritten);
+                conSize, coordScreen, out _);
             if (!success)
-                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
 
             // put the cursor at (0, 0)
 
             success = Interop.Kernel32.SetConsoleCursorPosition(hConsole, coordScreen);
             if (!success)
-                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
         }
 
         public static void SetCursorPosition(int left, int top)
@@ -797,7 +826,7 @@ namespace System
             if (!Interop.Kernel32.SetConsoleCursorPosition(hConsole, coords))
             {
                 // Give a nice error message for out of range sizes
-                int errorCode = Marshal.GetLastWin32Error();
+                int errorCode = Marshal.GetLastPInvokeError();
                 Interop.Kernel32.CONSOLE_SCREEN_BUFFER_INFO csbi = GetBufferInfo();
                 if (left >= csbi.dwSize.X)
                     throw new ArgumentOutOfRangeException(nameof(left), left, SR.ArgumentOutOfRange_ConsoleBufferBoundaries);
@@ -849,7 +878,7 @@ namespace System
             size.Y = (short)height;
             if (!Interop.Kernel32.SetConsoleScreenBufferSize(OutputHandle, size))
             {
-                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
             }
         }
 
@@ -951,16 +980,11 @@ namespace System
 
             bool r = Interop.Kernel32.SetConsoleWindowInfo(OutputHandle, true, &srWindow);
             if (!r)
-                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
         }
 
         public static unsafe void SetWindowSize(int width, int height)
         {
-            if (width <= 0)
-                throw new ArgumentOutOfRangeException(nameof(width), width, SR.ArgumentOutOfRange_NeedPosNum);
-            if (height <= 0)
-                throw new ArgumentOutOfRangeException(nameof(height), height, SR.ArgumentOutOfRange_NeedPosNum);
-
             // Get the position of the current console window
             Interop.Kernel32.CONSOLE_SCREEN_BUFFER_INFO csbi = GetBufferInfo();
 
@@ -987,7 +1011,7 @@ namespace System
             if (resizeBuffer)
             {
                 if (!Interop.Kernel32.SetConsoleScreenBufferSize(OutputHandle, size))
-                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastWin32Error());
+                    throw Win32Marshal.GetExceptionForWin32Error(Marshal.GetLastPInvokeError());
             }
 
             Interop.Kernel32.SMALL_RECT srWindow = csbi.srWindow;
@@ -997,7 +1021,7 @@ namespace System
 
             if (!Interop.Kernel32.SetConsoleWindowInfo(OutputHandle, true, &srWindow))
             {
-                int errorCode = Marshal.GetLastWin32Error();
+                int errorCode = Marshal.GetLastPInvokeError();
 
                 // If we resized the buffer, un-resize it.
                 if (resizeBuffer)
@@ -1042,8 +1066,7 @@ namespace System
 
         private static Interop.Kernel32.CONSOLE_SCREEN_BUFFER_INFO GetBufferInfo()
         {
-            bool unused;
-            return GetBufferInfo(true, out unused);
+            return GetBufferInfo(true, out _);
         }
 
         // For apps that don't have a console (like Windows apps), they might
@@ -1070,7 +1093,7 @@ namespace System
                 !Interop.Kernel32.GetConsoleScreenBufferInfo(ErrorHandle, out csbi) &&
                 !Interop.Kernel32.GetConsoleScreenBufferInfo(InputHandle, out csbi))
             {
-                int errorCode = Marshal.GetLastWin32Error();
+                int errorCode = Marshal.GetLastPInvokeError();
                 if (errorCode == Interop.Errors.ERROR_INVALID_HANDLE && !throwOnNoConsole)
                     return default;
                 throw Win32Marshal.GetExceptionForWin32Error(errorCode);
@@ -1178,7 +1201,7 @@ namespace System
                 // For pipes that are closing or broken, just stop.
                 // (E.g. ERROR_NO_DATA ("pipe is being closed") is returned when we write to a console that is closing;
                 // ERROR_BROKEN_PIPE ("pipe was closed") is returned when stdin was closed, which is not an error, but EOF.)
-                int errorCode = Marshal.GetLastWin32Error();
+                int errorCode = Marshal.GetLastPInvokeError();
                 if (errorCode == Interop.Errors.ERROR_NO_DATA || errorCode == Interop.Errors.ERROR_BROKEN_PIPE)
                     return Interop.Errors.ERROR_SUCCESS;
                 return errorCode;
@@ -1204,7 +1227,7 @@ namespace System
 
                         // If the code page could be Unicode, we should use ReadConsole instead, e.g.
                         // Note that WriteConsoleW has a max limit on num of chars to write (64K)
-                        // [https://docs.microsoft.com/en-us/windows/console/writeconsole]
+                        // [https://learn.microsoft.com/windows/console/writeconsole]
                         // However, we do not need to worry about that because the StreamWriter in Console has
                         // a much shorter buffer size anyway.
                         int charsWritten;
@@ -1218,57 +1241,10 @@ namespace System
                 // For pipes that are closing or broken, just stop.
                 // (E.g. ERROR_NO_DATA ("pipe is being closed") is returned when we write to a console that is closing;
                 // ERROR_BROKEN_PIPE ("pipe was closed") is returned when stdin was closed, which is not an error, but EOF.)
-                int errorCode = Marshal.GetLastWin32Error();
-                if (errorCode == Interop.Errors.ERROR_NO_DATA || errorCode == Interop.Errors.ERROR_BROKEN_PIPE)
+                int errorCode = Marshal.GetLastPInvokeError();
+                if (errorCode == Interop.Errors.ERROR_NO_DATA || errorCode == Interop.Errors.ERROR_BROKEN_PIPE || errorCode == Interop.Errors.ERROR_PIPE_NOT_CONNECTED)
                     return Interop.Errors.ERROR_SUCCESS;
                 return errorCode;
-            }
-        }
-
-        internal sealed class ControlCHandlerRegistrar
-        {
-            private bool _handlerRegistered;
-            private readonly Interop.Kernel32.ConsoleCtrlHandlerRoutine _handler;
-
-            internal ControlCHandlerRegistrar()
-            {
-                _handler = new Interop.Kernel32.ConsoleCtrlHandlerRoutine(BreakEvent);
-            }
-
-            internal void Register()
-            {
-                Debug.Assert(!_handlerRegistered);
-
-                bool r = Interop.Kernel32.SetConsoleCtrlHandler(_handler, true);
-                if (!r)
-                {
-                    throw Win32Marshal.GetExceptionForLastWin32Error();
-                }
-
-                _handlerRegistered = true;
-            }
-
-            internal void Unregister()
-            {
-                Debug.Assert(_handlerRegistered);
-
-                bool r = Interop.Kernel32.SetConsoleCtrlHandler(_handler, false);
-                if (!r)
-                {
-                    throw Win32Marshal.GetExceptionForLastWin32Error();
-                }
-                _handlerRegistered = false;
-            }
-
-            private static bool BreakEvent(int controlType)
-            {
-                if (controlType != Interop.Kernel32.CTRL_C_EVENT &&
-                    controlType != Interop.Kernel32.CTRL_BREAK_EVENT)
-                {
-                    return false;
-                }
-
-                return Console.HandleBreakEvent(controlType == Interop.Kernel32.CTRL_C_EVENT ? ConsoleSpecialKey.ControlC : ConsoleSpecialKey.ControlBreak);
             }
         }
     }

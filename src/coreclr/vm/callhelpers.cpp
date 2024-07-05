@@ -26,7 +26,7 @@ void AssertMulticoreJitAllowedModule(PCODE pTarget)
 {
     MethodDesc* pMethod = Entry2MethodDesc(pTarget, NULL);
 
-    Module * pModule = pMethod->GetModule_NoLogging();
+    Module * pModule = pMethod->GetModule();
 
     _ASSERTE(pModule->IsSystem());
 }
@@ -40,12 +40,8 @@ void AssertMulticoreJitAllowedModule(PCODE pTarget)
 // out of managed code.  Instead, we rely on explicit cleanup like CLRException::HandlerState::CleanupTry
 // or UMThunkUnwindFrameChainHandler.
 //
-// So most callers should call through CallDescrWorkerWithHandler (or a wrapper like MethodDesc::Call)
-// and get the platform-appropriate exception handling.  A few places try to optimize by calling direct
-// to managed methods (see ArrayInitializeWorker or FastCallFinalize).  This sort of thing is
-// dangerous.  You have to worry about marking yourself as a legal managed caller and you have to
-// worry about how exceptions will be handled on a FEATURE_EH_FUNCLETS plan.  It is generally only suitable
-// for X86.
+// So all callers should call through CallDescrWorkerWithHandler (or a wrapper like MethodDesc::Call)
+// and get the platform-appropriate exception handling.
 
 //*******************************************************************************
 void CallDescrWorkerWithHandler(
@@ -61,10 +57,6 @@ void CallDescrWorkerWithHandler(
     }
 
 #endif
-
-#if defined(HOST_OSX) && defined(HOST_ARM64)
-    auto jitWriteEnableHolder = PAL_JITWriteEnable(false);
-#endif // defined(HOST_OSX) && defined(HOST_ARM64)
 
     BEGIN_CALL_TO_MANAGEDEX(fCriticalCall ? EEToManagedCriticalCall : EEToManagedDefault);
 
@@ -97,8 +89,6 @@ void CallDescrWorker(CallDescrData * pCallDescrData)
     STATIC_CONTRACT_THROWS;
     STATIC_CONTRACT_GC_TRIGGERS;
 
-    _ASSERTE(!NingenEnabled() && "You cannot invoke managed code inside the ngen compilation process.");
-
     TRIGGERSGC_NOSTOMP(); // Can't stomp object refs because they are args to the function
 
     // Save a copy of dangerousObjRefs in table.
@@ -106,7 +96,6 @@ void CallDescrWorker(CallDescrData * pCallDescrData)
     DWORD_PTR ObjRefTable[OBJREF_TABSIZE];
 
     curThread = GetThread();
-    _ASSERTE(curThread != NULL);
 
     static_assert_no_msg(sizeof(curThread->dangerousObjRefs) == sizeof(ObjRefTable));
     memcpy(ObjRefTable, curThread->dangerousObjRefs, sizeof(ObjRefTable));
@@ -253,7 +242,7 @@ void FillInRegTypeMap(int argOffset, CorElementType typ, BYTE * pMap)
 
     if (regArgNum < NUM_ARGUMENT_REGISTERS)
     {
-        pMap[regArgNum] = typ;
+        pMap[regArgNum] = (BYTE)typ;
     }
 }
 #endif // CALLDESCR_REGTYPEMAP
@@ -286,8 +275,6 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
     }
     CONTRACTL_END;
 
-    _ASSERTE(!NingenEnabled() && "You cannot invoke managed code inside the ngen compilation process.");
-
     // If we're invoking an CoreLib method, lift the restriction on type load limits. Calls into CoreLib are
     // typically calls into specific and controlled helper methods for security checks and other linktime tasks.
     //
@@ -314,9 +301,6 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
         //
         GCX_FORBID();
 
-        // Record this call if required
-        g_IBCLogger.LogMethodDescAccess(m_pMD);
-
         //
         // All types must already be loaded. This macro also sets up a FAULT_FORBID region which is
         // also required for critical calls since we cannot inject any failure points between the
@@ -324,13 +308,7 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
         //
         ENABLE_FORBID_GC_LOADER_USE_IN_THIS_SCOPE();
 
-#ifdef FEATURE_INTERPRETER
-        _ASSERTE(isCallConv(m_methodSig.GetCallingConvention(), IMAGE_CEE_CS_CALLCONV_DEFAULT)
-                 || isCallConv(m_methodSig.GetCallingConvention(), CorCallingConvention(IMAGE_CEE_CS_CALLCONV_C))
-                 || isCallConv(m_methodSig.GetCallingConvention(), CorCallingConvention(IMAGE_CEE_CS_CALLCONV_VARARG))
-                 || isCallConv(m_methodSig.GetCallingConvention(), CorCallingConvention(IMAGE_CEE_CS_CALLCONV_NATIVEVARARG))
-                 || isCallConv(m_methodSig.GetCallingConvention(), CorCallingConvention(IMAGE_CEE_CS_CALLCONV_STDCALL)));
-#else
+#ifndef FEATURE_INTERPRETER
         _ASSERTE(isCallConv(m_methodSig.GetCallingConvention(), IMAGE_CEE_CS_CALLCONV_DEFAULT));
         _ASSERTE(!(m_methodSig.GetCallingConventionInfo() & CORINFO_CALLCONV_PARAMTYPE));
 #endif
@@ -362,7 +340,6 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
             // Check to see that any value type args have been loaded and restored.
             // This is because we may be calling a FramedMethodFrame which will use the sig
             // to trace the args, but if any are unloaded we will be stuck if a GC occurs.
-            _ASSERTE(m_pMD->IsRestored_NoLogging());
             CorElementType argType;
             while ((argType = m_methodSig.NextArg()) != ELEMENT_TYPE_END)
             {
@@ -370,7 +347,6 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
                 {
                     TypeHandle th = m_methodSig.GetLastTypeHandleThrowing(ClassLoader::DontLoadTypes);
                     CONSISTENCY_CHECK(th.CheckFullyLoaded());
-                    CONSISTENCY_CHECK(th.IsRestored_NoLogging());
                 }
             }
             m_methodSig.Reset();
@@ -461,7 +437,7 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
 
             UINT32 stackSize = m_argIt.GetArgSize();
             // We need to pass in a pointer, but be careful of the ARG_SLOT calling convention. We might already have a pointer in the ARG_SLOT.
-            PVOID pSrc = stackSize > sizeof(ARG_SLOT) ? (LPVOID)ArgSlotToPtr(pArguments[arg]) : (LPVOID)ArgSlotEndianessFixup((ARG_SLOT*)&pArguments[arg], stackSize);
+            PVOID pSrc = stackSize > sizeof(ARG_SLOT) ? (LPVOID)ArgSlotToPtr(pArguments[arg]) : (LPVOID)ArgSlotEndiannessFixup((ARG_SLOT*)&pArguments[arg], stackSize);
 
 #if defined(UNIX_AMD64_ABI)
             if (argDest.IsStructPassedInRegs())
@@ -472,17 +448,44 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
                 argDest.CopyStructToRegisters(pSrc, th.AsMethodTable()->GetNumInstanceFieldBytes(), 0);
             }
             else
-#endif // UNIX_AMD64_ABI
+#elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+            if (argDest.IsStructPassedInRegs())
+            {
+                argDest.CopyStructToRegisters(pSrc, stackSize, 0);
+            }
+            else
+#endif // TARGET_LOONGARCH64 || TARGET_RISCV64
             {
                 PVOID pDest = argDest.GetDestinationAddress();
 
                 switch (stackSize)
                 {
+#if defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+                    case 1:
+                        if (m_argIt.GetArgType() == ELEMENT_TYPE_U1 || m_argIt.GetArgType() == ELEMENT_TYPE_BOOLEAN)
+                            *((INT64*)pDest) = (UINT8)pArguments[arg];
+                        else
+                            *((INT64*)pDest) = (INT8)pArguments[arg];
+                        break;
+                    case 2:
+                        if (m_argIt.GetArgType() == ELEMENT_TYPE_U2 || m_argIt.GetArgType() == ELEMENT_TYPE_CHAR)
+                            *((INT64*)pDest) = (UINT16)pArguments[arg];
+                        else
+                            *((INT64*)pDest) = (INT16)pArguments[arg];
+                        break;
+                    case 4:
+                        if (m_argIt.GetArgType() == ELEMENT_TYPE_U4)
+                            *((INT64*)pDest) = (UINT32)pArguments[arg];
+                        else
+                            *((INT64*)pDest) = (INT32)pArguments[arg];
+                        break;
+#else
                     case 1:
                     case 2:
                     case 4:
                         *((INT32*)pDest) = (INT32)pArguments[arg];
                         break;
+#endif
 
                     case 8:
                         *((INT64*)pDest) = pArguments[arg];
@@ -517,7 +520,8 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
     CallDescrData callDescrData;
 
     callDescrData.pSrc = pTransitionBlock + sizeof(TransitionBlock);
-    callDescrData.numStackSlots = nStackBytes / STACK_ELEM_SIZE;
+    _ASSERTE((nStackBytes % TARGET_POINTER_SIZE) == 0);
+    callDescrData.numStackSlots = nStackBytes / TARGET_POINTER_SIZE;
 #ifdef CALLDESCR_ARGREGS
     callDescrData.pArgumentRegisters = (ArgumentRegisters*)(pTransitionBlock + TransitionBlock::GetOffsetOfArgumentRegisters());
 #endif
@@ -537,9 +541,7 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
     if (transitionToPreemptive)
     {
         GCPreemp transitionIfILStub(transitionToPreemptive);
-        DWORD* pLastError = &GetThread()->m_dwLastErrorInterp;
         CallDescrWorkerInternal(&callDescrData);
-        *pLastError = GetLastError();
     }
     else
 #endif // FEATURE_INTERPRETER

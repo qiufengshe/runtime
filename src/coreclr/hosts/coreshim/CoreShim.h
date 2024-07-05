@@ -5,7 +5,6 @@
 #define _CORESHIM_H_
 
 // Platform
-#define NOMINMAX
 #include <Windows.h>
 #include <combaseapi.h>
 
@@ -18,6 +17,7 @@
 // CoreCLR
 #include <palclr.h>
 #include <coreclrhost.h>
+#include <minipal/utils.h>
 
 #define WCHAR wchar_t
 

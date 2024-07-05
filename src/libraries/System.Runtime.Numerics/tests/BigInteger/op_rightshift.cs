@@ -25,6 +25,56 @@ namespace System.Numerics.Tests
             }
         }
 
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.Is64BitProcess))] // May fail on 32-bit due to a large memory requirement
+        public static void LargeNegativeBigIntegerShiftTest()
+        {
+            // Create a very large negative BigInteger
+            int bitsPerElement = 8 * sizeof(uint);
+            int maxBitLength = ((Array.MaxLength / bitsPerElement) * bitsPerElement);
+            BigInteger bigInt = new BigInteger(-1) << (maxBitLength - 1);
+            Assert.Equal(maxBitLength - 1, bigInt.GetBitLength());
+            Assert.Equal(-1, bigInt.Sign);
+
+            // Validate internal representation.
+            // At this point, bigInt should be a 1 followed by maxBitLength - 1 zeros.
+            // Given this, bigInt._bits is expected to be structured as follows:
+            // - _bits.Length == ceil(maxBitLength / bitsPerElement)
+            // - First (_bits.Length - 1) elements: 0x00000000
+            // - Last element: 0x80000000
+            //                   ^------ (There's the leading '1')
+
+            Assert.Equal((maxBitLength + (bitsPerElement - 1)) / bitsPerElement, bigInt._bits.Length);
+
+            uint i = 0;
+            for (; i < (bigInt._bits.Length - 1); i++) {
+                Assert.Equal(0x00000000u, bigInt._bits[i]);
+            }
+
+            Assert.Equal(0x80000000u, bigInt._bits[i]);
+
+            // Right shift the BigInteger
+            BigInteger shiftedBigInt = bigInt >> 1;
+            Assert.Equal(maxBitLength - 2, shiftedBigInt.GetBitLength());
+            Assert.Equal(-1, shiftedBigInt.Sign);
+
+            // Validate internal representation.
+            // At this point, shiftedBigInt should be a 1 followed by maxBitLength - 2 zeros.
+            // Given this, shiftedBigInt._bits is expected to be structured as follows:
+            // - _bits.Length == ceil((maxBitLength - 1) / bitsPerElement)
+            // - First (_bits.Length - 1) elements: 0x00000000
+            // - Last element: 0x40000000
+            //                   ^------ (the '1' is now one position to the right)
+
+            Assert.Equal(((maxBitLength - 1) + (bitsPerElement - 1)) / bitsPerElement, shiftedBigInt._bits.Length);
+
+            i = 0;
+            for (; i < (shiftedBigInt._bits.Length - 1); i++) {
+                Assert.Equal(0x00000000u, shiftedBigInt._bits[i]);
+            }
+
+            Assert.Equal(0x40000000u, shiftedBigInt._bits[i]);
+        }
+
         [Fact]
         public static void RunRightShiftTests()
         {
@@ -54,6 +104,23 @@ namespace System.Numerics.Tests
                 tempByteArray2 = new byte[] { (byte)32 };
                 VerifyRightShiftString(Print(tempByteArray2) + Print(tempByteArray1) + "b>>");
             }
+
+            // RightShift Method - All One Uint Large BigIntegers - 32 bit Shift
+            for (int i = 0; i < s_samples; i++)
+            {
+                tempByteArray1 = GetRandomLengthAllOnesUIntByteArray(s_random);
+                tempByteArray2 = new byte[] { (byte)32 };
+                VerifyRightShiftString(Print(tempByteArray2) + Print(tempByteArray1) + "b>>");
+            }
+
+            // RightShift Method - Uint 0xffffffff 0x8000000 ... Large BigIntegers - 32 bit Shift
+            for (int i = 0; i < s_samples; i++)
+            {
+                tempByteArray1 = GetRandomLengthFirstUIntMaxSecondUIntMSBMaxArray(s_random);
+                tempByteArray2 = new byte[] { (byte)32 };
+                VerifyRightShiftString(Print(tempByteArray2) + Print(tempByteArray1) + "b>>");
+            }
+
             // RightShift Method - Large BigIntegers - large - Shift
             for (int i = 0; i < s_samples; i++)
             {
@@ -146,6 +213,10 @@ namespace System.Numerics.Tests
             {
                 tempByteArray1 = GetRandomPosByteArray(s_random, 100);
                 tempByteArray2 = BitConverter.GetBytes(s_random.Next(8 * tempByteArray1.Length, 1000));
+                if (!BitConverter.IsLittleEndian)
+                {
+                    Array.Reverse(tempByteArray2);
+                }
                 VerifyRightShiftString(Print(tempByteArray2) + Print(tempByteArray1) + "b>>");
             }
 
@@ -154,6 +225,10 @@ namespace System.Numerics.Tests
             {
                 tempByteArray1 = GetRandomNegByteArray(s_random, 100);
                 tempByteArray2 = BitConverter.GetBytes(s_random.Next(8 * tempByteArray1.Length, 1000));
+                if (!BitConverter.IsLittleEndian)
+                {
+                    Array.Reverse(tempByteArray2);
+                }
                 VerifyRightShiftString(Print(tempByteArray2) + Print(tempByteArray1) + "b>>");
             }
         }
@@ -201,6 +276,25 @@ namespace System.Numerics.Tests
             value[value.Length - 1] |= 0x80;
 
             return value;
+        }
+
+        private static byte[] GetRandomLengthAllOnesUIntByteArray(Random random)
+        {
+            int gap = random.Next(0, 128);
+            int byteLength = 4 + gap * 4 + 1;
+            byte[] array = new byte[byteLength];
+            array[0] = 1;
+            array[^1] = 0xFF;
+            return array;
+        }
+        private static byte[] GetRandomLengthFirstUIntMaxSecondUIntMSBMaxArray(Random random)
+        {
+            int gap = random.Next(0, 128);
+            int byteLength = 4 + gap * 4 + 1;
+            byte[] array = new byte[byteLength];
+            array[^6] = 0x80;
+            array[^1] = 0xFF;
+            return array;
         }
 
         private static string Print(byte[] bytes)

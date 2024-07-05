@@ -6,30 +6,31 @@
 #include <stdint.h>
 
 #include "dllexport.h"
-#include "jitinterface.h"
+#include "jitinterface_generated.h"
 
 static void NotImplemented()
 {
     abort();
 }
 
-int JitInterfaceWrapper::FilterException(void* pExceptionPointers)
+bool JitInterfaceWrapper::runWithErrorTrap(ICorJitInfo::errorTrapFunction function, void* parameter)
 {
-    NotImplemented();
-    return 1; // EXCEPTION_EXECUTE_HANDLER
-}
-
-void JitInterfaceWrapper::HandleException(void* pExceptionPointers)
-{
-    NotImplemented();
-}
-
-bool JitInterfaceWrapper::runWithErrorTrap(void* function, void* parameter)
-{
-    typedef void(*pfn)(void*);
     try
     {
-        (*(pfn)function)(parameter);
+        (*function)(parameter);
+    }
+    catch (CorInfoExceptionClass *)
+    {
+        return false;
+    }
+    return true;
+}
+
+bool JitInterfaceWrapper::runWithSPMIErrorTrap(ICorJitInfo::errorTrapFunction function, void* parameter)
+{
+    try
+    {
+        (*function)(parameter);
     }
     catch (CorInfoExceptionClass *)
     {

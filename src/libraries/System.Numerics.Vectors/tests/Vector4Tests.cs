@@ -3,17 +3,66 @@
 
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.Tests.Vectors;
 using Xunit;
 
 namespace System.Numerics.Tests
 {
-    public class Vector4Tests
+    public sealed class Vector4Tests
     {
+        /// <summary>Verifies that two <see cref="Vector4" /> values are equal, within the <paramref name="variance" />.</summary>
+        /// <param name="expected">The expected value</param>
+        /// <param name="actual">The value to be compared against</param>
+        /// <param name="variance">The total variance allowed between the expected and actual results.</param>
+        /// <exception cref="EqualException">Thrown when the values are not equal</exception>
+        internal static void AssertEqual(Vector4 expected, Vector4 actual, Vector4 variance)
+        {
+            AssertExtensions.Equal(expected.X, actual.X, variance.X);
+            AssertExtensions.Equal(expected.Y, actual.Y, variance.Y);
+            AssertExtensions.Equal(expected.Z, actual.Z, variance.Z);
+            AssertExtensions.Equal(expected.W, actual.W, variance.W);
+        }
+
         [Fact]
         public void Vector4MarshalSizeTest()
         {
             Assert.Equal(16, Marshal.SizeOf<Vector4>());
             Assert.Equal(16, Marshal.SizeOf<Vector4>(new Vector4()));
+        }
+
+        [Theory]
+        [InlineData(0.0f, 1.0f, 0.0f, 1.0f)]
+        [InlineData(1.0f, 0.0f, 1.0f, 0.0f)]
+        [InlineData(3.1434343f, 1.1234123f, 0.1234123f, -0.1234123f)]
+        [InlineData(1.0000001f, 0.0000001f, 2.0000001f, 0.0000002f)]
+        public void Vector4IndexerGetTest(float x, float y, float z, float w)
+        {
+            var vector = new Vector4(x, y, z, w);
+
+            Assert.Equal(x, vector[0]);
+            Assert.Equal(y, vector[1]);
+            Assert.Equal(z, vector[2]);
+            Assert.Equal(w, vector[3]);
+        }
+
+        [Theory]
+        [InlineData(0.0f, 1.0f, 0.0f, 1.0f)]
+        [InlineData(1.0f, 0.0f, 1.0f, 0.0f)]
+        [InlineData(3.1434343f, 1.1234123f, 0.1234123f, -0.1234123f)]
+        [InlineData(1.0000001f, 0.0000001f, 2.0000001f, 0.0000002f)]
+        public void Vector4IndexerSetTest(float x, float y, float z, float w)
+        {
+            var vector = new Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+
+            vector[0] = x;
+            vector[1] = y;
+            vector[2] = z;
+            vector[3] = w;
+
+            Assert.Equal(x, vector[0]);
+            Assert.Equal(y, vector[1]);
+            Assert.Equal(z, vector[2]);
+            Assert.Equal(w, vector[3]);
         }
 
         [Fact]
@@ -27,7 +76,7 @@ namespace System.Numerics.Tests
             Assert.Throws<NullReferenceException>(() => v1.CopyTo(null, 0));
             Assert.Throws<ArgumentOutOfRangeException>(() => v1.CopyTo(a, -1));
             Assert.Throws<ArgumentOutOfRangeException>(() => v1.CopyTo(a, a.Length));
-            AssertExtensions.Throws<ArgumentException>(null, () => v1.CopyTo(a, a.Length - 2));
+            Assert.Throws<ArgumentException>(() => v1.CopyTo(a, a.Length - 2));
 
             v1.CopyTo(a, 1);
             v1.CopyTo(b);
@@ -40,6 +89,44 @@ namespace System.Numerics.Tests
             Assert.Equal(2.0f, b[1]);
             Assert.Equal(3.0f, b[2]);
             Assert.Equal(3.3f, b[3]);
+        }
+
+        [Fact]
+        public void Vector4CopyToSpanTest()
+        {
+            Vector4 vector = new Vector4(1.0f, 2.0f, 3.0f, 4.0f);
+            Span<float> destination = new float[4];
+
+            Assert.Throws<ArgumentException>(() => vector.CopyTo(new Span<float>(new float[3])));
+            vector.CopyTo(destination);
+
+            Assert.Equal(1.0f, vector.X);
+            Assert.Equal(2.0f, vector.Y);
+            Assert.Equal(3.0f, vector.Z);
+            Assert.Equal(4.0f, vector.W);
+            Assert.Equal(vector.X, destination[0]);
+            Assert.Equal(vector.Y, destination[1]);
+            Assert.Equal(vector.Z, destination[2]);
+            Assert.Equal(vector.W, destination[3]);
+        }
+
+        [Fact]
+        public void Vector4TryCopyToTest()
+        {
+            Vector4 vector = new Vector4(1.0f, 2.0f, 3.0f, 4.0f);
+            Span<float> destination = new float[4];
+
+            Assert.False(vector.TryCopyTo(new Span<float>(new float[3])));
+            Assert.True(vector.TryCopyTo(destination));
+
+            Assert.Equal(1.0f, vector.X);
+            Assert.Equal(2.0f, vector.Y);
+            Assert.Equal(3.0f, vector.Z);
+            Assert.Equal(4.0f, vector.W);
+            Assert.Equal(vector.X, destination[0]);
+            Assert.Equal(vector.Y, destination[1]);
+            Assert.Equal(vector.Z, destination[2]);
+            Assert.Equal(vector.W, destination[3]);
         }
 
         [Fact]
@@ -424,7 +511,7 @@ namespace System.Numerics.Tests
         }
 
         // A test for Lerp (Vector4f, Vector4f, float)
-        // Lerp test with values known to be innacurate with the old lerp impl
+        // Lerp test with values known to be inaccurate with the old lerp impl
         [Fact]
         public void Vector4LerpTest7()
         {
@@ -439,7 +526,7 @@ namespace System.Numerics.Tests
         }
 
         // A test for Lerp (Vector4f, Vector4f, float)
-        // Lerp test with values known to be innacurate with the old lerp impl
+        // Lerp test with values known to be inaccurate with the old lerp impl
         // (Old code incorrectly gets 0.33333588)
         [Fact]
         public void Vector4LerpTest8()
@@ -713,7 +800,7 @@ namespace System.Numerics.Tests
         {
             Vector4 v = new Vector4(1.0f, 2.0f, 3.0f, 0.0f);
             Quaternion q = new Quaternion();
-            Vector4 expected = v;
+            Vector4 expected = Vector4.Zero;
 
             Vector4 actual = Vector4.Transform(v, q);
             Assert.True(MathHelper.Equal(expected, actual), "Vector4f.Transform did not return the expected value.");
@@ -757,7 +844,7 @@ namespace System.Numerics.Tests
         {
             Vector3 v = new Vector3(1.0f, 2.0f, 3.0f);
             Quaternion q = new Quaternion();
-            Vector4 expected = new Vector4(v, 1.0f);
+            Vector4 expected = Vector4.Zero;
 
             Vector4 actual = Vector4.Transform(v, q);
             Assert.True(MathHelper.Equal(expected, actual), "Vector4f.Transform did not return the expected value.");
@@ -801,7 +888,7 @@ namespace System.Numerics.Tests
         {
             Vector2 v = new Vector2(1.0f, 2.0f);
             Quaternion q = new Quaternion();
-            Vector4 expected = new Vector4(1.0f, 2.0f, 0, 1.0f);
+            Vector4 expected = Vector4.Zero;
 
             Vector4 actual = Vector4.Transform(v, q);
             Assert.True(MathHelper.Equal(expected, actual), "Vector4f.Transform did not return the expected value.");
@@ -1099,6 +1186,18 @@ namespace System.Numerics.Tests
             Assert.True(float.Equals(float.Epsilon, target.W), "Vector4f.constructor (float, float, float, float) did not return the expected value.");
         }
 
+        // A test for Vector4f (ReadOnlySpan<float>)
+        [Fact]
+        public void Vector4ConstructorTest7()
+        {
+            float value = 1.0f;
+            Vector4 target = new Vector4(new[] { value, value, value, value });
+            Vector4 expected = new Vector4(value);
+
+            Assert.Equal(expected, target);
+            Assert.Throws<ArgumentOutOfRangeException>(() => new Vector4(new float[3]));
+        }
+
         // A test for Add (Vector4f, Vector4f)
         [Fact]
         public void Vector4AddTest()
@@ -1356,7 +1455,7 @@ namespace System.Numerics.Tests
 
         // A test for Vector4f comparison involving NaN values
         [Fact]
-        public void Vector4EqualsNanTest()
+        public void Vector4EqualsNaNTest()
         {
             Vector4 a = new Vector4(float.NaN, 0, 0, 0);
             Vector4 b = new Vector4(0, float.NaN, 0, 0);
@@ -1378,11 +1477,10 @@ namespace System.Numerics.Tests
             Assert.False(c.Equals(Vector4.Zero));
             Assert.False(d.Equals(Vector4.Zero));
 
-            // Counterintuitive result - IEEE rules for NaN comparison are weird!
-            Assert.False(a.Equals(a));
-            Assert.False(b.Equals(b));
-            Assert.False(c.Equals(c));
-            Assert.False(d.Equals(d));
+            Assert.True(a.Equals(a));
+            Assert.True(b.Equals(b));
+            Assert.True(c.Equals(c));
+            Assert.True(d.Equals(d));
         }
 
         [Fact]
@@ -1625,5 +1723,21 @@ namespace System.Numerics.Tests
             }
         }
 #pragma warning restore 0169
+
+        [Theory]
+        [MemberData(nameof(VectorTestMemberData.MultiplyAddSingle), MemberType = typeof(VectorTestMemberData))]
+        public void FusedMultiplyAddSingleTest(float left, float right, float addend)
+        {
+            Vector4 actualResult = Vector4.FusedMultiplyAdd(new Vector4(left), new Vector4(right), new Vector4(addend));
+            AssertEqual(new Vector4(float.FusedMultiplyAdd(left, right, addend)), actualResult, Vector4.Zero);
+        }
+
+        [Theory]
+        [MemberData(nameof(VectorTestMemberData.MultiplyAddSingle), MemberType = typeof(VectorTestMemberData))]
+        public void MultiplyAddEstimateSingleTest(float left, float right, float addend)
+        {
+            Vector4 actualResult = Vector4.MultiplyAddEstimate(new Vector4(left), new Vector4(right), new Vector4(addend));
+            AssertEqual(new Vector4(float.MultiplyAddEstimate(left, right, addend)), actualResult, Vector4.Zero);
+        }
     }
 }

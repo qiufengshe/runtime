@@ -2,21 +2,22 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
+#if !NET
 using System.Diagnostics;
+#endif
 using System.IO;
-using System.Net.Test.Common;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Reflection;
 using Xunit.Abstractions;
 
 namespace System.Net.Http.Functional.Tests
 {
     using Configuration = System.Net.Test.Common.Configuration;
 
-
     public abstract partial class HttpClientHandlerTestBase : FileCleanupTestBase
     {
+        // This file is shared with the WinHttpHandler implementation, which supports .NET Framework
+        // So, define this so derived tests can use it.
         public static readonly Version HttpVersion30 = new Version(3, 0);
 
         public readonly ITestOutputHelper _output;
@@ -48,6 +49,8 @@ namespace System.Net.Http.Functional.Tests
                 DefaultRequestVersion = Version.Parse(useVersionString)
 #endif
             };
+
+        public const int DefaultInitialWindowSize = 65535;
 
         public static readonly bool[] BoolValues = new[] { true, false };
 
@@ -87,7 +90,7 @@ namespace System.Net.Http.Functional.Tests
                 _expectedVersion = expectedVersion;
             }
 
-#if NETCOREAPP
+#if NET
             protected override HttpResponseMessage Send(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 if (request.Version != _expectedVersion)
@@ -135,7 +138,7 @@ namespace System.Net.Http.Functional.Tests
             }
             else
             {
-#if NETCOREAPP
+#if NET
                 // Note that the sync call must be done on a different thread because it blocks until the server replies.
                 // However, the server-side of the request handling is in many cases invoked after the client, thus deadlocking the test.
                 return Task.Run(() => client.Send(request, completionOption, cancellationToken));
@@ -156,7 +159,7 @@ namespace System.Net.Http.Functional.Tests
             }
             else
             {
-#if NETCOREAPP
+#if NET
                 // Note that the sync call must be done on a different thread because it blocks until the server replies.
                 // However, the server-side of the request handling is in many cases invoked after the client, thus deadlocking the test.
                 return Task.Run(() => invoker.Send(request, cancellationToken));
@@ -173,7 +176,7 @@ namespace System.Net.Http.Functional.Tests
         {
             if (async)
             {
-#if NETCOREAPP
+#if NET
                 // No CancellationToken accepting overload on NETFX.
                 return content.ReadAsStreamAsync(cancellationToken);
 #else
@@ -183,7 +186,7 @@ namespace System.Net.Http.Functional.Tests
             }
             else
             {
-#if NETCOREAPP
+#if NET
                 return Task.FromResult(content.ReadAsStream(cancellationToken));
 #else
                 // Framework won't ever have the sync API.
@@ -192,6 +195,53 @@ namespace System.Net.Http.Functional.Tests
                 throw new Exception("Shouldn't be reachable");
 #endif
             }
+        }
+
+        public static Task<byte[]> GetByteArrayAsync(this HttpClient client, bool async, bool useCopyTo, Uri uri)
+        {
+#if NET
+            return Task.Run(async () =>
+            {
+                var m = new HttpRequestMessage(HttpMethod.Get, uri);
+                using HttpResponseMessage r = async ? await client.SendAsync(m, HttpCompletionOption.ResponseHeadersRead) : client.Send(m, HttpCompletionOption.ResponseHeadersRead);
+                using Stream s = async ? await r.Content.ReadAsStreamAsync() : r.Content.ReadAsStream();
+
+                var result = new MemoryStream();
+                if (useCopyTo)
+                {
+                    if (async)
+                    {
+                        await s.CopyToAsync(result);
+                    }
+                    else
+                    {
+                        s.CopyTo(result);
+                    }
+                }
+                else
+                {
+                    byte[] buffer = new byte[100];
+                    while (true)
+                    {
+                        int bytesRead = async ? await s.ReadAsync(buffer) : s.Read(buffer);
+                        if (bytesRead == 0)
+                        {
+                            break;
+                        }
+                        result.Write(buffer.AsSpan(0, bytesRead));
+                    }
+                }
+                return result.ToArray();
+            });
+#else
+            // For WinHttpHandler on .NET Framework, we fall back to ignoring async and useCopyTo.
+            return client.GetByteArrayAsync(uri);
+#endif
+        }
+
+        public static Task<HttpResponseMessage> GetAsync(this HttpClient client, bool async, Uri uri, HttpCompletionOption completionOption = default, CancellationToken cancellationToken = default)
+        {
+            return SendAsync(client, async, new HttpRequestMessage(HttpMethod.Get, uri), completionOption, cancellationToken);
         }
     }
 }

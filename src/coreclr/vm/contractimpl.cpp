@@ -18,10 +18,6 @@
 #include "virtualcallstub.h"
 #include "decodemd.h"
 
-#ifdef FEATURE_PREJIT
-#include "compile.h"
-#endif
-
 #if defined(_DEBUG)
 DummyGlobalContract ___contract;
 #endif
@@ -44,14 +40,13 @@ MethodDesc * DispatchSlot::GetMethodDesc()
 }
 
 //------------------------------------------------------------------------
-void TypeIDMap::Init(UINT32 idStartValue, UINT32 idIncrementValue)
+void TypeIDMap::Init()
 {
     STANDARD_VM_CONTRACT;
 
     LockOwner lock = {&m_lock, IsOwnerOfCrst};
     m_idMap.Init(11, TRUE, &lock);
     m_mtMap.Init(11, TRUE, &lock);
-    m_idProvider.Init(idStartValue, idIncrementValue);
     m_entryCount = 0;
 }
 
@@ -63,12 +58,10 @@ UINT32 TypeIDMap::LookupTypeID(PTR_MethodTable pMT)
 {
     CONTRACTL {
         NOTHROW;
-        PRECONDITION(CheckPointer(GetThread()));
         if (GetThread()->PreemptiveGCDisabled()) { GC_NOTRIGGER; } else { GC_TRIGGERS; }
     } CONTRACTL_END;
 
     UINT32 id = (UINT32) m_mtMap.LookupValue((UPTR)dac_cast<TADDR>(pMT), 0);
-    _ASSERTE(!pMT->RequiresFatDispatchTokens() || (DispatchToken::RequiresDispatchTokenFat(id, 0)));
 
     return id;
 }
@@ -79,13 +72,9 @@ PTR_MethodTable TypeIDMap::LookupType(UINT32 id)
 {
     CONTRACTL {
         NOTHROW;
-        PRECONDITION(CheckPointer(GetThread()));
         if (GetThread()->PreemptiveGCDisabled()) { GC_NOTRIGGER; } else { GC_TRIGGERS; }
         PRECONDITION(id <= TypeIDProvider::MAX_TYPE_ID);
     } CONTRACTL_END;
-
-    if (!m_idProvider.OwnsID(id))
-        return NULL;
 
     UPTR ret = m_idMap.LookupValue((UPTR)id, 0);
     if (ret == static_cast<UPTR>(INVALIDENTRY))
@@ -99,7 +88,8 @@ PTR_MethodTable TypeIDMap::LookupType(UINT32 id)
 //------------------------------------------------------------------------
 // Returns the ID of the type if found. If not found, assigns the ID and
 // returns the new ID.
-UINT32 TypeIDMap::GetTypeID(PTR_MethodTable pMT)
+// If useFatPointerDispatch = true, return the next Fat ID of the type.
+UINT32 TypeIDMap::GetTypeID(PTR_MethodTable pMT, bool useFatPointerDispatch)
 {
     CONTRACTL {
         THROWS;
@@ -121,15 +111,7 @@ UINT32 TypeIDMap::GetTypeID(PTR_MethodTable pMT)
         {
             return id;
         }
-        // Get the next ID
-        if (pMT->RequiresFatDispatchTokens())
-        {
-            id = GetNextFatID();
-        }
-        else
-        {
-            id = GetNextID();
-        }
+        id = GetNextID(useFatPointerDispatch);
 
         CONSISTENCY_CHECK(id <= TypeIDProvider::MAX_TYPE_ID);
         // Insert the pair, with lookups in both directions
@@ -137,8 +119,7 @@ UINT32 TypeIDMap::GetTypeID(PTR_MethodTable pMT)
         m_idMap.InsertValue((UPTR)id, (UPTR)pMT >> 1);
         m_mtMap.InsertValue((UPTR)pMT, (UPTR)id);
         m_entryCount++;
-        CONSISTENCY_CHECK(GetThread()->GetDomain()->IsCompilationDomain() ||
-                          (LookupType(id) == pMT));
+        CONSISTENCY_CHECK((LookupType(id) == pMT));
     }
 #else // DACCESS_COMPILE
     if (id == TypeIDProvider::INVALID_TYPE_ID)
@@ -323,7 +304,6 @@ DispatchMap::DispatchMap(
 // }
 void
 DispatchMap::CreateEncodedMapping(
-    MethodTable *        pMT,
     DispatchMapBuilder * pMapBuilder,
     StackingAllocator *  pAllocator,
     BYTE **              ppbMap,
@@ -333,7 +313,6 @@ DispatchMap::CreateEncodedMapping(
         THROWS;
         GC_TRIGGERS;
         INJECT_FAULT(COMPlusThrowOM());
-        PRECONDITION(CheckPointer(pMT));
         PRECONDITION(CheckPointer(pMapBuilder));
         PRECONDITION(CheckPointer(pAllocator));
         PRECONDITION(CheckPointer(ppbMap));
@@ -434,9 +413,6 @@ DispatchMap::CreateEncodedMapping(
             curTargetSlot = -1;
             do
             {
-                // Only virtual targets can be mapped virtually.
-                CONSISTENCY_CHECK((it.GetTargetMD() == NULL) ||
-                                  it.GetTargetMD()->IsVirtual());
                 // Encode the slot
                 prevSlot = curSlot;
                 curSlot = it.GetSlotNumber();
@@ -488,37 +464,6 @@ DispatchMap::CreateEncodedMapping(
     }
 #endif //_DEBUG
 } // DispatchMap::CreateEncodedMapping
-
-#ifdef FEATURE_NATIVE_IMAGE_GENERATION
-//------------------------------------------------------------------------
-void DispatchMap::Save(DataImage * image)
-{
-    STANDARD_VM_CONTRACT;
-
-    CONSISTENCY_CHECK(!image->IsStored(this));
-
-    UINT32 cbMap = GetMapSize();
-    UINT32 cbObj = GetObjectSize(cbMap);
-
-    image->StoreInternedStructure(
-        this,
-        cbObj,
-        DataImage::ITEM_DISPATCH_MAP,
-        sizeof(void *));
-
-#ifdef LOGGING
-    g_sdStats.m_cNGENDispatchMap++;
-    g_sdStats.m_cbNGENDispatchMap += cbObj;
-#endif //LOGGING
-}
-
-//------------------------------------------------------------------------
-void DispatchMap::Fixup(DataImage *image)
-{
-    STANDARD_VM_CONTRACT;
-}
-
-#endif //FEATURE_NATIVE_IMAGE_GENERATION
 
 #endif //!DACCESS_COMPILE
 
@@ -602,9 +547,9 @@ DispatchMap::EncodedMapIterator::EncodedMapIterator(MethodTable * pMT)
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
-    if (pMT->HasDispatchMap())
+    DispatchMap * pMap = pMT->GetDispatchMap();
+    if (pMap != NULL)
     {
-        DispatchMap * pMap = pMT->GetDispatchMap();
         Init(PTR_BYTE(PTR_HOST_MEMBER_TADDR(DispatchMap, pMap, m_rgMap)));
     }
     else

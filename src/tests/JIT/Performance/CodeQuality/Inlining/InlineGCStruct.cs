@@ -13,12 +13,9 @@
 //
 // See https://github.com/dotnet/runtime/issues/6796 for context.
 
-using Microsoft.Xunit.Performance;
 using System;
 using System.Runtime.CompilerServices;
 using Xunit;
-
-[assembly: OptimizeForBenchmarks]
 
 namespace Inlining
 {
@@ -72,44 +69,6 @@ public class InlineGCStruct
         return param * 2;
     }
 
-    [Benchmark(InnerIterationCount = Iterations)]
-    public static bool WithFormat()
-    {
-        int result = 0;
-
-        foreach (var iteration in Benchmark.Iterations)
-        {
-            using (iteration.StartMeasurement())
-            {
-                for (int i = 0; i < Benchmark.InnerIterationCount; i++)
-                {
-                    result |= FastFunctionNotCallingStringFormat(11);
-                }
-            }
-        }
-
-        return (result == 22);
-    }
-
-    [Benchmark(InnerIterationCount = Iterations)]
-    public static bool WithoutFormat()
-    {
-        int result = 0;
-
-        foreach (var iteration in Benchmark.Iterations)
-        {
-            using (iteration.StartMeasurement())
-            {
-                for (int i = 0; i < Benchmark.InnerIterationCount; i++)
-                {
-                    result |= FastFunctionNotHavingStringFormat(11);
-                }
-            }
-        }
-
-        return (result == 22);
-    }
-
     public static bool WithoutFormatBase()
     {
         int result = 0;
@@ -134,7 +93,8 @@ public class InlineGCStruct
         return (result == 22);
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         bool withFormat = WithFormatBase();
         bool withoutFormat = WithoutFormatBase();

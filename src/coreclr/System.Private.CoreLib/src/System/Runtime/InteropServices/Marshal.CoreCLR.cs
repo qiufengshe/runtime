@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -20,20 +21,21 @@ namespace System.Runtime.InteropServices
         /// <summary>
         /// IUnknown is {00000000-0000-0000-C000-000000000046}
         /// </summary>
-        internal static Guid IID_IUnknown = new Guid(0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46);
+        internal static readonly Guid IID_IUnknown = new Guid(0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46);
 #endif //FEATURE_COMINTEROP
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern int SizeOfHelper(Type t, bool throwIfNotMarshalable);
+        internal static int SizeOfHelper(RuntimeType t, [MarshalAs(UnmanagedType.Bool)] bool throwIfNotMarshalable)
+            => SizeOfHelper(new QCallTypeHandle(ref t), throwIfNotMarshalable);
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_SizeOfHelper")]
+        private static partial int SizeOfHelper(QCallTypeHandle t, [MarshalAs(UnmanagedType.Bool)] bool throwIfNotMarshalable);
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2070:UnrecognizedReflectionPattern",
             Justification = "Trimming doesn't affect types eligible for marshalling. Different exception for invalid inputs doesn't matter.")]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public static IntPtr OffsetOf(Type t, string fieldName)
         {
-            if (t is null)
-            {
-                throw new ArgumentNullException(nameof(t));
-            }
+            ArgumentNullException.ThrowIfNull(t);
 
             FieldInfo? f = t.GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 
@@ -47,30 +49,46 @@ namespace System.Runtime.InteropServices
                 throw new ArgumentException(SR.Argument_MustBeRuntimeFieldInfo, nameof(fieldName));
             }
 
-            return OffsetOfHelper(rtField);
+            nint offset = OffsetOf(rtField.GetFieldHandle());
+            GC.KeepAlive(rtField);
+            return offset;
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern IntPtr OffsetOfHelper(IRuntimeFieldInfo f);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_OffsetOf")]
+        private static partial nint OffsetOf(IntPtr pFD);
 
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        [Obsolete("ReadByte(Object, Int32) may be unavailable in future releases.")]
+        [RequiresDynamicCode("Marshalling code for the object might not be available")]
         public static byte ReadByte(object ptr, int ofs)
         {
-            return ReadValueSlow(ptr, ofs, (IntPtr nativeHome, int offset) => ReadByte(nativeHome, offset));
+            return ReadValueSlow(ptr, ofs, ReadByte);
         }
 
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        [Obsolete("ReadInt16(Object, Int32) may be unavailable in future releases.")]
+        [RequiresDynamicCode("Marshalling code for the object might not be available")]
         public static short ReadInt16(object ptr, int ofs)
         {
-            return ReadValueSlow(ptr, ofs, (IntPtr nativeHome, int offset) => ReadInt16(nativeHome, offset));
+            return ReadValueSlow(ptr, ofs, ReadInt16);
         }
 
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        [Obsolete("ReadInt32(Object, Int32) may be unavailable in future releases.")]
+        [RequiresDynamicCode("Marshalling code for the object might not be available")]
         public static int ReadInt32(object ptr, int ofs)
         {
-            return ReadValueSlow(ptr, ofs, (IntPtr nativeHome, int offset) => ReadInt32(nativeHome, offset));
+            return ReadValueSlow(ptr, ofs, ReadInt32);
         }
 
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        [Obsolete("ReadInt64(Object, Int32) may be unavailable in future releases.")]
+        [RequiresDynamicCode("Marshalling code for the object might not be available")]
+#pragma warning disable CS0618 // Type or member is obsolete
         public static long ReadInt64([MarshalAs(UnmanagedType.AsAny), In] object ptr, int ofs)
+#pragma warning restore CS0618 // Type or member is obsolete
         {
-            return ReadValueSlow(ptr, ofs, (IntPtr nativeHome, int offset) => ReadInt64(nativeHome, offset));
+            return ReadValueSlow(ptr, ofs, ReadInt64);
         }
 
         /// <summary>Read value from marshaled object (marshaled using AsAny).</summary>
@@ -107,24 +125,36 @@ namespace System.Runtime.InteropServices
             }
         }
 
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        [Obsolete("WriteByte(Object, Int32, Byte) may be unavailable in future releases.")]
+        [RequiresDynamicCode("Marshalling code for the object might not be available")]
         public static void WriteByte(object ptr, int ofs, byte val)
         {
-            WriteValueSlow(ptr, ofs, val, (IntPtr nativeHome, int offset, byte value) => WriteByte(nativeHome, offset, value));
+            WriteValueSlow(ptr, ofs, val, WriteByte);
         }
 
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        [Obsolete("WriteInt16(Object, Int32, Int16) may be unavailable in future releases.")]
+        [RequiresDynamicCode("Marshalling code for the object might not be available")]
         public static void WriteInt16(object ptr, int ofs, short val)
         {
-            WriteValueSlow(ptr, ofs, val, (IntPtr nativeHome, int offset, short value) => Marshal.WriteInt16(nativeHome, offset, value));
+            WriteValueSlow(ptr, ofs, val, WriteInt16);
         }
 
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        [Obsolete("WriteInt32(Object, Int32, Int32) may be unavailable in future releases.")]
+        [RequiresDynamicCode("Marshalling code for the object might not be available")]
         public static void WriteInt32(object ptr, int ofs, int val)
         {
-            WriteValueSlow(ptr, ofs, val, (IntPtr nativeHome, int offset, int value) => Marshal.WriteInt32(nativeHome, offset, value));
+            WriteValueSlow(ptr, ofs, val, WriteInt32);
         }
 
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        [Obsolete("WriteInt64(Object, Int32, Int64) may be unavailable in future releases.")]
+        [RequiresDynamicCode("Marshalling code for the object might not be available")]
         public static void WriteInt64(object ptr, int ofs, long val)
         {
-            WriteValueSlow(ptr, ofs, val, (IntPtr nativeHome, int offset, long value) => Marshal.WriteInt64(nativeHome, offset, value));
+            WriteValueSlow(ptr, ofs, val, WriteInt64);
         }
 
         /// <summary>
@@ -163,11 +193,23 @@ namespace System.Runtime.InteropServices
             }
         }
 
+        /// <summary>
+        /// Get the last platform invoke error on the current thread
+        /// </summary>
+        /// <returns>The last platform invoke error</returns>
+        /// <remarks>
+        /// The last platform invoke error corresponds to the error set by either the most recent platform
+        /// invoke that was configured to set the last error or a call to <see cref="SetLastPInvokeError(int)" />.
+        /// </remarks>
         [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern int GetLastWin32Error();
+        public static extern int GetLastPInvokeError();
 
+        /// <summary>
+        /// Set the last platform invoke error on the current thread
+        /// </summary>
+        /// <param name="error">Error to set</param>
         [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern void SetLastWin32Error(int error);
+        public static extern void SetLastPInvokeError(int error);
 
         private static void PrelinkCore(MethodInfo m)
         {
@@ -180,12 +222,14 @@ namespace System.Runtime.InteropServices
             GC.KeepAlive(rmi);
         }
 
-        [DllImport(RuntimeHelpers.QCall, CharSet = CharSet.Unicode)]
-        private static extern void InternalPrelink(RuntimeMethodHandleInternal m);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_Prelink")]
+        private static partial void InternalPrelink(RuntimeMethodHandleInternal m);
 
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern /* struct _EXCEPTION_POINTERS* */ IntPtr GetExceptionPointers();
 
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        [Obsolete("GetExceptionCode() may be unavailable in future releases.")]
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern int GetExceptionCode();
 
@@ -194,44 +238,117 @@ namespace System.Runtime.InteropServices
         /// structure contains pointers to allocated blocks and "fDeleteOld" is
         /// true, this routine will call DestroyStructure() first.
         /// </summary>
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern void StructureToPtr(object structure, IntPtr ptr, bool fDeleteOld);
-
-        private static object PtrToStructureHelper(IntPtr ptr, Type structureType)
+        [RequiresDynamicCode("Marshalling code for the object might not be available. Use the StructureToPtr<T> overload instead.")]
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static unsafe void StructureToPtr(object structure, IntPtr ptr, bool fDeleteOld)
         {
-            var rt = (RuntimeType)structureType;
-            object structure = rt.CreateInstanceDefaultCtor(publicOnly: false, wrapExceptions: true)!;
-            PtrToStructureHelper(ptr, structure, allowValueClasses: true);
-            return structure;
+            ArgumentNullException.ThrowIfNull(ptr);
+            ArgumentNullException.ThrowIfNull(structure);
+
+            MethodTable* pMT = RuntimeHelpers.GetMethodTable(structure);
+
+            if (pMT->HasInstantiation)
+                throw new ArgumentException(SR.Argument_NeedNonGenericObject, nameof(structure));
+
+            delegate*<ref byte, byte*, int, ref CleanupWorkListElement?, void> structMarshalStub;
+            nuint size;
+            if (!TryGetStructMarshalStub((IntPtr)pMT, &structMarshalStub, &size))
+                throw new ArgumentException(SR.Argument_MustHaveLayoutOrBeBlittable, nameof(structure));
+
+            if (structMarshalStub != null)
+            {
+                if (fDeleteOld)
+                {
+                    structMarshalStub(ref structure.GetRawData(), (byte*)ptr, MarshalOperation.Cleanup, ref Unsafe.NullRef<CleanupWorkListElement?>());
+                }
+
+                structMarshalStub(ref structure.GetRawData(), (byte*)ptr, MarshalOperation.Marshal, ref Unsafe.NullRef<CleanupWorkListElement?>());
+            }
+            else
+            {
+                SpanHelpers.Memmove(ref *(byte*)ptr, ref structure.GetRawData(), size);
+            }
         }
 
         /// <summary>
         /// Helper function to copy a pointer into a preallocated structure.
         /// </summary>
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern void PtrToStructureHelper(IntPtr ptr, object structure, bool allowValueClasses);
+        private static unsafe void PtrToStructureHelper(IntPtr ptr, object structure, bool allowValueClasses)
+        {
+            MethodTable* pMT = RuntimeHelpers.GetMethodTable(structure);
+
+            if (!allowValueClasses && pMT->IsValueType)
+                throw new ArgumentException(SR.Argument_StructMustNotBeValueClass, nameof(structure));
+
+            delegate*<ref byte, byte*, int, ref CleanupWorkListElement?, void> structMarshalStub;
+            nuint size;
+            if (!TryGetStructMarshalStub((IntPtr)pMT, &structMarshalStub, &size))
+                throw new ArgumentException(SR.Argument_MustHaveLayoutOrBeBlittable, nameof(structure));
+
+            if (structMarshalStub != null)
+            {
+                structMarshalStub(ref structure.GetRawData(), (byte*)ptr, MarshalOperation.Unmarshal, ref Unsafe.NullRef<CleanupWorkListElement?>());
+            }
+            else
+            {
+                SpanHelpers.Memmove(ref structure.GetRawData(), ref *(byte*)ptr, size);
+            }
+        }
 
         /// <summary>
         /// Frees all substructures pointed to by the native memory block.
-        /// "structuretype" is used to provide layout information.
+        /// nameof(structuretype) is used to provide layout information.
         /// </summary>
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern void DestroyStructure(IntPtr ptr, Type structuretype);
+        [RequiresDynamicCode("Marshalling code for the object might not be available. Use the DestroyStructure<T> overload instead.")]
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static unsafe void DestroyStructure(IntPtr ptr, Type structuretype)
+        {
+            ArgumentNullException.ThrowIfNull(ptr);
+            ArgumentNullException.ThrowIfNull(structuretype);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern bool IsPinnable(object? obj);
+            if (structuretype is not RuntimeType rt)
+                throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(structuretype));
 
-#if FEATURE_COMINTEROP
+            if (rt.IsGenericType)
+                throw new ArgumentException(SR.Argument_NeedNonGenericType, nameof(structuretype));
+
+            delegate*<ref byte, byte*, int, ref CleanupWorkListElement?, void> structMarshalStub;
+            nuint size;
+            if (!TryGetStructMarshalStub(rt.GetUnderlyingNativeHandle(), &structMarshalStub, &size))
+                throw new ArgumentException(SR.Argument_MustHaveLayoutOrBeBlittable, nameof(structuretype));
+
+            GC.KeepAlive(rt);
+
+            if (structMarshalStub != null)
+            {
+                structMarshalStub(ref Unsafe.NullRef<byte>(), (byte*)ptr, MarshalOperation.Cleanup, ref Unsafe.NullRef<CleanupWorkListElement?>());
+            }
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_TryGetStructMarshalStub")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static unsafe partial bool TryGetStructMarshalStub(IntPtr th, delegate*<ref byte, byte*, int, ref CleanupWorkListElement?, void>* structMarshalStub, nuint* size);
+
+        // Note: Callers are required to keep obj alive
+        internal static unsafe bool IsPinnable(object? obj)
+            => (obj == null) || !RuntimeHelpers.GetMethodTable(obj)->ContainsGCPointers;
+
+#if TARGET_WINDOWS
+        internal static bool IsBuiltInComSupported { get; } = IsBuiltInComSupportedInternal();
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_IsBuiltInComSupported")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool IsBuiltInComSupportedInternal();
+
         /// <summary>
         /// Returns the HInstance for this module.  Returns -1 if the module doesn't have
         /// an HInstance.  In Memory (Dynamic) Modules won't have an HInstance.
         /// </summary>
+        [RequiresAssemblyFiles("Windows only assigns HINSTANCE to assemblies loaded from disk. " +
+            "This API will return -1 for modules without a file on disk.")]
         public static IntPtr GetHINSTANCE(Module m)
         {
-            if (m is null)
-            {
-                throw new ArgumentNullException(nameof(m));
-            }
+            ArgumentNullException.ThrowIfNull(m);
 
             if (m is RuntimeModule rtModule)
             {
@@ -241,22 +358,31 @@ namespace System.Runtime.InteropServices
             return (IntPtr)(-1);
         }
 
-        [DllImport(RuntimeHelpers.QCall, CharSet = CharSet.Unicode)]
-        private static extern IntPtr GetHINSTANCE(QCallModule m);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetHINSTANCE")]
+        private static partial IntPtr GetHINSTANCE(QCallModule m);
 
-#endif // FEATURE_COMINTEROP
+#endif // TARGET_WINDOWS
 
+        internal static Exception GetExceptionForHRInternal(int errorCode, IntPtr errorInfo)
+        {
+            Exception? exception = null;
+            GetExceptionForHRInternal(errorCode, errorInfo, ObjectHandleOnStack.Create(ref exception));
+            return exception!;
+        }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern Exception GetExceptionForHRInternal(int errorCode, IntPtr errorInfo);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetExceptionForHR")]
+        private static partial void GetExceptionForHRInternal(int errorCode, IntPtr errorInfo, ObjectHandleOnStack exception);
 
 #if FEATURE_COMINTEROP
         /// <summary>
         /// Converts the CLR exception to an HRESULT. This function also sets
         /// up an IErrorInfo for the exception.
         /// </summary>
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern int GetHRForException(Exception? e);
+        public static int GetHRForException(Exception? e)
+            => GetHRForException(ObjectHandleOnStack.Create(ref e));
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetHRForException")]
+        private static partial int GetHRForException(ObjectHandleOnStack exception);
 
         /// <summary>
         /// Given a managed object that wraps an ITypeInfo, return its name.
@@ -264,19 +390,22 @@ namespace System.Runtime.InteropServices
         [SupportedOSPlatform("windows")]
         public static string GetTypeInfoName(ITypeInfo typeInfo)
         {
-            if (typeInfo is null)
-            {
-                throw new ArgumentNullException(nameof(typeInfo));
-            }
+            ArgumentNullException.ThrowIfNull(typeInfo);
 
             typeInfo.GetDocumentation(-1, out string strTypeLibName, out _, out _, out _);
             return strTypeLibName;
         }
 
+#pragma warning disable IDE0060
         // This method is identical to Type.GetTypeFromCLSID. Since it's interop specific, we expose it
         // on Marshal for more consistent API surface.
         internal static Type? GetTypeFromCLSID(Guid clsid, string? server, bool throwOnError)
         {
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
+
             // Note: "throwOnError" is a vacuous parameter. Any errors due to the CLSID not being registered or the server not being found will happen
             // on the Activator.CreateInstance() call. GetTypeFromCLSID() merely wraps the data in a Type object without any validation.
 
@@ -284,9 +413,10 @@ namespace System.Runtime.InteropServices
             GetTypeFromCLSID(clsid, server, ObjectHandleOnStack.Create(ref type));
             return type;
         }
+#pragma warning restore IDE0060
 
-        [DllImport(RuntimeHelpers.QCall, CharSet = CharSet.Unicode)]
-        private static extern void GetTypeFromCLSID(in Guid clsid, string? server, ObjectHandleOnStack retType);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetTypeFromCLSID", StringMarshalling = StringMarshalling.Utf16)]
+        private static partial void GetTypeFromCLSID(in Guid clsid, string? server, ObjectHandleOnStack retType);
 
         /// <summary>
         /// Return the IUnknown* for an Object if the current context is the one
@@ -295,16 +425,13 @@ namespace System.Runtime.InteropServices
         [SupportedOSPlatform("windows")]
         public static IntPtr /* IUnknown* */ GetIUnknownForObject(object o)
         {
-            if (o is null)
-            {
-                throw new ArgumentNullException(nameof(o));
-            }
+            ArgumentNullException.ThrowIfNull(o);
 
-            return GetIUnknownForObjectNative(o);
+            return GetIUnknownForObject(ObjectHandleOnStack.Create(ref o));
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern IntPtr /* IUnknown* */ GetIUnknownForObjectNative(object o);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetIUnknownForObject")]
+        private static partial IntPtr /* IUnknown* */ GetIUnknownForObject(ObjectHandleOnStack o);
 
         /// <summary>
         /// Return the IDispatch* for an Object.
@@ -312,39 +439,26 @@ namespace System.Runtime.InteropServices
         [SupportedOSPlatform("windows")]
         public static IntPtr /* IDispatch */ GetIDispatchForObject(object o)
         {
-            if (o is null)
-            {
-                throw new ArgumentNullException(nameof(o));
-            }
+            ArgumentNullException.ThrowIfNull(o);
 
-            return GetIDispatchForObjectNative(o);
+            return GetIDispatchForObject(ObjectHandleOnStack.Create(ref o));
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern IntPtr /* IDispatch* */ GetIDispatchForObjectNative(object o);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetIDispatchForObject")]
+        private static partial IntPtr /* IDispatch* */ GetIDispatchForObject(ObjectHandleOnStack o);
 
         /// <summary>
         /// Return the IUnknown* representing the interface for the Object.
         /// Object o should support Type T
         /// </summary>
         [SupportedOSPlatform("windows")]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public static IntPtr /* IUnknown* */ GetComInterfaceForObject(object o, Type T)
-        {
-            if (o is null)
-            {
-                throw new ArgumentNullException(nameof(o));
-            }
-
-            if (T is null)
-            {
-                throw new ArgumentNullException(nameof(T));
-            }
-
-            return GetComInterfaceForObjectNative(o, T, true);
-        }
+            => GetComInterfaceForObject(o, T, CustomQueryInterfaceMode.Allow);
 
         [SupportedOSPlatform("windows")]
-        public static IntPtr GetComInterfaceForObject<T, TInterface>([DisallowNull] T o) => GetComInterfaceForObject(o!, typeof(TInterface));
+        public static IntPtr GetComInterfaceForObject<T, TInterface>([DisallowNull] T o)
+            => GetComInterfaceForObject(o!, typeof(TInterface), CustomQueryInterfaceMode.Allow);
 
         /// <summary>
         /// Return the IUnknown* representing the interface for the Object.
@@ -352,24 +466,20 @@ namespace System.Runtime.InteropServices
         /// invoke customized QueryInterface or not.
         /// </summary>
         [SupportedOSPlatform("windows")]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public static IntPtr /* IUnknown* */ GetComInterfaceForObject(object o, Type T, CustomQueryInterfaceMode mode)
         {
-            if (o is null)
-            {
-                throw new ArgumentNullException(nameof(o));
-            }
+            ArgumentNullException.ThrowIfNull(o);
+            ArgumentNullException.ThrowIfNull(T);
 
-            if (T is null)
-            {
-                throw new ArgumentNullException(nameof(T));
-            }
+            if (T is not RuntimeType rt)
+                throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(T));
 
-            bool bEnableCustomizedQueryInterface = ((mode == CustomQueryInterfaceMode.Allow) ? true : false);
-            return GetComInterfaceForObjectNative(o, T, bEnableCustomizedQueryInterface);
+            return GetComInterfaceForObject(ObjectHandleOnStack.Create(ref o), new QCallTypeHandle(ref rt), fEnableCustomizedQueryInterface: mode == CustomQueryInterfaceMode.Allow);
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern IntPtr /* IUnknown* */ GetComInterfaceForObjectNative(object o, Type t, bool fEnableCustomizedQueryInterface);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetComInterfaceForObject")]
+        private static partial IntPtr /* IUnknown* */ GetComInterfaceForObject(ObjectHandleOnStack o, QCallTypeHandle t, [MarshalAs(UnmanagedType.Bool)] bool fEnableCustomizedQueryInterface);
 
         /// <summary>
         /// Return the managed object representing the IUnknown*
@@ -377,26 +487,24 @@ namespace System.Runtime.InteropServices
         [SupportedOSPlatform("windows")]
         public static object GetObjectForIUnknown(IntPtr /* IUnknown* */ pUnk)
         {
-            if (pUnk == IntPtr.Zero)
-            {
-                throw new ArgumentNullException(nameof(pUnk));
-            }
+            ArgumentNullException.ThrowIfNull(pUnk);
 
-            return GetObjectForIUnknownNative(pUnk);
+            object? retObject = null;
+            GetObjectForIUnknown(pUnk, ObjectHandleOnStack.Create(ref retObject));
+            return retObject!;
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern object GetObjectForIUnknownNative(IntPtr /* IUnknown* */ pUnk);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetObjectForIUnknown")]
+        private static partial void GetObjectForIUnknown(IntPtr /* IUnknown* */ pUnk, ObjectHandleOnStack retObject);
 
         [SupportedOSPlatform("windows")]
         public static object GetUniqueObjectForIUnknown(IntPtr unknown)
         {
-            if (unknown == IntPtr.Zero)
-            {
-                throw new ArgumentNullException(nameof(unknown));
-            }
+            ArgumentNullException.ThrowIfNull(unknown);
 
-            return GetUniqueObjectForIUnknownNative(unknown);
+            object? retObject = null;
+            GetUniqueObjectForIUnknown(unknown, ObjectHandleOnStack.Create(ref retObject));
+            return retObject!;
         }
 
         /// <summary>
@@ -405,29 +513,64 @@ namespace System.Runtime.InteropServices
         /// existing object). This is useful in cases where you want to be able to call
         /// ReleaseComObject on a RCW and not worry about other active uses ofsaid RCW.
         /// </summary>
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern object GetUniqueObjectForIUnknownNative(IntPtr unknown);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetUniqueObjectForIUnknown")]
+        private static partial void GetUniqueObjectForIUnknown(IntPtr unknown, ObjectHandleOnStack retObject);
 
         /// <summary>
         /// Return an Object for IUnknown, using the Type T.
         /// Type T should be either a COM imported Type or a sub-type of COM imported Type
         /// </summary>
         [SupportedOSPlatform("windows")]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern object GetTypedObjectForIUnknown(IntPtr /* IUnknown* */ pUnk, Type t);
+        public static object GetTypedObjectForIUnknown(IntPtr /* IUnknown* */ pUnk, Type t)
+        {
+            ArgumentNullException.ThrowIfNull(pUnk);
+            ArgumentNullException.ThrowIfNull(t);
+
+            if (t is not RuntimeType rt)
+                throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(t));
+
+            object? retObject = null;
+            GetTypedObjectForIUnknown(pUnk, new QCallTypeHandle(ref rt), ObjectHandleOnStack.Create(ref retObject));
+            return retObject!;
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetTypedObjectForIUnknown")]
+        private static partial void GetTypedObjectForIUnknown(IntPtr /* IUnknown* */ pUnk, QCallTypeHandle t, ObjectHandleOnStack retObject);
 
         [SupportedOSPlatform("windows")]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern IntPtr CreateAggregatedObject(IntPtr pOuter, object o);
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static IntPtr CreateAggregatedObject(IntPtr pOuter, object o)
+        {
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
+
+            ArgumentNullException.ThrowIfNull(pOuter);
+            ArgumentNullException.ThrowIfNull(o);
+
+            return CreateAggregatedObject(pOuter, ObjectHandleOnStack.Create(ref o));
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_CreateAggregatedObject")]
+        private static partial IntPtr CreateAggregatedObject(IntPtr pOuter, ObjectHandleOnStack o);
 
         [SupportedOSPlatform("windows")]
         public static IntPtr CreateAggregatedObject<T>(IntPtr pOuter, T o) where T : notnull
         {
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
+
             return CreateAggregatedObject(pOuter, (object)o);
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern void CleanupUnusedObjectsInCurrentContext();
+        public static void CleanupUnusedObjectsInCurrentContext()
+            => InternalCleanupUnusedObjectsInCurrentContext();
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_CleanupUnusedObjectsInCurrentContext")]
+        private static partial void InternalCleanupUnusedObjectsInCurrentContext();
 
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern bool AreComObjectsAvailableForCleanup();
@@ -435,8 +578,12 @@ namespace System.Runtime.InteropServices
         /// <summary>
         /// Checks if the object is classic COM component.
         /// </summary>
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern bool IsComObject(object o);
+        public static bool IsComObject(object o)
+        {
+            ArgumentNullException.ThrowIfNull(o);
+
+            return o is __ComObject;
+        }
 
         /// <summary>
         /// Release the COM component and if the reference hits 0 zombie this object.
@@ -445,6 +592,11 @@ namespace System.Runtime.InteropServices
         [SupportedOSPlatform("windows")]
         public static int ReleaseComObject(object o)
         {
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
+
             if (o is null)
             {
                 // Match .NET Framework behaviour.
@@ -455,11 +607,11 @@ namespace System.Runtime.InteropServices
                 throw new ArgumentException(SR.Argument_ObjNotComObject, nameof(o));
             }
 
-            return co.ReleaseSelf();
+            return ReleaseComObject(ObjectHandleOnStack.Create(ref co));
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern int InternalReleaseComObject(object o);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_ReleaseComObject")]
+        private static partial int ReleaseComObject(ObjectHandleOnStack o);
 
         /// <summary>
         /// Release the COM component and zombie this object.
@@ -468,33 +620,34 @@ namespace System.Runtime.InteropServices
         [SupportedOSPlatform("windows")]
         public static int FinalReleaseComObject(object o)
         {
-            if (o is null)
+            if (!IsBuiltInComSupported)
             {
-                throw new ArgumentNullException(nameof(o));
+                throw new NotSupportedException(SR.NotSupported_COM);
             }
+
+            ArgumentNullException.ThrowIfNull(o);
             if (!(o is __ComObject co))
             {
                 throw new ArgumentException(SR.Argument_ObjNotComObject, nameof(o));
             }
 
-            co.FinalReleaseSelf();
+            FinalReleaseComObject(ObjectHandleOnStack.Create(ref co));
             return 0;
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern void InternalFinalReleaseComObject(object o);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_FinalReleaseComObject")]
+        private static partial void FinalReleaseComObject(ObjectHandleOnStack o);
 
         [SupportedOSPlatform("windows")]
         public static object? GetComObjectData(object obj, object key)
         {
-            if (obj is null)
+            if (!IsBuiltInComSupported)
             {
-                throw new ArgumentNullException(nameof(obj));
+                throw new NotSupportedException(SR.NotSupported_COM);
             }
-            if (key is null)
-            {
-                throw new ArgumentNullException(nameof(key));
-            }
+
+            ArgumentNullException.ThrowIfNull(obj);
+            ArgumentNullException.ThrowIfNull(key);
             if (!(obj is __ComObject co))
             {
                 throw new ArgumentException(SR.Argument_ObjNotComObject, nameof(obj));
@@ -513,14 +666,13 @@ namespace System.Runtime.InteropServices
         [SupportedOSPlatform("windows")]
         public static bool SetComObjectData(object obj, object key, object? data)
         {
-            if (obj is null)
+            if (!IsBuiltInComSupported)
             {
-                throw new ArgumentNullException(nameof(obj));
+                throw new NotSupportedException(SR.NotSupported_COM);
             }
-            if (key is null)
-            {
-                throw new ArgumentNullException(nameof(key));
-            }
+
+            ArgumentNullException.ThrowIfNull(obj);
+            ArgumentNullException.ThrowIfNull(key);
             if (!(obj is __ComObject co))
             {
                 throw new ArgumentException(SR.Argument_ObjNotComObject, nameof(obj));
@@ -535,13 +687,16 @@ namespace System.Runtime.InteropServices
         /// of the specified type. The type must be derived from __ComObject.
         /// </summary>
         [SupportedOSPlatform("windows")]
-        [return: NotNullIfNotNull("o")]
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        [return: NotNullIfNotNull(nameof(o))]
         public static object? CreateWrapperOfType(object? o, Type t)
         {
-            if (t is null)
+            if (!IsBuiltInComSupported)
             {
-                throw new ArgumentNullException(nameof(t));
+                throw new NotSupportedException(SR.NotSupported_COM);
             }
+
+            ArgumentNullException.ThrowIfNull(t);
             if (!t.IsCOMObject)
             {
                 throw new ArgumentException(SR.Argument_TypeNotComObject, nameof(t));
@@ -577,7 +732,7 @@ namespace System.Runtime.InteropServices
                 // Attempt to cache the wrapper on the object.
                 if (!SetComObjectData(o, t, Wrapper))
                 {
-                    // Another thead already cached the wrapper so use that one instead.
+                    // Another thread already cached the wrapper so use that one instead.
                     Wrapper = GetComObjectData(o, t)!;
                 }
             }
@@ -588,76 +743,133 @@ namespace System.Runtime.InteropServices
         [SupportedOSPlatform("windows")]
         public static TWrapper CreateWrapperOfType<T, TWrapper>(T? o)
         {
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
+
             return (TWrapper)CreateWrapperOfType(o, typeof(TWrapper))!;
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern object InternalCreateWrapperOfType(object o, Type t);
+        private static object InternalCreateWrapperOfType(object o, Type t)
+        {
+            if (t is not RuntimeType rt)
+                throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(t));
+
+            object? retObject = null;
+            InternalCreateWrapperOfType(ObjectHandleOnStack.Create(ref o), new QCallTypeHandle(ref rt), ObjectHandleOnStack.Create(ref retObject));
+            return retObject!;
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_InternalCreateWrapperOfType")]
+        private static partial void InternalCreateWrapperOfType(ObjectHandleOnStack o, QCallTypeHandle rt, ObjectHandleOnStack retObject);
 
         /// <summary>
         /// check if the type is visible from COM.
         /// </summary>
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern bool IsTypeVisibleFromCom(Type t);
+        public static bool IsTypeVisibleFromCom(Type t)
+        {
+            ArgumentNullException.ThrowIfNull(t);
+
+            if (t is not RuntimeType rt)
+                throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(t));
+
+            return IsTypeVisibleFromCom(new QCallTypeHandle(ref rt));
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_IsTypeVisibleFromCom")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool IsTypeVisibleFromCom(QCallTypeHandle rt);
 
         [SupportedOSPlatform("windows")]
-        public static unsafe int QueryInterface(IntPtr pUnk, ref Guid iid, out IntPtr ppv)
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static void GetNativeVariantForObject(object? obj, /* VARIANT * */ IntPtr pDstNativeVariant)
         {
-            if (pUnk == IntPtr.Zero)
-                throw new ArgumentNullException(nameof(pUnk));
-
-            fixed (Guid* pIID = &iid)
-            fixed (IntPtr* p = &ppv)
+            if (!IsBuiltInComSupported)
             {
-                return ((delegate* unmanaged<IntPtr, Guid*, IntPtr*, int>)(*(*(void***)pUnk + 0 /* IUnknown.QueryInterface slot */)))(pUnk, pIID, p);
+                throw new NotSupportedException(SR.NotSupported_COM);
             }
+
+            ArgumentNullException.ThrowIfNull(pDstNativeVariant);
+
+            GetNativeVariantForObject(ObjectHandleOnStack.Create(ref obj), pDstNativeVariant);
         }
 
-        [SupportedOSPlatform("windows")]
-        public static unsafe int AddRef(IntPtr pUnk)
-        {
-            if (pUnk == IntPtr.Zero)
-                throw new ArgumentNullException(nameof(pUnk));
-
-            return ((delegate* unmanaged<IntPtr, int>)(*(*(void***)pUnk + 1 /* IUnknown.AddRef slot */)))(pUnk);
-        }
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetNativeVariantForObject")]
+        private static partial void GetNativeVariantForObject(ObjectHandleOnStack obj, /* VARIANT * */ IntPtr pDstNativeVariant);
 
         [SupportedOSPlatform("windows")]
-        public static unsafe int Release(IntPtr pUnk)
-        {
-            if (pUnk == IntPtr.Zero)
-                throw new ArgumentNullException(nameof(pUnk));
-
-            return ((delegate* unmanaged<IntPtr, int>)(*(*(void***)pUnk + 2 /* IUnknown.Release slot */)))(pUnk);
-        }
-
-        [SupportedOSPlatform("windows")]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern void GetNativeVariantForObject(object? obj, /* VARIANT * */ IntPtr pDstNativeVariant);
-
-        [SupportedOSPlatform("windows")]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public static void GetNativeVariantForObject<T>(T? obj, IntPtr pDstNativeVariant)
         {
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
+
             GetNativeVariantForObject((object?)obj, pDstNativeVariant);
         }
 
         [SupportedOSPlatform("windows")]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern object? GetObjectForNativeVariant(/* VARIANT * */ IntPtr pSrcNativeVariant);
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static object? GetObjectForNativeVariant(/* VARIANT * */ IntPtr pSrcNativeVariant)
+        {
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
+
+            ArgumentNullException.ThrowIfNull(pSrcNativeVariant);
+
+            object? retObject = null;
+            GetObjectForNativeVariant(pSrcNativeVariant, ObjectHandleOnStack.Create(ref retObject));
+            return retObject;
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetObjectForNativeVariant")]
+        private static partial void GetObjectForNativeVariant(/* VARIANT * */ IntPtr pSrcNativeVariant, ObjectHandleOnStack retObject);
 
         [SupportedOSPlatform("windows")]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public static T? GetObjectForNativeVariant<T>(IntPtr pSrcNativeVariant)
         {
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
+
             return (T?)GetObjectForNativeVariant(pSrcNativeVariant);
         }
 
         [SupportedOSPlatform("windows")]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern object?[] GetObjectsForNativeVariants(/* VARIANT * */ IntPtr aSrcNativeVariant, int cVars);
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public static object?[] GetObjectsForNativeVariants(/* VARIANT * */ IntPtr aSrcNativeVariant, int cVars)
+        {
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
+
+            ArgumentNullException.ThrowIfNull(aSrcNativeVariant);
+            ArgumentOutOfRangeException.ThrowIfNegative(cVars);
+
+            object?[]? retArray = null;
+            GetObjectsForNativeVariants(aSrcNativeVariant, cVars, ObjectHandleOnStack.Create(ref retArray));
+            return retArray!;
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetObjectsForNativeVariants")]
+        private static partial void GetObjectsForNativeVariants(/* VARIANT * */ IntPtr aSrcNativeVariant, int cVars, ObjectHandleOnStack retArray);
 
         [SupportedOSPlatform("windows")]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public static T[] GetObjectsForNativeVariants<T>(IntPtr aSrcNativeVariant, int cVars)
         {
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
+
             object?[] objects = GetObjectsForNativeVariants(aSrcNativeVariant, cVars);
 
             T[] result = new T[objects.Length];
@@ -671,45 +883,114 @@ namespace System.Runtime.InteropServices
         /// This will be 3 for IUnknown based interfaces and 7 for IDispatch based interfaces. </para>
         /// </summary>
         [SupportedOSPlatform("windows")]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern int GetStartComSlot(Type t);
+        public static int GetStartComSlot(Type t)
+        {
+            ArgumentNullException.ThrowIfNull(t);
+
+            if (t is not RuntimeType rt)
+                throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(t));
+
+            return GetStartComSlot(new QCallTypeHandle(ref rt));
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetStartComSlot")]
+        private static partial int GetStartComSlot(QCallTypeHandle rt);
 
         /// <summary>
         /// <para>Returns the last valid COM slot that GetMethodInfoForSlot will work on. </para>
         /// </summary>
         [SupportedOSPlatform("windows")]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern int GetEndComSlot(Type t);
+        public static int GetEndComSlot(Type t)
+        {
+            ArgumentNullException.ThrowIfNull(t);
 
+            if (t is not RuntimeType rt)
+                throw new ArgumentException(SR.Argument_MustBeRuntimeType, nameof(t));
+
+            return GetEndComSlot(new QCallTypeHandle(ref rt));
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetEndComSlot")]
+        private static partial int GetEndComSlot(QCallTypeHandle rt);
+
+        [RequiresUnreferencedCode("Built-in COM support is not trim compatible", Url = "https://aka.ms/dotnet-illink/com")]
         [SupportedOSPlatform("windows")]
         public static object BindToMoniker(string monikerName)
         {
-            CreateBindCtx(0, out IBindCtx bindctx);
+            if (!IsBuiltInComSupported)
+            {
+                throw new NotSupportedException(SR.NotSupported_COM);
+            }
 
-            MkParseDisplayName(bindctx, monikerName, out _, out IMoniker pmoniker);
-            BindMoniker(pmoniker, 0, ref IID_IUnknown, out object obj);
+            ThrowExceptionForHR(CreateBindCtx(0, out IntPtr bindctx));
 
-            return obj;
+            try
+            {
+                ThrowExceptionForHR(MkParseDisplayName(bindctx, monikerName, out _, out IntPtr pmoniker));
+                try
+                {
+                    ThrowExceptionForHR(BindMoniker(pmoniker, 0, in IID_IUnknown, out IntPtr ptr));
+                    try
+                    {
+                        return GetObjectForIUnknown(ptr);
+                    }
+                    finally
+                    {
+                        Release(ptr);
+                    }
+                }
+                finally
+                {
+                    Release(pmoniker);
+                }
+            }
+            finally
+            {
+                Release(bindctx);
+            }
         }
+        [LibraryImport(Interop.Libraries.Ole32)]
+        private static partial int CreateBindCtx(uint reserved, out IntPtr ppbc);
 
-        [DllImport(Interop.Libraries.Ole32, PreserveSig = false)]
-        private static extern void CreateBindCtx(uint reserved, out IBindCtx ppbc);
+        [LibraryImport(Interop.Libraries.Ole32)]
+        private static partial int MkParseDisplayName(IntPtr pbc, [MarshalAs(UnmanagedType.LPWStr)] string szUserName, out uint pchEaten, out IntPtr ppmk);
 
-        [DllImport(Interop.Libraries.Ole32, PreserveSig = false)]
-        private static extern void MkParseDisplayName(IBindCtx pbc, [MarshalAs(UnmanagedType.LPWStr)] string szUserName, out uint pchEaten, out IMoniker ppmk);
-
-        [DllImport(Interop.Libraries.Ole32, PreserveSig = false)]
-        private static extern void BindMoniker(IMoniker pmk, uint grfOpt, ref Guid iidResult, [MarshalAs(UnmanagedType.Interface)] out object ppvResult);
+        [LibraryImport(Interop.Libraries.Ole32)]
+        private static partial int BindMoniker(IntPtr pmk, uint grfOpt, in Guid iidResult, out IntPtr ppvResult);
 
         [SupportedOSPlatform("windows")]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern void ChangeWrapperHandleStrength(object otp, bool fIsWeak);
+        public static void ChangeWrapperHandleStrength(object otp, bool fIsWeak)
+        {
+            ArgumentNullException.ThrowIfNull(otp);
+
+            ChangeWrapperHandleStrength(ObjectHandleOnStack.Create(ref otp), fIsWeak);
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_ChangeWrapperHandleStrength")]
+        private static partial void ChangeWrapperHandleStrength(ObjectHandleOnStack otp, [MarshalAs(UnmanagedType.Bool)] bool fIsWeak);
 #endif // FEATURE_COMINTEROP
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern Delegate GetDelegateForFunctionPointerInternal(IntPtr ptr, Type t);
+        internal static Delegate GetDelegateForFunctionPointerInternal(IntPtr ptr, RuntimeType t)
+        {
+            Delegate? retDelegate = null;
+            GetDelegateForFunctionPointerInternal(ptr, new QCallTypeHandle(ref t), ObjectHandleOnStack.Create(ref retDelegate));
+            return retDelegate!;
+        }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern IntPtr GetFunctionPointerForDelegateInternal(Delegate d);
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetDelegateForFunctionPointerInternal")]
+        private static partial void GetDelegateForFunctionPointerInternal(IntPtr ptr, QCallTypeHandle t, ObjectHandleOnStack retDelegate);
+
+        internal static IntPtr GetFunctionPointerForDelegateInternal(Delegate d)
+        {
+            return GetFunctionPointerForDelegateInternal(ObjectHandleOnStack.Create(ref d));
+        }
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetFunctionPointerForDelegateInternal")]
+        private static partial IntPtr GetFunctionPointerForDelegateInternal(ObjectHandleOnStack d);
+
+#if DEBUG // Used for testing in Checked or Debug
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "MarshalNative_GetIsInCooperativeGCModeFunctionPointer")]
+        internal static unsafe partial delegate* unmanaged<int> GetIsInCooperativeGCModeFunctionPointer();
+#endif
     }
 }

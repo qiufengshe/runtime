@@ -9,12 +9,6 @@
 #include "util.hpp"
 #include "peimage.h"
 
-inline const SString &PEImageLayout::GetPath()
-{
-    LIMITED_METHOD_CONTRACT;
-    return m_pOwner?m_pOwner->GetPath():SString::Empty();
-}
-
 inline void PEImageLayout::AddRef()
 {
     CONTRACT_VOID
@@ -25,7 +19,7 @@ inline void PEImageLayout::AddRef()
     }
     CONTRACT_END;
 
-    FastInterlockIncrement(&m_refCount);
+    InterlockedIncrement(&m_refCount);
 
     RETURN;
 }
@@ -47,7 +41,7 @@ inline ULONG PEImageLayout::Release()
         return m_refCount;
 #endif
 
-    ULONG result=FastInterlockDecrement(&m_refCount);
+    ULONG result=InterlockedDecrement(&m_refCount);
     if (result == 0 )
     {
         delete this;
@@ -75,30 +69,6 @@ inline PEImageLayout::PEImageLayout()
     LIMITED_METHOD_CONTRACT;
 }
 
-inline void PEImageLayout::Startup()
-{
-    CONTRACT_VOID
-    {
-        THROWS;
-        GC_NOTRIGGER;
-        MODE_ANY;
-        POSTCONDITION(CheckStartup());
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACT_END;
-
-    if (CheckStartup())
-        RETURN;
-
-    RETURN;
-}
-
-inline CHECK PEImageLayout::CheckStartup()
-{
-    WRAPPER_NO_CONTRACT;
-    CHECK_OK;
-}
-
 inline BOOL PEImageLayout::CompareBase(UPTR base, UPTR mapping)
 {
     CONTRACTL
@@ -110,7 +80,7 @@ inline BOOL PEImageLayout::CompareBase(UPTR base, UPTR mapping)
         MODE_ANY;
     }
     CONTRACTL_END;
-    if (base==NULL) //we were searching for 'Any'
+    if (base==0) //we were searching for 'Any'
         return TRUE;
     return ((PEImageLayout*)mapping)->GetBase()==((PEImageLayout*)(base<<1))->GetBase();
 

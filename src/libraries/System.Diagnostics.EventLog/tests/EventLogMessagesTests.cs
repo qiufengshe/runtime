@@ -4,7 +4,6 @@
 using System.Diagnostics.Eventing.Reader;
 using System.IO;
 using System.Reflection;
-using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 using Xunit;
 
@@ -20,7 +19,7 @@ namespace System.Diagnostics.Tests
             Assert.Empty(messageAssembly.GetTypes());
         }
 
-        [Theory]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.HasAssemblyFiles))]
         [InlineData(0)]
         [InlineData(1)]
         [InlineData(65535)]
@@ -50,7 +49,7 @@ namespace System.Diagnostics.Tests
             }
         }
 
-        [ConditionalFact(typeof(Helpers), nameof(Helpers.IsElevatedAndSupportsEventLogs))]
+        [ConditionalFact(typeof(Helpers), nameof(Helpers.HasAssemblyFilesIsElevatedAndSupportsEventLogs))]
         public void CanReadAndWriteMessages()
         {
             string messageDllPath = Path.Combine(Path.GetDirectoryName(typeof(EventLog).Assembly.Location), "System.Diagnostics.EventLog.Messages.dll");
@@ -67,7 +66,7 @@ namespace System.Diagnostics.Tests
 
                 EventLog.CreateEventSource(log);
                 string message = $"Hello {Guid.NewGuid()}";
-                EventLog.WriteEntry(log.Source, message);
+                Helpers.Retry(() => EventLog.WriteEntry(log.Source, message));
 
                 using (EventLogReader reader = new EventLogReader(new EventLogQuery("Application", PathType.LogName, $"*[System/Provider/@Name=\"{log.Source}\"]")))
                 {

@@ -1,16 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.Xunit.Performance;
 using System;
 using System.Numerics;
-using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Reflection;
-using System.Collections.Generic;
 using Xunit;
-
-[assembly: OptimizeForBenchmarks]
 
 public static class SeekUnroll
 {
@@ -65,19 +59,6 @@ public static class SeekUnroll
     static int InnerIterations = 1000000000;
 #endif
 
-    // Function to meaure InnerLoop using the xunit-perf benchmark measurement facilities
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    static void XunitBenchmarkLoop(ref int foundIndex, ref Vector<Byte> vector)
-    {
-        foreach (var iteration in Benchmark.Iterations)
-        {
-            using (iteration.StartMeasurement())
-            {
-                InnerLoop(ref foundIndex, ref vector);
-            }
-        }
-    }
-
     // Function to measure InnerLoop with manual use of a stopwatch timer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static void ManualTimerLoop(ref int foundIndex, ref Vector<Byte> vector)
@@ -94,7 +75,7 @@ public static class SeekUnroll
 
     // Function that tests one input, dispatching to either the xunit-perf
     // loop or the manual timer loop
-    static bool Test(int index, bool isXunitBenchmark)
+    static bool Test(int index)
     {
         if (index >= Vector<Byte>.Count)
         {
@@ -107,38 +88,23 @@ public static class SeekUnroll
 
         int foundIndex = -1;
 
-        if (isXunitBenchmark)
-        {
-            XunitBenchmarkLoop(ref foundIndex, ref vector);
-        }
-        else
-        {
-            ManualTimerLoop(ref foundIndex, ref vector);
-        }
+        ManualTimerLoop(ref foundIndex, ref vector);
 
-        Assert.Equal(index, foundIndex);
         return (index == foundIndex);
     }
 
-    // Set of indices to pass to Test(int, bool)
+    // Set of indices to pass to Test(int)
     static int[] IndicesToTest = new int[] { 1, 3, 11, 19, 27 };
 
-    // Entrypoint for xunit-perf to call the benchmark
-    [Benchmark]
-    [MemberData(nameof(ArrayedBoxedIndicesToTest))]
-    public static bool TestWithXunit(object boxedIndex)
+    [Fact]
+    public static int TestEntryPoint()
     {
-        return Test((int)boxedIndex, true);
+        return TestEntry(null);
     }
 
-    // IndicesToTest wrapped up in arrays of boxes since that's
-    // what xunit-perf needs
-    public static IEnumerable<object[]> ArrayedBoxedIndicesToTest =
-        IndicesToTest.Select((int index) => new object[] { index });
-
-
     // Main method entrypoint runs the manual timer loop
-    public static int Main(string[] args)
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int TestEntry(int? arg)
     {
         int failures = 0;
 
@@ -150,20 +116,20 @@ public static class SeekUnroll
         }
 
         int manualLoopCount = 1;
-        if (args == null || args.Length == 0)
+        if (arg == null)
         {
             Console.WriteLine("Warning: no iteration count specified; defaulting to 1 iteration per case");
             Console.WriteLine("To use multiple iterations per case, pass the desired number of iterations as the first command-line argument to this test");
         }
         else
         {
-            manualLoopCount = int.Parse(args[0]);
+            manualLoopCount = (int)arg;
         }
 
         foreach(int index in IndicesToTest)
         {
             ManualLoopTimes = new long[manualLoopCount];
-            bool passed = Test(index, false);
+            bool passed = Test(index);
             if (!passed)
             {
                 ++failures;

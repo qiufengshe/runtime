@@ -3,6 +3,7 @@
 //
 
 using System;
+using Xunit;
 
 struct Gen<T>
 {
@@ -22,9 +23,10 @@ struct Gen<T>
     }
 }
 
-public class Test
+public class Test_struct_static01
 {
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         int ret = 100;
 

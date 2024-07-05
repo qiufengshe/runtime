@@ -31,13 +31,6 @@ DbgTransportSession *g_pDbgTransport = NULL;
 #include "ddmarshalutil.h"
 #endif // !RIGHT_SIDE_COMPILE
 
-// No real work done in the constructor. Use Init() instead.
-DbgTransportSession::DbgTransportSession()
-{
-    m_ref = 1;
-    m_eState = SS_Closed;
-}
-
 DbgTransportSession::~DbgTransportSession()
 {
     DbgTransportLog(LC_Proxy, "DbgTransportSession::~DbgTransportSession() called");
@@ -81,9 +74,9 @@ HRESULT DbgTransportSession::Init(DebuggerIPCControlBlock *pDCB, AppDomainEnumer
 
     // Start with a blank slate so that Shutdown() on a partially initialized instance will only do the
     // cleanup necessary.
-    memset(this, 0, sizeof(*this));
+    *this = {};
 
-    // Because of the above memset the embeded classes/structs need to be reinitialized especially
+    // Because of the above memset the embedded classes/structs need to be reinitialized especially
     // the two way pipe; it expects the in/out handles to be -1 instead of 0.
     m_ref = 1;
     m_pipe = TwoWayPipe();
@@ -126,7 +119,7 @@ HRESULT DbgTransportSession::Init(DebuggerIPCControlBlock *pDCB, AppDomainEnumer
     m_fInitStateLock = true;
 
 #ifdef RIGHT_SIDE_COMPILE
-    m_hSessionOpenEvent = WszCreateEvent(NULL, TRUE, FALSE, NULL); // Manual reset, not signalled
+    m_hSessionOpenEvent = CreateEvent(NULL, TRUE, FALSE, NULL); // Manual reset, not signalled
     if (m_hSessionOpenEvent == NULL)
         return E_OUTOFMEMORY;
 #else // RIGHT_SIDE_COMPILE
@@ -146,11 +139,11 @@ HRESULT DbgTransportSession::Init(DebuggerIPCControlBlock *pDCB, AppDomainEnumer
     if (m_pEventBuffers == NULL)
         return E_OUTOFMEMORY;
 
-    m_rghEventReadyEvent[IPCET_OldStyle] = WszCreateEvent(NULL, FALSE, FALSE, NULL); // Auto reset, not signalled
+    m_rghEventReadyEvent[IPCET_OldStyle] = CreateEvent(NULL, FALSE, FALSE, NULL); // Auto reset, not signalled
     if (m_rghEventReadyEvent[IPCET_OldStyle] == NULL)
         return E_OUTOFMEMORY;
 
-    m_rghEventReadyEvent[IPCET_DebugEvent] = WszCreateEvent(NULL, FALSE, FALSE, NULL); // Auto reset, not signalled
+    m_rghEventReadyEvent[IPCET_DebugEvent] = CreateEvent(NULL, FALSE, FALSE, NULL); // Auto reset, not signalled
     if (m_rghEventReadyEvent[IPCET_DebugEvent] == NULL)
         return E_OUTOFMEMORY;
 
@@ -628,6 +621,13 @@ HRESULT DbgTransportSession::SendMessage(Message *pMessage, bool fWaitsForReply)
         // queue).
         pMessage->m_sHeader.m_dwLastSeenId = m_dwLastMessageIdSeen;
 
+        // Check the session state.
+        if (m_eState == SS_Closed)
+        {
+            // SS_Closed is bad news, we'll never recover from that so error the send immediately.
+            return E_ABORT;
+        }
+
         // If the caller isn't waiting around for a reply we must make a copy of the message to place on the
         // send queue.
         pMessage->m_pOrigMessage = pMessage;
@@ -668,16 +668,14 @@ HRESULT DbgTransportSession::SendMessage(Message *pMessage, bool fWaitsForReply)
             pMessage = pMessageCopy;
         }
 
-        // Check the session state.
-        if (m_eState == SS_Closed)
+        // If the state is SS_Open we can send the message now.
+        if (m_eState == SS_Open)
         {
-            // SS_Closed is bad news, we'll never recover from that so error the send immediately.
-            if (pMessageCopy)
-                delete pMessageCopy;
-            if (pDataBlockCopy)
-                delete [] pDataBlockCopy;
-
-            return E_ABORT;
+            // Send the message header block followed by the data block if it's provided. Any network error will
+            // be reported internally by SendBlock and result in a transition to the SS_Resync_NC state (and an
+            // eventual resend of the data).
+            if (SendBlock((PBYTE)&pMessage->m_sHeader, sizeof(MessageHeader)) && pMessage->m_pbDataBlock)
+                SendBlock(pMessage->m_pbDataBlock, pMessage->m_cbDataBlock);
         }
 
         // Don't queue session management messages. We always recreate these if we need to re-send them.
@@ -700,15 +698,12 @@ HRESULT DbgTransportSession::SendMessage(Message *pMessage, bool fWaitsForReply)
                 pMessage->m_pNext = NULL;
             }
         }
-
-        // If the state is SS_Open we can send the message now.
-        if (m_eState == SS_Open)
+        else
         {
-            // Send the message header block followed by the data block if it's provided. Any network error will
-            // be reported internally by SendBlock and result in a transition to the SS_Resync_NC state (and an
-            // eventual resend of the data).
-            if (SendBlock((PBYTE)&pMessage->m_sHeader, sizeof(MessageHeader)) && pMessage->m_pbDataBlock)
-                SendBlock(pMessage->m_pbDataBlock, pMessage->m_cbDataBlock);
+            if (pMessageCopy)
+                delete pMessageCopy;
+            if (pDataBlockCopy)
+                delete [] pDataBlockCopy;
         }
 
         // If the state wasn't open there's nothing more to be done. The state will eventually transition to
@@ -725,7 +720,7 @@ HRESULT DbgTransportSession::SendMessage(Message *pMessage, bool fWaitsForReply)
 HRESULT DbgTransportSession::SendRequestMessageAndWait(Message *pMessage)
 {
     // Allocate event to wait for reply on.
-    pMessage->m_hReplyEvent = WszCreateEvent(NULL, FALSE, FALSE, NULL); // Auto-reset, not signalled
+    pMessage->m_hReplyEvent = CreateEvent(NULL, FALSE, FALSE, NULL); // Auto-reset, not signalled
     if (pMessage->m_hReplyEvent == NULL)
         return E_OUTOFMEMORY;
 
@@ -1141,7 +1136,7 @@ DbgTransportSession::Message * DbgTransportSession::RemoveMessageFromSendQueue(D
 
 // Check read and optionally write memory access to the specified range of bytes. Used to check
 // ReadProcessMemory and WriteProcessMemory requests.
-HRESULT DbgTransportSession::CheckBufferAccess(__in_ecount(cbBuffer) PBYTE pbBuffer, DWORD cbBuffer, bool fWriteAccess)
+HRESULT DbgTransportSession::CheckBufferAccess(_In_reads_(cbBuffer) PBYTE pbBuffer, DWORD cbBuffer, bool fWriteAccess)
 {
     // check for integer overflow
     if ((pbBuffer + cbBuffer) < pbBuffer)
@@ -1232,6 +1227,8 @@ void DbgTransportSession::InitSessionState()
 // instance method version defined below for convenience in the implementation.
 DWORD WINAPI DbgTransportSession::TransportWorkerStatic(LPVOID pvContext)
 {
+    SetThreadName(GetCurrentThread(), W(".NET DebugPipe"));
+
     ((DbgTransportSession*)pvContext)->TransportWorker();
 
     // Nobody looks at this result, the choice of 0 is arbitrary.
@@ -1952,7 +1949,7 @@ void DbgTransportSession::TransportWorker()
                     DWORD   cbBytesToRead = sReceiveHeader.TypeSpecificData.MemoryAccess.m_cbLeftSideBuffer;
                     while (cbBytesToRead)
                     {
-                        DWORD cbTransfer = min(cbBytesToRead, sizeof(rgDummy));
+                        DWORD cbTransfer = min(cbBytesToRead, (DWORD)sizeof(rgDummy));
                         if (!ReceiveBlock(rgDummy, cbTransfer))
                             HANDLE_TRANSIENT_ERROR();
                         cbBytesToRead -= cbTransfer;
@@ -2205,8 +2202,11 @@ DWORD DbgTransportSession::GetEventSize(DebuggerIPCEvent *pEvent)
     case DB_IPCE_CONTROL_C_EVENT_RESULT:
     case DB_IPCE_BEFORE_GARBAGE_COLLECTION:
     case DB_IPCE_AFTER_GARBAGE_COLLECTION:
+    case DB_IPCE_DISABLE_OPTS_RESULT:
+    case DB_IPCE_CATCH_HANDLER_FOUND_RESULT:
         cbAdditionalSize = 0;
         break;
+
     case DB_IPCE_DATA_BREAKPOINT:
         cbAdditionalSize = sizeof(pEvent->DataBreakpointData);
         break;
@@ -2499,8 +2499,20 @@ DWORD DbgTransportSession::GetEventSize(DebuggerIPCEvent *pEvent)
         cbAdditionalSize = sizeof(pEvent->CustomNotification);
         break;
 
+    case DB_IPCE_DISABLE_OPTS:
+        cbAdditionalSize = sizeof(pEvent->DisableOptData);
+        break;
+
+    case DB_IPCE_FORCE_CATCH_HANDLER_FOUND:
+        cbAdditionalSize = sizeof(pEvent->ForceCatchHandlerFoundData);
+        break;
+
+    case DB_IPCE_SET_ENABLE_CUSTOM_NOTIFICATION:
+        cbAdditionalSize = sizeof(pEvent->CustomNotificationData);
+        break;
+
     default:
-        printf("Unknown debugger event type: 0x%x\n", (pEvent->type & DB_IPCE_TYPE_MASK));
+        STRESS_LOG1(LF_CORDB, LL_INFO1000, "Unknown debugger event type: 0x%x\n", (pEvent->type & DB_IPCE_TYPE_MASK));
         _ASSERTE(!"Unknown debugger event type");
     }
 
@@ -2694,11 +2706,6 @@ bool DbgTransportSession::DbgTransportShouldInjectFault(DbgTransportFaultOp eOp,
         if (dwChance < (s_dwFaultInjection & DBG_TRANSPORT_FAULT_RATE_MASK))
         {
             DbgTransportLog(LC_FaultInject, "Injected fault for %s operation", szOpName);
-#if defined(FEATURE_CORESYSTEM)
-        // not supported
-#else
-            WSASetLastError(WSAEFAULT);
-#endif // defined(FEATURE_CORESYSTEM)
             return true;
         }
     }

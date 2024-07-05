@@ -149,10 +149,17 @@ Function:
   Aborts the process after calling the shutdown cleanup handler. This function
   should be called instead of calling abort() directly.
 
+Parameters:
+  signal - POSIX signal number
+  siginfo - POSIX signal info
+
   Does not return
 --*/
+#if !defined(HOST_ARM)  // PAL_NORETURN produces broken unwinding information for this method
+                        // making crash dumps impossible to analyze
 PAL_NORETURN
-VOID PROCAbort();
+#endif
+VOID PROCAbort(int signal = SIGABRT, siginfo_t* siginfo = nullptr);
 
 /*++
 Function:
@@ -163,7 +170,7 @@ Function:
 
 (no return value)
 --*/
-VOID PROCNotifyProcessShutdown();
+VOID PROCNotifyProcessShutdown(bool isExecutingOnAltStack = false);
 
 /*++
 Function:
@@ -172,9 +179,14 @@ Function:
   Creates crash dump of the process (if enabled). Can be
   called from the unhandled native exception handler.
 
+Parameters:
+  signal - POSIX signal number
+  siginfo - POSIX signal info or nullptr
+  serialize - allow only one thread to generate core dump
+
 (no return value)
 --*/
-VOID PROCCreateCrashDumpIfEnabled();
+VOID PROCCreateCrashDumpIfEnabled(int signal, siginfo_t* siginfo, bool serialize);
 
 /*++
 Function:

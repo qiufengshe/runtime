@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.IO;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace System.Net.WebSockets.Tests
@@ -90,7 +91,9 @@ namespace System.Net.WebSockets.Tests
         [Fact]
         public static void RegisterPrefixes_Unsupported()
         {
+#pragma warning disable 0618 // Obsolete API
             Assert.Throws<PlatformNotSupportedException>(() => WebSocket.RegisterPrefixes());
+#pragma warning restore 0618
         }
 
         [Fact]
@@ -129,10 +132,7 @@ namespace System.Net.WebSockets.Tests
         public static void ThrowOnInvalidState_ThrowsIfNotInValidList(WebSocketState state, WebSocketState[] validStates)
         {
             WebSocketException wse = Assert.Throws<WebSocketException>(() => ExposeProtectedWebSocket.ThrowOnInvalidState(state, validStates));
-            if (PlatformDetection.IsNetCore) // bug fix in netcoreapp: https://github.com/dotnet/corefx/pull/35960
-            {
-                Assert.Equal(WebSocketError.InvalidState, wse.WebSocketErrorCode);
-            }
+            Assert.Equal(WebSocketError.InvalidState, wse.WebSocketErrorCode);
         }
 
         [Theory]
@@ -169,6 +169,35 @@ namespace System.Net.WebSockets.Tests
             Assert.Equal(count, r.Count);
             Assert.Equal(messageType, r.MessageType);
             Assert.Equal(endOfMessage, r.EndOfMessage);
+        }
+
+        [Fact]
+        public async Task ThrowWhenContinuationWithDifferentCompressionFlags()
+        {
+            using WebSocket client = CreateFromStream(new MemoryStream(), isServer: false, null, TimeSpan.Zero);
+
+            await client.SendAsync(Memory<byte>.Empty, WebSocketMessageType.Text, WebSocketMessageFlags.DisableCompression, default);
+            Assert.Throws<ArgumentException>("messageFlags", () =>
+               client.SendAsync(Memory<byte>.Empty, WebSocketMessageType.Binary, WebSocketMessageFlags.EndOfMessage, default));
+        }
+
+        [Fact]
+        public async Task ReceiveAsync_WhenDisposedInParallel_DoesNotGetStuck()
+        {
+            using var stream = new WebSocketTestStream();
+            using var websocket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions());
+
+            // Note: Calling ReceiveAsync() multiple times at once results in undefined behavior
+            // per public API docs, but it is necessary to reliably verify that bug #97911 is fixed.
+            Task r1 = websocket.ReceiveAsync(new Memory<byte>(new byte[1]), default).AsTask();
+            Task r2 = websocket.ReceiveAsync(new Memory<byte>(new byte[1]), default).AsTask();
+            Task r3 = websocket.ReceiveAsync(new Memory<byte>(new byte[1]), default).AsTask();
+
+            websocket.Dispose();
+
+            await Assert.ThrowsAsync<WebSocketException>(() => r1.WaitAsync(TimeSpan.FromSeconds(1)));
+            await Assert.ThrowsAsync<WebSocketException>(() => r2.WaitAsync(TimeSpan.FromSeconds(1)));
+            await Assert.ThrowsAsync<WebSocketException>(() => r3.WaitAsync(TimeSpan.FromSeconds(1)));
         }
 
         public abstract class ExposeProtectedWebSocket : WebSocket

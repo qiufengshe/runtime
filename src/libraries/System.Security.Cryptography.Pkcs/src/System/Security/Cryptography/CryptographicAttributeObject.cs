@@ -1,9 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Internal.Cryptography;
 using System;
 using System.Diagnostics;
+using Internal.Cryptography;
 
 namespace System.Security.Cryptography
 {
@@ -29,8 +29,15 @@ namespace System.Security.Cryptography
             {
                 foreach (AsnEncodedData asn in values)
                 {
-                    if (!string.Equals(asn.Oid!.Value, oid.Value, StringComparison.Ordinal))
+                    if (asn.Oid is null)
+                    {
+                        throw new ArgumentException(SR.Argument_InvalidOidValue, nameof(values));
+                    }
+
+                    if (!string.Equals(asn.Oid.Value, oid.Value, StringComparison.Ordinal))
+                    {
                         throw new InvalidOperationException(SR.Format(SR.InvalidOperation_WrongOidInAsnCollection, oid.Value, asn.Oid.Value));
+                    }
                 }
                 Values = values;
             }

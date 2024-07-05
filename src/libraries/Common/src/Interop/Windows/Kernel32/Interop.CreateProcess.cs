@@ -1,24 +1,23 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-#nullable enable
-
-using Microsoft.Win32.SafeHandles;
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 
-internal partial class Interop
+internal static partial class Interop
 {
-    internal partial class Kernel32
+    internal static partial class Kernel32
     {
-        [DllImport(Libraries.Kernel32, CharSet = CharSet.Unicode, SetLastError = true, BestFitMapping = false, EntryPoint = "CreateProcessW")]
-        internal static extern unsafe bool CreateProcess(
+        [LibraryImport(Libraries.Kernel32, EntryPoint = "CreateProcessW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static unsafe partial bool CreateProcess(
             string? lpApplicationName,
             char* lpCommandLine,
             ref SECURITY_ATTRIBUTES procSecAttrs,
             ref SECURITY_ATTRIBUTES threadSecAttrs,
-            bool bInheritHandles,
+            [MarshalAs(UnmanagedType.Bool)] bool bInheritHandles,
             int dwCreationFlags,
             IntPtr lpEnvironment,
             string? lpCurrentDirectory,

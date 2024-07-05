@@ -1,9 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.Win32.SafeHandles;
 using System.Collections.Generic;
+using System.Runtime.Versioning;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 namespace System.Diagnostics
 {
@@ -44,6 +45,9 @@ namespace System.Diagnostics
         /// <summary>Gets the IDs of all processes on the specified machine.</summary>
         /// <param name="machineName">The machine to examine.</param>
         /// <returns>An array of process IDs from the specified machine.</returns>
+        [UnsupportedOSPlatform("ios")]
+        [UnsupportedOSPlatform("tvos")]
+        [SupportedOSPlatform("maccatalyst")]
         public static int[] GetProcessIds(string machineName)
         {
             ThrowIfRemoteMachine(machineName);
@@ -71,10 +75,6 @@ namespace System.Diagnostics
             {
                 throw new PlatformNotSupportedException(SR.RemoteMachinesNotSupported);
             }
-        }
-        public static IntPtr GetMainWindowHandle(int processId)
-        {
-            throw new PlatformNotSupportedException(); // Window handle is a Windows concept
         }
     }
 }

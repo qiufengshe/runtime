@@ -224,7 +224,21 @@ public class Tests
 	[DllImport ("libtest")]
 	public static extern int mono_test_marshal_variant_out_bool_false_unmanaged (VarRefFunc func);
 
-    [DllImport ("libtest")]
+	public delegate int CheckStructWithVariantFunc ([MarshalAs (UnmanagedType.Struct)] StructWithVariant obj);
+	[DllImport ("libtest")]
+	public static extern int mono_test_marshal_struct_with_variant_in_unmanaged (CheckStructWithVariantFunc func);
+
+	public delegate int CheckStructWithBstrFunc ([MarshalAs (UnmanagedType.Struct)] StructWithBstr obj);
+	[DllImport ("libtest")]
+	public static extern int mono_test_marshal_struct_with_bstr_in_unmanaged (CheckStructWithBstrFunc func);
+
+	[DllImport ("libtest")]
+	public static extern int mono_test_marshal_struct_with_variant_out_unmanaged ([MarshalAs (UnmanagedType.Struct)] StructWithVariant obj);
+
+	[DllImport ("libtest")]
+	public static extern int mono_test_marshal_struct_with_bstr_out_unmanaged ([MarshalAs (UnmanagedType.Struct)] StructWithBstr obj);
+
+	[DllImport ("libtest")]
 	public static extern int mono_test_marshal_com_object_create (out IntPtr pUnk);
 
 	[DllImport ("libtest")]
@@ -341,7 +355,6 @@ public class Tests
 
 	public static int Main ()
 	{
-
 		bool isWindows = !(((int)Environment.OSVersion.Platform == 4) ||
 			((int)Environment.OSVersion.Platform == 128));
 
@@ -358,6 +371,15 @@ public class Tests
 				return 1;
 			if (mono_test_marshal_bstr_out_null (out str) != 0 || str != null)
 				return 2;
+
+			var sbfunc = new CheckStructWithBstrFunc(mono_test_marshal_struct_with_bstr_callback);
+			if (mono_test_marshal_struct_with_bstr_in_unmanaged(sbfunc) != 0)
+				return 3;
+
+			StructWithBstr sWithB;
+			sWithB.data = "this is a test string";
+			if (mono_test_marshal_struct_with_bstr_out_unmanaged (sWithB) != 0)
+				return 4;
 
 			#endregion // BSTR Tests
 
@@ -484,6 +506,15 @@ public class Tests
 			if (mono_test_marshal_variant_out_bstr_byref (out obj) != 0 || (string)obj != "PI")
 				return 107;
 
+			var svfunc = new CheckStructWithVariantFunc(mono_test_marshal_struct_with_variant_callback);
+			if (mono_test_marshal_struct_with_variant_in_unmanaged(svfunc) != 0)
+				return 108;
+
+			StructWithVariant sWithV;
+			sWithV.data = (object)-123;
+			if (mono_test_marshal_struct_with_variant_out_unmanaged (sWithV) != 0)
+				return 109;
+
 			#endregion // VARIANT Tests
 
 			#region Runtime Callable Wrapper Tests
@@ -524,7 +555,7 @@ public class Tests
 				return 153;
 
 			object com_obj2 = Marshal.GetObjectForIUnknown (pUnk2);
-			
+
 			if (com_obj != com_obj2)
 				return 154;
 
@@ -805,7 +836,7 @@ public class Tests
 			IntPtr pDisp = Marshal.GetIDispatchForObject(test_vis);
 			if (pDisp == IntPtr.Zero)
 				return 300;
-			#endregion 
+			#endregion
 		}
 
         return 0;
@@ -1043,7 +1074,7 @@ public class Tests
 	{
 		static TestClass ()
 		{
-			ExtensibleClassFactory.RegisterObjectCreationCallback (new ObjectCreationDelegate (CreateObject)); ;
+			ExtensibleClassFactory.RegisterObjectCreationCallback (new ObjectCreationDelegate (CreateObject));
 		}
 		private static System.IntPtr CreateObject (System.IntPtr aggr)
 		{
@@ -1058,7 +1089,7 @@ public class Tests
 	{
 		static TestActivatorClass ()
 		{
-			ExtensibleClassFactory.RegisterObjectCreationCallback (new ObjectCreationDelegate (CreateObject)); ;
+			ExtensibleClassFactory.RegisterObjectCreationCallback (new ObjectCreationDelegate (CreateObject));
 		}
 		private static System.IntPtr CreateObject (System.IntPtr aggr)
 		{
@@ -1613,8 +1644,38 @@ public class Tests
 	public static int TestIfaceNoIcall (ITestPresSig itest) {
 		return itest.Return22NoICall () == 22 ? 0 : 1;
 	}
+
+        public static int mono_test_marshal_struct_with_variant_callback(StructWithVariant sv)
+        {
+            if (sv.data.GetType() != typeof(int))
+                return 1;
+            if ((int)sv.data != -123)
+                return 2;
+            return 0;
+        }
+
+        public static int mono_test_marshal_struct_with_bstr_callback(StructWithBstr sb)
+        {
+            if (sb.data.GetType() != typeof(string))
+                return 1;
+            if ((string)sb.data != "this is a test string")
+                return 2;
+            return 0;
+        }
 }
 
 public class TestVisible
 {
+}
+
+public struct StructWithVariant
+{
+	[MarshalAs (UnmanagedType.Struct)]
+	public object data;
+}
+
+public struct StructWithBstr
+{
+	[MarshalAs (UnmanagedType.BStr)]
+	public string data;
 }

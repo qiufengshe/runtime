@@ -7,6 +7,7 @@ syntax: glob
 #       instead of directories), git will still ignore them.
 .dotnet
 .dotnet-mono
+.dotnet-tools-global
 .packages
 .tools
 
@@ -26,6 +27,7 @@ artifacts/
 bld/
 [Bb]in/
 [Oo]bj/
+MSBuild_Logs/
 msbuild.log
 msbuild.err
 msbuild.wrn
@@ -185,6 +187,7 @@ node_modules/
 *.metaproj
 *.metaproj.tmp
 bin.localpkg/
+.mono/
 
 # RIA/Silverlight projects
 Generated_Code/
@@ -278,7 +281,9 @@ Session.vim
 
 # Visual Studio Code
 .vscode/
-.devcontainer/
+
+# Codespaces
+.venv/
 
 # Private test configuration and binaries.
 config.ps1
@@ -294,11 +299,8 @@ parts/
 prime/
 stage/
 
-# CLR prebuilt generated files
-!pal/prebuilt/idl/*_i.c
-
 # Valid 'debug' folder, that contains CLR debugging code
-!debug
+!src/coreclr/debug
 
 # Ignore folders created by the CLR test build
 TestWrappers_x64_[d|D]ebug
@@ -321,6 +323,7 @@ Vagrantfile
 CMakeFiles/
 cmake_install.cmake
 CMakeCache.txt
+CMakeUserPresets.json
 
 # Cross compilation
 cross/rootfs/*
@@ -337,9 +340,6 @@ jit32
 # performance testing sandbox
 sandbox
 
-#IL linker for testing
-linker
-
 # Symbolic link for the shared portion of CoreLib to make grep/findstr work for runtime devs
 #
 # On Windows, make your own by running these commands from the repo root:
@@ -352,15 +352,13 @@ linker
 src/coreclr/System.Private.CoreLib/shared
 src/coreclr/System.Private.CoreLib/common
 
-# The debug directory should not be ignored
-!src/coreclr/debug
-
 # Exceptions to the exclusions
 !src/coreclr/.nuget/_.pdb
 !src/coreclr/inc/obj/
 !src/coreclr/vm/.vscode/
 !src/coreclr/vm/.vscode/c_cpp_properties.json
 
-# Mono Wasm-specific excludes
-src/mono/wasm/emsdk/
-src/mono/wasm/.stamp-wasm-install-and-select*
+# Temporary artifacts from local libraries stress builds
+.dotnet-daily/
+run-stress-*
+test:.cs

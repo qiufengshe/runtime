@@ -5,9 +5,14 @@ using System.Diagnostics;
 
 namespace System.Threading
 {
-    internal partial class TimerQueue
+    internal sealed partial class TimerQueue
     {
-        private static long TickCount64
+        private TimerQueue(int id)
+        {
+            _id = id;
+        }
+
+        public static long TickCount64
         {
             get
             {
@@ -33,5 +38,10 @@ namespace System.Threading
                 }
             }
         }
+
+        private bool SetTimer(uint actualDuration) =>
+            ThreadPool.UseWindowsThreadPool ?
+            SetTimerWindowsThreadPool(actualDuration) :
+            SetTimerPortable(actualDuration);
     }
 }

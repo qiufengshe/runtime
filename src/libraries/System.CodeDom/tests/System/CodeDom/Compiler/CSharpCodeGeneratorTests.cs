@@ -1,6 +1,5 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-// See the LICENSE file in the project root for more information.
 
 using System.Collections.Generic;
 using System.IO;
@@ -349,7 +348,7 @@ namespace System.CodeDom.Compiler.Tests
 
             // CodeCastExpression.
             yield return new object[] { new CodeCastExpression(new CodeTypeReference("type"), new CodePrimitiveExpression(1)), null, "((type)(1))" };
-            
+
             // CodeDelegateCreateExpression.
             yield return new object[] { new CodeDelegateCreateExpression((CodeTypeReference)null, new CodePrimitiveExpression(1), string.Empty), null, "new void(1.)" };
             yield return new object[] { new CodeDelegateCreateExpression(new CodeTypeReference("type"), new CodePrimitiveExpression(1), "methodName"), null, "new type(1.methodName)" };
@@ -403,7 +402,7 @@ namespace System.CodeDom.Compiler.Tests
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(null, "methodName"), new CodePrimitiveExpression(1), new CodePrimitiveExpression(2)), null, "methodName(1, 2)" };
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(null, "as")), null, "@as()" };
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(null, "as", new CodeTypeReference("is"))), null, "@as<@is>()" };
-            
+
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(new CodePrimitiveExpression(1), string.Empty)), null, "1.()" };
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(new CodePrimitiveExpression(1), "methodName")), null, "1.methodName()" };
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(new CodePrimitiveExpression(1), "methodName", new CodeTypeReference("type1"))), null, "1.methodName<type1>()" };
@@ -412,7 +411,7 @@ namespace System.CodeDom.Compiler.Tests
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(new CodePrimitiveExpression(1), "methodName"), new CodePrimitiveExpression(2), new CodePrimitiveExpression(3)), null, "1.methodName(2, 3)" };
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(new CodePrimitiveExpression(1), "as")), null, "1.@as()" };
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(new CodePrimitiveExpression(1), "as", new CodeTypeReference("is"))), null, "1.@as<@is>()" };
-            
+
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(new CodeBinaryOperatorExpression(new CodePrimitiveExpression(1), CodeBinaryOperatorType.Add, new CodePrimitiveExpression(2)), string.Empty)), null, "((1 + 2)).()" };
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(new CodeBinaryOperatorExpression(new CodePrimitiveExpression(1), CodeBinaryOperatorType.Add, new CodePrimitiveExpression(2)), "methodName")), null, "((1 + 2)).methodName()" };
             yield return new object[] { new CodeMethodInvokeExpression(new CodeMethodReferenceExpression(new CodeBinaryOperatorExpression(new CodePrimitiveExpression(1), CodeBinaryOperatorType.Add, new CodePrimitiveExpression(2)), "methodName", new CodeTypeReference("type1"))), null, "((1 + 2)).methodName<type1>()" };
@@ -489,7 +488,7 @@ namespace System.CodeDom.Compiler.Tests
             parameterDeclarationExpression.CustomAttributes.Add(new CodeAttributeDeclaration(new CodeTypeReference("is"), new CodeAttributeArgument("as", new CodePrimitiveExpression(1)), new CodeAttributeArgument("arg2", new CodePrimitiveExpression(2))));
             yield return new object[] { parameterDeclarationExpression, null, "[()] [name1()] [name2(1)] [name3(arg1=1, arg2=2)] [@is(@as=1, arg2=2)] type name" };
 
-            foreach (string paramsName in new string[] { "System.ParamArrayAttribute", "system.paramsarrayattribute"})
+            foreach (string paramsName in new string[] { "System.ParamArrayAttribute", "system.paramsarrayattribute" })
             {
                 var paramsParameterDeclarationExpression = new CodeParameterDeclarationExpression(new CodeTypeReference("type"), "name");
                 paramsParameterDeclarationExpression.CustomAttributes.Add(new CodeAttributeDeclaration());
@@ -540,11 +539,11 @@ namespace System.CodeDom.Compiler.Tests
             yield return new object[] { new CodePrimitiveExpression("\uDC00"), null, "\"\uDC00\"" };
             yield return new object[] { new CodePrimitiveExpression("\uD800"), null, "\"\uD800\"" };
             yield return new object[] { new CodePrimitiveExpression("01234567890123456789012345678901234567890123456789012345678901234567890123456789"), null, $"\"01234567890123456789012345678901234567890123456789012345678901234567890123456789\"" };
-            yield return new object[] { new CodePrimitiveExpression("01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800"), null, $"\"01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800\" +{nl}    \"\"" };
-            yield return new object[] { new CodePrimitiveExpression("01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800\uDC00"), null, $"\"01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800\uDC00\" +{nl}    \"\"" };
-            yield return new object[] { new CodePrimitiveExpression("01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800a"), null, $"\"01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800\" +{nl}    \"a\"" };
-            yield return new object[] { new CodePrimitiveExpression("012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"), null, $"\"012345678901234567890123456789012345678901234567890123456789012345678901234567890\" +{nl}    \"123456789\"" };
-            yield return new object[] { new CodePrimitiveExpression("012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"), customOptions, $"\"012345678901234567890123456789012345678901234567890123456789012345678901234567890\" +{nl}$\"123456789\"" };
+            yield return new object[] { new CodePrimitiveExpression("01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800"), null, $"\"01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800\"" };
+            yield return new object[] { new CodePrimitiveExpression("01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800\uDC00"), null, $"\"01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800\uDC00\"" };
+            yield return new object[] { new CodePrimitiveExpression("01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800a"), null, $"(\"01234567890123456789012345678901234567890123456789012345678901234567890123456789\uD800\" +{nl}    \"a\")" };
+            yield return new object[] { new CodePrimitiveExpression("012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"), null, $"(\"012345678901234567890123456789012345678901234567890123456789012345678901234567890\" +{nl}    \"123456789\")" };
+            yield return new object[] { new CodePrimitiveExpression("012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"), customOptions, $"(\"012345678901234567890123456789012345678901234567890123456789012345678901234567890\" +{nl}$\"123456789\")" };
             yield return new object[] { new CodePrimitiveExpression(new string('a', 256)), null, $"@\"{new string('a', 256)}\"" };
             yield return new object[] { new CodePrimitiveExpression("\"" + new string('a', 254) + "\""), null, $"@\"\"\"{new string('a', 254)}\"\"\"" };
             yield return new object[] { new CodePrimitiveExpression("\"" + new string('a', 1498) + "\""), null, $"@\"\"\"{new string('a', 1498)}\"\"\"" };
@@ -919,7 +918,7 @@ namespace System.CodeDom.Compiler.Tests
                 new CodeConditionStatement(
                     new CodePrimitiveExpression(1),
                     new CodeExpressionStatement(new CodePrimitiveExpression(new string('a', 82)))
-                ), null, $"if (1) {{{nl}    \"{new string('a', 81)}\" +{nl}        \"a\";{nl}}}{nl}"
+                ), null, $"if (1) {{{nl}    (\"{new string('a', 81)}\" +{nl}        \"a\");{nl}}}{nl}"
             };
             yield return new object[]
             {
@@ -929,7 +928,7 @@ namespace System.CodeDom.Compiler.Tests
                         new CodePrimitiveExpression(2),
                         new CodeExpressionStatement(new CodePrimitiveExpression(new string('a', 82)))
                     )
-                ), null, $"if (1) {{{nl}    if (2) {{{nl}        \"{new string('a', 81)}\" +{nl}            \"a\";{nl}    }}{nl}}}{nl}"
+                ), null, $"if (1) {{{nl}    if (2) {{{nl}        (\"{new string('a', 81)}\" +{nl}            \"a\");{nl}    }}{nl}}}{nl}"
             };
             yield return new object[]
             {
@@ -942,7 +941,7 @@ namespace System.CodeDom.Compiler.Tests
                             new CodeExpressionStatement(new CodePrimitiveExpression(new string('a', 82)))
                         )
                     )
-                ), null, $"if (1) {{{nl}    if (2) {{{nl}        if (3) {{{nl}            \"{new string('a', 81)}\" +{nl}                \"a\";{nl}        }}{nl}    }}{nl}}}{nl}"
+                ), null, $"if (1) {{{nl}    if (2) {{{nl}        if (3) {{{nl}            (\"{new string('a', 81)}\" +{nl}                \"a\");{nl}        }}{nl}    }}{nl}}}{nl}"
             };
             yield return new object[]
             {
@@ -958,7 +957,7 @@ namespace System.CodeDom.Compiler.Tests
                             )
                         )
                     )
-                ), null, $"if (1) {{{nl}    if (2) {{{nl}        if (3) {{{nl}            if (4) {{{nl}                \"{new string('a', 81)}\" +{nl}                    \"a\";{nl}            }}{nl}        }}{nl}    }}{nl}}}{nl}"
+                ), null, $"if (1) {{{nl}    if (2) {{{nl}        if (3) {{{nl}            if (4) {{{nl}                (\"{new string('a', 81)}\" +{nl}                    \"a\");{nl}            }}{nl}        }}{nl}    }}{nl}}}{nl}"
             };
 
             yield return new object[]
@@ -1309,6 +1308,7 @@ namespace System.CodeDom.Compiler.Tests
 
         [Theory]
         [MemberData(nameof(GenerateCodeFromStatement_TestData))]
+        [SkipOnTargetFramework(TargetFrameworkMonikers.NetFramework, ".NET Framework has different string breakup handling")]
         public void GenerateCodeFromStatement_Invoke_Success(CodeStatement e, CodeGeneratorOptions o, string expected)
         {
             ICodeGenerator generator = GetGenerator();
@@ -1479,7 +1479,7 @@ namespace System.CodeDom.Compiler.Tests
             fullParameter.CustomAttributes.AddRange(attributes);
             parameters.Add(fullParameter);
 
-            foreach (string paramsName in new string[] { "System.ParamArrayAttribute", "system.paramsarrayattribute"})
+            foreach (string paramsName in new string[] { "System.ParamArrayAttribute", "system.paramsarrayattribute" })
             {
                 var paramsParameter = new CodeParameterDeclarationExpression(new CodeTypeReference("type"), "name");
                 paramsParameter.CustomAttributes.Add(new CodeAttributeDeclaration(new CodeTypeReference("System.ParamArrayAttribute"), new CodeAttributeArgument("arg1", new CodePrimitiveExpression(1))));
@@ -1882,7 +1882,7 @@ text
             fullInterface.TypeParameters.AddRange(typeParameters);
             fullInterface.EndDirectives.AddRange(directives);
             fullInterface.Members.Add(new CodeSnippetTypeMember());
-            fullInterface.Members.Add(new CodeSnippetTypeMember("text"));   
+            fullInterface.Members.Add(new CodeSnippetTypeMember("text"));
             fullInterface.Members.Add(fullSnippet);
             fullInterface.Members.Add(new CodeMemberMethod());
             fullInterface.Members.Add(new CodeMemberMethod { ReturnType = new CodeTypeReference("returnType"), Name = "name" });
@@ -2062,7 +2062,7 @@ text
             fullEnum.TypeParameters.AddRange(typeParameters);
             fullEnum.EndDirectives.AddRange(directives);
             fullEnum.Members.Add(new CodeSnippetTypeMember());
-            fullEnum.Members.Add(new CodeSnippetTypeMember("text"));   
+            fullEnum.Members.Add(new CodeSnippetTypeMember("text"));
             fullEnum.Members.Add(fullSnippet);
             fullEnum.Members.Add(new CodeMemberMethod());
             fullEnum.Members.Add(new CodeMemberMethod { ReturnType = new CodeTypeReference("returnType"), Name = "name" });
@@ -2220,7 +2220,7 @@ text
             yield return new object[] { new CodeTypeDelegate(), null, $"public delegate void ();{nl}" };
             yield return new object[] { new CodeTypeDelegate("name"), null, $"public delegate void name();{nl}" };
             yield return new object[] { new CodeTypeDelegate("name") { ReturnType = new CodeTypeReference("returnType") }, null, $"public delegate returnType name();{nl}" };
-            yield return new object[] { new CodeTypeDelegate("is") { ReturnType = new CodeTypeReference("as") } , null, $"public delegate @as @is();{nl}" };
+            yield return new object[] { new CodeTypeDelegate("is") { ReturnType = new CodeTypeReference("as") }, null, $"public delegate @as @is();{nl}" };
 
             var singleAttributeDelegate = new CodeTypeDelegate("name") { ReturnType = new CodeTypeReference("returnType") };
             singleAttributeDelegate.CustomAttributes.Add(new CodeAttributeDeclaration("attributeName"));
@@ -2242,7 +2242,7 @@ text
             fullDelegate.Parameters.AddRange(parameters);
             fullDelegate.EndDirectives.AddRange(directives);
             fullDelegate.Members.Add(new CodeSnippetTypeMember());
-            fullDelegate.Members.Add(new CodeSnippetTypeMember("text"));   
+            fullDelegate.Members.Add(new CodeSnippetTypeMember("text"));
             fullDelegate.Members.Add(fullSnippet);
             fullDelegate.Members.Add(new CodeMemberMethod());
             fullDelegate.Members.Add(new CodeMemberMethod { ReturnType = new CodeTypeReference("returnType"), Name = "name" });
@@ -2581,14 +2581,16 @@ public class name<, name, [attribute()]  name, name, name, [()] [name1()] [name2
             generator.GenerateCodeFromType(e, writer, o);
             AssertEqualLong(expected, writer.ToString());
         }
-        
+
         private void AssertEqualLong(string expected, string actual)
         {
+            string normalizedExpected = LineEndingsHelper.Normalize(expected);
+
             try
             {
-                Assert.Equal(expected, actual);
+                Assert.Equal(normalizedExpected, actual);
             }
-            catch (Xunit.Sdk.AssertActualExpectedException)
+            catch (Xunit.Sdk.XunitException)
             {
                 string Normalize(string s)
                 {
@@ -2597,10 +2599,10 @@ public class name<, name, [attribute()]  name, name, name, [()] [name1()] [name2
                         .Replace("{", "{{")
                         .Replace("}", "}}");
                 }
-                
+
                 var s = new StringBuilder();
                 s.AppendLine();
-                s.AppendLine($"Expected: {Environment.NewLine}$@\"{Normalize(expected)}\"");
+                s.AppendLine($"Expected: {Environment.NewLine}$@\"{Normalize(normalizedExpected)}\"");
                 s.AppendLine($"Actual:   {Environment.NewLine}$@\"{Normalize(actual)}\"");
 
                 throw new Exception(s.ToString());
@@ -2705,6 +2707,35 @@ public class name<, name, [attribute()]  name, name, name, [()] [name1()] [name2
         {
             ICodeGenerator generator = GetGenerator();
             AssertExtensions.Throws<ArgumentException>("value", null, () => generator.ValidateIdentifier(value));
+        }
+
+        [Fact]
+        [SkipOnTargetFramework(TargetFrameworkMonikers.NetFramework, ".NET Framework has different string breakup handling")]
+        public void LineBreaksShouldPreserveTheWholeStringAsOneValue()
+        {
+            CodeStatement e = new CodeAssignStatement(
+                new CodeFieldReferenceExpression
+                {
+                    FieldName = "Value",
+                    TargetObject = new CodeTypeReferenceExpression("PF")
+                },
+                new CodeMethodInvokeExpression
+                {
+                    Parameters =
+                    {
+                        new CodePrimitiveExpression('|')
+                    },
+                    Method = new CodeMethodReferenceExpression
+                    {
+                        MethodName = "MethodName",
+                        TargetObject = new CodePrimitiveExpression(new string('*', 82))
+                    }
+                }
+            );
+            ICodeGenerator generator = GetGenerator();
+            var writer = new StringWriter();
+            generator.GenerateCodeFromStatement(e, writer, new CodeGeneratorOptions());
+            AssertEqualLong("PF.Value = (\"*********************************************************************************\" +" + writer.NewLine + "    \"*\").MethodName('|');" + writer.NewLine, writer.ToString());
         }
 
         private static ICodeGenerator GetGenerator()

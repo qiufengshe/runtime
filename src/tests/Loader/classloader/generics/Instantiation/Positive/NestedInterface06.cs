@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using Xunit;
 
 public struct ValX0 {}
 public struct ValY0 {}
@@ -269,7 +270,7 @@ public struct GenJaggedObjectArray : GenOuter<int>.IGen<object[][]>
 }
 
 
-public class Test
+public class Test_NestedInterface06
 {
 	public static int counter = 0;
 	public static bool result = true;
@@ -284,7 +285,8 @@ public class Test
 	
 	}
 	
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		GenOuter<int>.IGen<int> IGenInt = new GenInt();
 		IGenInt._Init(new int());

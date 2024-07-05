@@ -40,7 +40,7 @@
 //    Crst *pcrst = new Crst(type);
 //
 //      where "type" is one of the enums created in the auto-generated
-//      file:..\inc\CrstTypes.h header file (matching the definition in
+//      file:..\inc\crsttypes_generated.h header file (matching the definition in
 //      file:..\inc\CrstTypes.def).
 //
 //      By default, crsts don't support nested enters by the same thread. If
@@ -97,13 +97,8 @@
 #define ShutDown_IUnknown                       0x00000040
 #define ShutDown_Phase2                         0x00000080
 
-#ifndef DACCESS_COMPILE
-extern bool g_fProcessDetach;
-extern DWORD g_fEEShutDown;
-#endif
 // Total count of Crst lock  of the type (Shutdown) that are currently in use
 extern Volatile<LONG> g_ShutdownCrstUsageCount;
-extern Volatile<LONG> g_fForbidEnterEE;
 
 // The CRST.
 class CrstBase
@@ -134,9 +129,9 @@ friend class Crst;
     friend class DbgTransportLock;
 #endif // FEATURE_DBGIPC_TRANSPORT_VM
 
-    // PendingTypeLoadEntry acquires the lock during construction before anybody has a chance to see it to avoid
+    // PendingTypeLoadTable::Entry acquires the lock during construction before anybody has a chance to see it to avoid
     // level violations.
-    friend class PendingTypeLoadEntry;
+    friend class PendingTypeLoadTable;
 
 public:
 #ifdef _DEBUG
@@ -240,11 +235,11 @@ public:
     {
         LIMITED_METHOD_CONTRACT;
         if (bSet)
-            FastInterlockIncrement(&m_cannotLeave);
+            InterlockedIncrement(&m_cannotLeave);
         else
         {
             _ASSERTE(m_cannotLeave);
-            FastInterlockDecrement(&m_cannotLeave);
+            InterlockedDecrement(&m_cannotLeave);
         }
     };
     //-----------------------------------------------------------------
@@ -253,11 +248,7 @@ public:
     BOOL OwnedByCurrentThread()
     {
         WRAPPER_NO_CONTRACT;
-#ifdef CROSSGEN_COMPILE
-        return TRUE;
-#else
         return m_holderthreadid.IsCurrentThread();
-#endif
     }
 
     NOINLINE EEThreadId GetHolderThreadId()
@@ -423,6 +414,12 @@ public:
     {
         WRAPPER_NO_CONTRACT;
         return new BYTE[size];
+    }
+
+    void operator delete(void* mem)
+    {
+        WRAPPER_NO_CONTRACT;
+        delete[] (BYTE*)mem;
     }
 
 private:

@@ -5,14 +5,12 @@
 // Samples for Parallel Programming with the .NET Framework
 // https://code.msdn.microsoft.com/windowsdesktop/Samples-for-Parallel-b4b76364
 
-using Microsoft.Xunit.Performance;
 using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
-
-[assembly: OptimizeForBenchmarks]
+using Xunit;
 
 namespace SIMD
 {
@@ -58,12 +56,6 @@ public class RayTracerBench
     {
         _cancellation = new CancellationTokenSource(RunningTime);
         RenderLoop(MaxIterations);
-    }
-
-    private void RenderBench()
-    {
-        _cancellation = new CancellationTokenSource();
-        RenderLoop(Iterations);
     }
 
     private void RenderLoop(int iterations)
@@ -113,19 +105,6 @@ public class RayTracerBench
         }
     }
 
-    [Benchmark]
-    public static void Bench()
-    {
-        var m = new RayTracerBench();
-        foreach (var iteration in Benchmark.Iterations)
-        {
-            using (iteration.StartMeasurement())
-            {
-                m.RenderBench();
-            }
-        }
-    }
-
     public bool Run()
     {
         RenderTest();
@@ -135,7 +114,8 @@ public class RayTracerBench
         return true;
     }
 
-    public static int Main(string[] args)
+    [Fact]
+    public static int TestEntryPoint()
     {
         var r = new RayTracerBench();
         bool result = r.Run();

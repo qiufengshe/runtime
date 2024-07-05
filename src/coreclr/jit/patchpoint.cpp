@@ -12,10 +12,13 @@
 // Insert patchpoint checks into Tier0 methods, based on locations identified
 // during importation (see impImportBlockCode).
 //
-// Policy decisions implemented here:
+// There are now two different types of patchpoints:
+//   * loop based: enable OSR transitions in loops
+//   * partial compilation: allows partial compilation of original method
 //
+// Loop patchpoint policy decisions implemented here:
 //   * One counter per stack frame, regardless of the number of patchpoints.
-//   * Shared counter value initialized to zero in prolog.
+//   * Shared counter value initialized to a constant in the prolog.
 //   * Patchpoint trees fully expanded into jit IR. Deferring expansion could
 //       lead to more compact code and lessen size overhead for Tier0.
 //
@@ -23,7 +26,6 @@
 //
 //   * no patchpoints in handler regions
 //   * no patchpoints for localloc methods
-//   * no patchpoints for synchronized methods (workaround)
 //
 class PatchpointTransformer
 {
@@ -32,7 +34,9 @@ class PatchpointTransformer
     Compiler* compiler;
 
 public:
-    PatchpointTransformer(Compiler* compiler) : ppCounterLclNum(BAD_VAR_NUM), compiler(compiler)
+    PatchpointTransformer(Compiler* compiler)
+        : ppCounterLclNum(BAD_VAR_NUM)
+        , compiler(compiler)
     {
     }
 
@@ -44,34 +48,46 @@ public:
     int Run()
     {
         // If the first block is a patchpoint, insert a scratch block.
-        if (compiler->fgFirstBB->bbFlags & BBF_PATCHPOINT)
+        if (compiler->fgFirstBB->HasFlag(BBF_PATCHPOINT))
         {
             compiler->fgEnsureFirstBBisScratch();
         }
 
         int count = 0;
-        for (BasicBlock* block = compiler->fgFirstBB->bbNext; block != nullptr; block = block->bbNext)
+        for (BasicBlock* const block : compiler->Blocks(compiler->fgFirstBB->Next()))
         {
-            if (block->bbFlags & BBF_PATCHPOINT)
+            if (block->HasFlag(BBF_PATCHPOINT))
             {
-                // Clear the patchpoint flag.
-                //
-                block->bbFlags &= ~BBF_PATCHPOINT;
-
-                // If block is in a handler region, don't insert a patchpoint.
                 // We can't OSR from funclets.
                 //
-                // TODO: check this earlier, somehow, and fall back to fully
-                // optimizing the method (ala QJFL=0).
-                if (compiler->ehGetBlockHndDsc(block) != nullptr)
-                {
-                    JITDUMP("Patchpoint: skipping patchpoint for " FMT_BB " as it is in a handler\n", block->bbNum);
-                    continue;
-                }
+                assert(!block->hasHndIndex());
 
-                JITDUMP("Patchpoint: instrumenting " FMT_BB "\n", block->bbNum);
-                assert(block != compiler->fgFirstBB);
+                // Clear the patchpoint flag.
+                //
+                block->RemoveFlags(BBF_PATCHPOINT);
+
+                JITDUMP("Patchpoint: regular patchpoint in " FMT_BB "\n", block->bbNum);
                 TransformBlock(block);
+                count++;
+            }
+            else if (block->HasFlag(BBF_PARTIAL_COMPILATION_PATCHPOINT))
+            {
+                // We can't OSR from funclets.
+                // Also, we don't import the IL for these blocks.
+                //
+                assert(!block->hasHndIndex());
+
+                // If we're instrumenting, we should not have decided to
+                // put class probes here, as that is driven by looking at IL.
+                //
+                assert(!block->HasFlag(BBF_HAS_HISTOGRAM_PROFILE));
+
+                // Clear the partial comp flag.
+                //
+                block->RemoveFlags(BBF_PARTIAL_COMPILATION_PATCHPOINT);
+
+                JITDUMP("Patchpoint: partial compilation patchpoint in " FMT_BB "\n", block->bbNum);
+                TransformPartialCompilation(block);
                 count++;
             }
         }
@@ -90,10 +106,10 @@ private:
     //
     // Return Value:
     //    new basic block.
-    BasicBlock* CreateAndInsertBasicBlock(BBjumpKinds jumpKind, BasicBlock* insertAfter)
+    BasicBlock* CreateAndInsertBasicBlock(BBKinds jumpKind, BasicBlock* insertAfter)
     {
         BasicBlock* block = compiler->fgNewBBafter(jumpKind, insertAfter, true);
-        block->bbFlags |= BBF_IMPORTED;
+        block->SetFlags(BBF_IMPORTED);
         return block;
     }
 
@@ -128,13 +144,21 @@ private:
 
         // Current block now becomes the test block
         BasicBlock* remainderBlock = compiler->fgSplitBlockAtBeginning(block);
-        BasicBlock* helperBlock    = CreateAndInsertBasicBlock(BBJ_NONE, block);
+        BasicBlock* helperBlock    = CreateAndInsertBasicBlock(BBJ_ALWAYS, block);
 
         // Update flow and flags
-        block->bbJumpKind = BBJ_COND;
-        block->bbJumpDest = remainderBlock;
-        helperBlock->bbFlags |= BBF_BACKWARD_JUMP;
-        block->bbFlags |= BBF_INTERNAL;
+        block->SetFlags(BBF_INTERNAL);
+        helperBlock->SetFlags(BBF_BACKWARD_JUMP);
+
+        assert(block->TargetIs(remainderBlock));
+        FlowEdge* const falseEdge = compiler->fgAddRefPred(helperBlock, block);
+        FlowEdge* const trueEdge  = block->GetTargetEdge();
+        trueEdge->setLikelihood(HIGH_PROBABILITY / 100.0);
+        falseEdge->setLikelihood((100 - HIGH_PROBABILITY) / 100.0);
+        block->SetCond(trueEdge, falseEdge);
+
+        FlowEdge* const newEdge = compiler->fgAddRefPred(remainderBlock, helperBlock);
+        helperBlock->SetTargetEdge(newEdge);
 
         // Update weights
         remainderBlock->inheritWeight(block);
@@ -144,12 +168,11 @@ private:
         //
         // --ppCounter;
         GenTree* ppCounterBefore = compiler->gtNewLclvNode(ppCounterLclNum, TYP_INT);
-        GenTree* ppCounterAfter  = compiler->gtNewLclvNode(ppCounterLclNum, TYP_INT);
         GenTree* one             = compiler->gtNewIconNode(1, TYP_INT);
         GenTree* ppCounterSub    = compiler->gtNewOperNode(GT_SUB, TYP_INT, ppCounterBefore, one);
-        GenTree* ppCounterAsg    = compiler->gtNewOperNode(GT_ASG, TYP_INT, ppCounterAfter, ppCounterSub);
+        GenTree* ppCounterUpdate = compiler->gtNewStoreLclVarNode(ppCounterLclNum, ppCounterSub);
 
-        compiler->fgNewStmtAtEnd(block, ppCounterAsg);
+        compiler->fgNewStmtAtEnd(block, ppCounterUpdate);
 
         // if (ppCounter > 0), bypass helper call
         GenTree* ppCounterUpdated = compiler->gtNewLclvNode(ppCounterLclNum, TYP_INT);
@@ -162,11 +185,10 @@ private:
         // Fill in helper block
         //
         // call PPHelper(&ppCounter, ilOffset)
-        GenTree*          ilOffsetNode  = compiler->gtNewIconNode(ilOffset, TYP_INT);
-        GenTree*          ppCounterRef  = compiler->gtNewLclvNode(ppCounterLclNum, TYP_INT);
-        GenTree*          ppCounterAddr = compiler->gtNewOperNode(GT_ADDR, TYP_I_IMPL, ppCounterRef);
-        GenTreeCall::Use* helperArgs    = compiler->gtNewCallArgs(ppCounterAddr, ilOffsetNode);
-        GenTreeCall*      helperCall    = compiler->gtNewHelperCallNode(CORINFO_HELP_PATCHPOINT, TYP_VOID, helperArgs);
+        GenTree*     ilOffsetNode  = compiler->gtNewIconNode(ilOffset, TYP_INT);
+        GenTree*     ppCounterAddr = compiler->gtNewLclVarAddrNode(ppCounterLclNum);
+        GenTreeCall* helperCall =
+            compiler->gtNewHelperCallNode(CORINFO_HELP_PATCHPOINT, TYP_VOID, ppCounterAddr, ilOffsetNode);
 
         compiler->fgNewStmtAtEnd(helperBlock, helperCall);
     }
@@ -174,7 +196,7 @@ private:
     //  ppCounter = <initial value>
     void TransformEntry(BasicBlock* block)
     {
-        assert((block->bbFlags & BBF_PATCHPOINT) == 0);
+        assert(!block->HasFlag(BBF_PATCHPOINT));
 
         int initialCounterValue = JitConfig.TC_OnStackReplacement_InitialCounter();
 
@@ -184,10 +206,50 @@ private:
         }
 
         GenTree* initialCounterNode = compiler->gtNewIconNode(initialCounterValue, TYP_INT);
-        GenTree* ppCounterRef       = compiler->gtNewLclvNode(ppCounterLclNum, TYP_INT);
-        GenTree* ppCounterAsg       = compiler->gtNewOperNode(GT_ASG, TYP_INT, ppCounterRef, initialCounterNode);
+        GenTree* ppCounterStore     = compiler->gtNewStoreLclVarNode(ppCounterLclNum, initialCounterNode);
 
-        compiler->fgNewStmtNearEnd(block, ppCounterAsg);
+        compiler->fgNewStmtNearEnd(block, ppCounterStore);
+    }
+
+    //------------------------------------------------------------------------
+    // TransformPartialCompilation: delete all the statements in the block and insert
+    //     a call to the partial compilation patchpoint helper
+    //
+    //  S0; S1; S2; ... SN;
+    //
+    //  ==>
+    //
+    //  ~~{ S0; ... SN; }~~ (deleted)
+    //  call JIT_PARTIAL_COMPILATION_PATCHPOINT(ilOffset)
+    //
+    // Note S0 -- SN are not forever lost -- they will appear in the OSR version
+    // of the method created when the patchpoint is hit. Also note the patchpoint
+    // helper call will not return control to this method.
+    //
+    void TransformPartialCompilation(BasicBlock* block)
+    {
+        // Capture the IL offset
+        IL_OFFSET ilOffset = block->bbCodeOffs;
+        assert(ilOffset != BAD_IL_OFFSET);
+
+        // Remove all statements from the block.
+        for (Statement* stmt : block->Statements())
+        {
+            compiler->fgRemoveStmt(block, stmt);
+        }
+
+        // Update flow
+        block->SetKindAndTargetEdge(BBJ_THROW);
+
+        // Add helper call
+        //
+        // call PartialCompilationPatchpointHelper(ilOffset)
+        //
+        GenTree*     ilOffsetNode = compiler->gtNewIconNode(ilOffset, TYP_INT);
+        GenTreeCall* helperCall =
+            compiler->gtNewHelperCallNode(CORINFO_HELP_PARTIAL_COMPILATION_PATCHPOINT, TYP_VOID, ilOffsetNode);
+
+        compiler->fgNewStmtAtEnd(block, helperCall);
     }
 };
 
@@ -204,7 +266,7 @@ private:
 //
 PhaseStatus Compiler::fgTransformPatchpoints()
 {
-    if (!doesMethodHavePatchpoints())
+    if (!doesMethodHavePatchpoints() && !doesMethodHavePartialCompilationPatchpoints())
     {
         JITDUMP("\n -- no patchpoints to transform\n");
         return PhaseStatus::MODIFIED_NOTHING;
@@ -213,34 +275,8 @@ PhaseStatus Compiler::fgTransformPatchpoints()
     // We should only be adding patchpoints at Tier0, so should not be in an inlinee
     assert(!compIsForInlining());
 
-    // We currently can't do OSR in methods with localloc.
-    // Such methods don't have a fixed relationship between frame and stack pointers.
-    //
-    // This is true whether or not the localloc was executed in the original method.
-    //
-    // TODO: handle this case, or else check this earlier and fall back to fully
-    // optimizing the method (ala QJFL=0).
-    if (compLocallocUsed)
-    {
-        JITDUMP("\n -- unable to handle methods with localloc\n");
-        return PhaseStatus::MODIFIED_NOTHING;
-    }
-
-    // We currently can't do OSR in synchronized methods. We need to alter
-    // the logic in fgAddSyncMethodEnterExit for OSR to not try and obtain the
-    // monitor (since the original method will have done so) and set the monitor
-    // obtained flag to true (or reuse the original method slot value).
-    if ((info.compFlags & CORINFO_FLG_SYNCH) != 0)
-    {
-        JITDUMP("\n -- unable to handle synchronized methods\n");
-        return PhaseStatus::MODIFIED_NOTHING;
-    }
-
-    if (opts.IsReversePInvoke())
-    {
-        JITDUMP(" -- unable to handle Reverse P/Invoke\n");
-        return PhaseStatus::MODIFIED_NOTHING;
-    }
+    // We should be allowed to have patchpoints in this method.
+    assert(compCanHavePatchpoints());
 
     PatchpointTransformer ppTransformer(this);
     int                   count = ppTransformer.Run();

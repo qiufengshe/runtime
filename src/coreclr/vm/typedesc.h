@@ -3,10 +3,7 @@
 //
 // File: typedesc.h
 //
-
-
 //
-
 //
 // ============================================================================
 
@@ -25,7 +22,7 @@ class TypeHandleList;
 
 
    ParamTypeDescs only include byref, array and pointer types.  They do NOT
-   include instantaitions of generic types, which are represented by MethodTables.
+   include instantiations of generic types, which are represented by MethodTables.
 */
 
 
@@ -34,9 +31,6 @@ typedef DPTR(class TypeDesc) PTR_TypeDesc;
 class TypeDesc
 {
 public:
-#ifdef DACCESS_COMPILE
-    friend class NativeImageDumper;
-#endif
 #ifndef DACCESS_COMPILE
     TypeDesc(CorElementType type) {
         LIMITED_METHOD_CONTRACT;
@@ -46,7 +40,7 @@ public:
 #endif
 
     // This is the ELEMENT_TYPE* that would be used in the type sig for this type
-    // For enums this is the uderlying type
+    // For enums this is the underlying type
     inline CorElementType GetInternalCorElementType() {
         LIMITED_METHOD_DAC_CONTRACT;
 
@@ -118,32 +112,6 @@ public:
     // Is actually ParamTypeDesc (BYREF, PTR)
     BOOL HasTypeParam();
 
-#ifdef FEATURE_PREJIT
-    void Save(DataImage *image);
-    void Fixup(DataImage *image);
-
-    BOOL NeedsRestore(DataImage *image)
-    {
-        WRAPPER_NO_CONTRACT;
-        return ComputeNeedsRestore(image, NULL);
-    }
-
-    BOOL ComputeNeedsRestore(DataImage *image, TypeHandleList *pVisited);
-#endif
-
-    void DoRestoreTypeKey();
-    void Restore();
-    BOOL IsRestored();
-    BOOL IsRestored_NoLogging();
-    void SetIsRestored();
-
-    inline BOOL HasUnrestoredTypeKey() const
-    {
-        LIMITED_METHOD_CONTRACT;
-        SUPPORTS_DAC;
-
-        return (m_typeAndFlags & TypeDesc::enum_flag_UnrestoredTypeKey) != 0;
-    }
 
     BOOL HasTypeEquivalence() const
     {
@@ -161,7 +129,7 @@ public:
     VOID SetIsFullyLoaded()
     {
         LIMITED_METHOD_CONTRACT;
-        FastInterlockAnd(&m_typeAndFlags, ~TypeDesc::enum_flag_IsNotFullyLoaded);
+        InterlockedAnd((LONG*)&m_typeAndFlags, ~TypeDesc::enum_flag_IsNotFullyLoaded);
     }
 
     ClassLoadLevel GetLoadLevel();
@@ -171,9 +139,6 @@ public:
 
     // The module that defined the underlying type
     PTR_Module GetModule();
-
-    // The ngen'ed module where this type-desc lives
-    PTR_Module GetZapModule();
 
     // The module where this type lives for the purposes of loading and prejitting
     // See ComputeLoaderModule for more information
@@ -187,15 +152,6 @@ public:
     Instantiation GetClassOrArrayInstantiation();    // only meaningful for ParamTypeDesc; see above
     TypeHandle GetRootTypeParam();                   // only allowed for ParamTypeDesc, helper method used to avoid recursion
 
-    // Note that if the TypeDesc, e.g. a function pointer type, involves parts that may
-    // come from either a SharedDomain or an AppDomain then special rules apply to GetDomain.
-    // It returns the SharedDomain if all the
-    // constituent parts of the type are SharedDomain (i.e. domain-neutral),
-    // and returns an AppDomain if any of the parts are from an AppDomain,
-    // i.e. are domain-bound.  If any of the parts are domain-bound
-    // then they will all belong to the same domain.
-    PTR_BaseDomain GetDomain();
-
     PTR_LoaderAllocator GetLoaderAllocator()
     {
         SUPPORTS_DAC;
@@ -203,14 +159,37 @@ public:
         return GetLoaderModule()->GetLoaderAllocator();
     }
 
+    BOOL IsSharedByGenericInstantiations();
+
+    BOOL ContainsGenericVariables(BOOL methodOnly);
+
+#ifndef DACCESS_COMPILE
+    OBJECTREF GetManagedClassObject();
+
+    OBJECTREF GetManagedClassObjectIfExists() const
+    {
+        CONTRACTL
+        {
+            NOTHROW;
+            GC_NOTRIGGER;
+            MODE_COOPERATIVE;
+        }
+        CONTRACTL_END;
+
+        const RUNTIMETYPEHANDLE handle = m_hExposedClassObject;
+        OBJECTREF retVal = ObjectToOBJECTREF(handle);
+        return retVal;
+    }
+#endif
+
  protected:
     // See methodtable.h for details of the flags with the same name there
     enum
     {
-        enum_flag_NeedsRestore           = 0x00000100, // Only used during ngen
-        enum_flag_PreRestored            = 0x00000200, // Only used during ngen
-        enum_flag_Unrestored             = 0x00000400,
-        enum_flag_UnrestoredTypeKey      = 0x00000800,
+        // unused                        = 0x00000100,
+        // unused                        = 0x00000200,
+        // unused                        = 0x00000400,
+        // unused                        = 0x00000800,
         enum_flag_IsNotFullyLoaded       = 0x00001000,
         enum_flag_DependenciesLoaded     = 0x00002000,
         enum_flag_HasTypeEquivalence     = 0x00004000
@@ -222,6 +201,9 @@ public:
     // The remaining bits are available for flags
     //
     DWORD m_typeAndFlags;
+
+    // internal RuntimeType object handle
+    RUNTIMETYPEHANDLE m_hExposedClassObject;
 };
 
 
@@ -236,18 +218,13 @@ class ParamTypeDesc : public TypeDesc {
     friend class TypeDesc;
     friend class JIT_TrialAlloc;
     friend class CheckAsmOffsets;
-#ifdef DACCESS_COMPILE
-    friend class NativeImageDumper;
-#endif
 
 public:
 #ifndef DACCESS_COMPILE
-    ParamTypeDesc(CorElementType type, MethodTable* pMT, TypeHandle arg)
-        : TypeDesc(type), m_Arg(arg), m_hExposedClassObject(0) {
+    ParamTypeDesc(CorElementType type, TypeHandle arg)
+        : TypeDesc(type), m_Arg(arg) {
 
         LIMITED_METHOD_CONTRACT;
-
-        m_TemplateMT.SetValueMaybeNull(pMT);
 
         // ParamTypeDescs start out life not fully loaded
         m_typeAndFlags |= TypeDesc::enum_flag_IsNotFullyLoaded;
@@ -264,31 +241,6 @@ public:
 
     INDEBUGIMPL(BOOL Verify();)
 
-    OBJECTREF GetManagedClassObject();
-
-    OBJECTREF GetManagedClassObjectIfExists()
-    {
-        CONTRACTL
-        {
-            NOTHROW;
-            GC_NOTRIGGER;
-            MODE_COOPERATIVE;
-        }
-        CONTRACTL_END;
-
-        OBJECTREF objRet = NULL;
-        GET_LOADERHANDLE_VALUE_FAST(GetLoaderAllocator(), m_hExposedClassObject, &objRet);
-        return objRet;
-    }
-    OBJECTREF GetManagedClassObjectFast()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        OBJECTREF objRet = NULL;
-        LoaderAllocator::GetHandleValueFast(m_hExposedClassObject, &objRet);
-        return objRet;
-    }
-
     TypeHandle GetModifiedType()
     {
         LIMITED_METHOD_CONTRACT;
@@ -298,33 +250,19 @@ public:
 
     TypeHandle GetTypeParam();
 
-#ifdef FEATURE_PREJIT
-    void Save(DataImage *image);
-    void Fixup(DataImage *image);
-    BOOL ComputeNeedsRestore(DataImage *image, TypeHandleList *pVisited);
-#endif
-
-    BOOL OwnsTemplateMethodTable();
-
 #ifdef DACCESS_COMPILE
     void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
 #endif
 
     friend class StubLinkerCPU;
 
-#ifdef FEATURE_ARRAYSTUB_AS_IL
     friend class ArrayOpLinker;
-#endif
 protected:
-    PTR_MethodTable GetTemplateMethodTableInternal() {
-        WRAPPER_NO_CONTRACT;
-        return ReadPointerMaybeNull(this, &ParamTypeDesc::m_TemplateMT);
-    }
 
     // the m_typeAndFlags field in TypeDesc tell what kind of parameterized type we have
-    RelativeFixupPointer<PTR_MethodTable> m_TemplateMT; // The shared method table, some variants do not use this field (it is null)
-    TypeHandle      m_Arg;              // The type that is being modified
-    LOADERHANDLE    m_hExposedClassObject;  // handle back to the internal reflection Type object
+
+    // The type that is being modified
+    TypeHandle        m_Arg;
 };
 
 /*************************************************************************/
@@ -335,9 +273,6 @@ protected:
 
 class TypeVarTypeDesc : public TypeDesc
 {
-#ifdef DACCESS_COMPILE
-    friend class NativeImageDumper;
-#endif
 public:
 
 #ifndef DACCESS_COMPILE
@@ -356,11 +291,10 @@ public:
         }
         CONTRACTL_END;
 
-        m_pModule.SetValue(pModule);
+        m_pModule = pModule;
         m_typeOrMethodDef = typeOrMethodDef;
         m_token = token;
         m_index = index;
-        m_hExposedClassObject = 0;
         m_constraints = NULL;
         m_numConstraints = (DWORD)-1;
     }
@@ -374,7 +308,7 @@ public:
         LIMITED_METHOD_CONTRACT;
         SUPPORTS_DAC;
 
-        return ReadPointer(this, &TypeVarTypeDesc::m_pModule);
+        return m_pModule;
     }
 
     unsigned int GetIndex()
@@ -396,30 +330,6 @@ public:
         LIMITED_METHOD_CONTRACT;
         SUPPORTS_DAC;
         return m_typeOrMethodDef;
-    }
-
-    OBJECTREF GetManagedClassObject();
-    OBJECTREF GetManagedClassObjectIfExists()
-    {
-        CONTRACTL
-        {
-            NOTHROW;
-            GC_NOTRIGGER;
-            MODE_COOPERATIVE;
-        }
-        CONTRACTL_END;
-
-        OBJECTREF objRet = NULL;
-        GET_LOADERHANDLE_VALUE_FAST(GetLoaderAllocator(), m_hExposedClassObject, &objRet);
-        return objRet;
-    }
-    OBJECTREF GetManagedClassObjectFast()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        OBJECTREF objRet = NULL;
-        LoaderAllocator::GetHandleValueFast(m_hExposedClassObject, &objRet);
-        return objRet;
     }
 
     // Load the owning type. Note that the result is not guaranteed to be full loaded
@@ -449,11 +359,6 @@ public:
     // instantiate it with a reference type).
     BOOL ConstrainedAsValueType();
 
-#ifdef FEATURE_PREJIT
-    void Save(DataImage *image);
-    void Fixup(DataImage *image);
-#endif // FEATURE_PREJIT
-
 #ifdef DACCESS_COMPILE
     void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
 #endif
@@ -462,7 +367,7 @@ protected:
     BOOL ConstrainedAsObjRefHelper();
 
     // Module containing the generic definition, also the loader module for this type desc
-    RelativePointer<PTR_Module> m_pModule;
+    PTR_Module m_pModule;
 
     // Declaring type or method
     mdToken m_typeOrMethodDef;
@@ -470,9 +375,6 @@ protected:
     // Constraints, determined on first call to GetConstraints
     Volatile<DWORD> m_numConstraints;    // -1 until number has been determined
     PTR_TypeHandle m_constraints;
-
-    // slot index back to the internal reflection Type object
-    LOADERHANDLE m_hExposedClassObject;
 
     // token for GenericParam entry
     mdGenericParam    m_token;
@@ -488,9 +390,6 @@ typedef SPTR(class FnPtrTypeDesc) PTR_FnPtrTypeDesc;
 
 class FnPtrTypeDesc : public TypeDesc
 {
-#ifdef DACCESS_COMPILE
-    friend class NativeImageDumper;
-#endif
 
 public:
 #ifndef DACCESS_COMPILE
@@ -539,15 +438,14 @@ public:
         return PTR_TypeHandle(m_RetAndArgTypes);
     }
 
+    BOOL IsSharedByGenericInstantiations();
+
+    BOOL ContainsGenericVariables(BOOL methodOnly);
+
 #ifndef DACCESS_COMPILE
     // Returns TRUE if all return and argument types are externally visible.
     BOOL IsExternallyVisible() const;
 #endif //DACCESS_COMPILE
-
-#ifdef FEATURE_PREJIT
-    void Save(DataImage *image);
-    void Fixup(DataImage *image);
-#endif //FEATURE_PREJIT
 
 #ifdef DACCESS_COMPILE
     static ULONG32 DacSize(TADDR addr)

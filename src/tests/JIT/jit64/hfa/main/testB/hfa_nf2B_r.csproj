@@ -1,10 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <!-- Needed for CMakeProjectReference -->
+    <RequiresProcessIsolation>true</RequiresProcessIsolation>
     <CLRTestPriority>1</CLRTestPriority>
-  </PropertyGroup>
-  <PropertyGroup>
-    <DebugType />
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="hfa_testB.cs" />
@@ -13,6 +11,6 @@
     <ProjectReference Include="..\dll\common.csproj" />
     <ProjectReference Include="..\dll\hfa_nested_f32_common.csproj" />
     <ProjectReference Include="..\dll\hfa_nested_f32_interop_cpp.csproj" />
-    <ProjectReference Include="..\dll\CMakelists.txt" />
+    <CMakeProjectReference Include="..\dll\CMakelists.txt" />
   </ItemGroup>
 </Project>

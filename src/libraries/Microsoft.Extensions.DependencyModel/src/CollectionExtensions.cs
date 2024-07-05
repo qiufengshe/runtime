@@ -1,16 +1,16 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.Extensions.DependencyModel;
 using System.Linq;
+using Microsoft.Extensions.DependencyModel;
 
 namespace System.Collections.Generic
 {
-    public static class CollectionExtensions
+    public static partial class CollectionExtensions
     {
-        public static RuntimeAssetGroup GetDefaultGroup(this IEnumerable<RuntimeAssetGroup> self) => GetGroup(self, string.Empty);
+        public static RuntimeAssetGroup? GetDefaultGroup(this IEnumerable<RuntimeAssetGroup> self) => GetGroup(self, string.Empty);
 
-        public static RuntimeAssetGroup GetRuntimeGroup(this IEnumerable<RuntimeAssetGroup> self, string runtime)
+        public static RuntimeAssetGroup? GetRuntimeGroup(this IEnumerable<RuntimeAssetGroup> self, string runtime)
         {
             if (string.IsNullOrEmpty(runtime))
             {
@@ -19,7 +19,7 @@ namespace System.Collections.Generic
             return GetGroup(self, runtime);
         }
 
-        private static RuntimeAssetGroup GetGroup(IEnumerable<RuntimeAssetGroup> groups, string runtime)
+        private static RuntimeAssetGroup? GetGroup(IEnumerable<RuntimeAssetGroup> groups, string runtime)
         {
             return groups.FirstOrDefault(g => g.Runtime == runtime);
         }

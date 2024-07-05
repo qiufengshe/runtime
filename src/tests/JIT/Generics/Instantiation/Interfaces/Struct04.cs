@@ -3,6 +3,7 @@
 //
 
 using System;
+using Xunit;
 
 public struct ValX0 { }
 public struct ValY0 { }
@@ -269,7 +270,7 @@ public struct GenJaggedObjectArray : IGenSub<object[][]>
 }
 
 
-public struct Test
+public struct Test_Struct04
 {
     public static int counter = 0;
     public static bool result = true;
@@ -284,7 +285,8 @@ public struct Test
 
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         IGen<int> IGenInt = new GenInt();
         IGenInt._Init(new int());

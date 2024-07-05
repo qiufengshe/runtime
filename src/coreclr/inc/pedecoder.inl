@@ -20,7 +20,6 @@ inline PEDecoder::PEDecoder()
     m_flags(0),
     m_pNTHeaders(nullptr),
     m_pCorHeader(nullptr),
-    m_pNativeHeader(nullptr),
     m_pReadyToRunHeader(nullptr)
 {
     CONTRACTL
@@ -95,14 +94,12 @@ inline PEDecoder::PEDecoder(PTR_VOID mappedBase, bool fixedUp /*= FALSE*/)
     m_flags(FLAG_MAPPED | FLAG_CONTENTS | FLAG_NT_CHECKED | (fixedUp ? FLAG_RELOCATED : 0)),
     m_pNTHeaders(nullptr),
     m_pCorHeader(nullptr),
-    m_pNativeHeader(nullptr),
     m_pReadyToRunHeader(nullptr)
 {
     CONTRACTL
     {
         CONSTRUCTOR_CHECK;
         PRECONDITION(CheckPointer(mappedBase));
-        PRECONDITION(CheckAligned(mappedBase, GetOsPageSize()));
         PRECONDITION(PEDecoder(mappedBase,fixedUp).CheckNTHeaders());
         THROWS;
         GC_NOTRIGGER;
@@ -134,7 +131,6 @@ inline PEDecoder::PEDecoder(void *flatBase, COUNT_T size)
     m_flags(FLAG_CONTENTS),
     m_pNTHeaders(NULL),
     m_pCorHeader(NULL),
-    m_pNativeHeader(NULL),
     m_pReadyToRunHeader(NULL)
 {
     CONTRACTL
@@ -175,7 +171,6 @@ inline HRESULT PEDecoder::Init(void *mappedBase, bool fixedUp /*= FALSE*/)
         NOTHROW;
         GC_NOTRIGGER;
         PRECONDITION(CheckPointer(mappedBase));
-        PRECONDITION(CheckAligned(mappedBase, GetOsPageSize()));
         PRECONDITION(!HasContents());
     }
     CONTRACTL_END;
@@ -205,12 +200,11 @@ inline void PEDecoder::Reset()
         GC_NOTRIGGER;
     }
     CONTRACTL_END;
-    m_base=NULL;
-    m_flags=NULL;
-    m_size=NULL;
+    m_base=(TADDR)0;
+    m_flags=0;
+    m_size=0;
     m_pNTHeaders=NULL;
     m_pCorHeader=NULL;
-    m_pNativeHeader=NULL;
     m_pReadyToRunHeader=NULL;
 }
 #endif // #ifndef DACCESS_COMPILE
@@ -389,36 +383,6 @@ inline DWORD PEDecoder::GetCheckSum() const
     return VAL32(FindNTHeaders()->OptionalHeader.CheckSum);
 }
 
-inline DWORD PEDecoder::GetFileAlignment() const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNTHeaders());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    //even though some data in OptionalHeader is different for 32 and 64,  this field is the same
-    return VAL32(FindNTHeaders()->OptionalHeader.FileAlignment);
-}
-
-inline DWORD PEDecoder::GetSectionAlignment() const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNTHeaders());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    //even though some data in OptionalHeader is different for 32 and 64,  this field is the same
-    return VAL32(FindNTHeaders()->OptionalHeader.SectionAlignment);
-}
-
 inline WORD PEDecoder::GetMachine() const
 {
     CONTRACTL
@@ -446,42 +410,6 @@ inline WORD PEDecoder::GetCharacteristics() const
 
     return VAL16(FindNTHeaders()->FileHeader.Characteristics);
 }
-
-inline SIZE_T PEDecoder::GetSizeOfStackReserve() const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNTHeaders());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    if (Has32BitNTHeaders())
-        return (SIZE_T) VAL32(GetNTHeaders32()->OptionalHeader.SizeOfStackReserve);
-    else
-        return (SIZE_T) VAL64(GetNTHeaders64()->OptionalHeader.SizeOfStackReserve);
-}
-
-
-inline SIZE_T PEDecoder::GetSizeOfStackCommit() const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNTHeaders());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    if (Has32BitNTHeaders())
-        return (SIZE_T) VAL32(GetNTHeaders32()->OptionalHeader.SizeOfStackCommit);
-    else
-        return (SIZE_T) VAL64(GetNTHeaders64()->OptionalHeader.SizeOfStackCommit);
-}
-
 
 inline SIZE_T PEDecoder::GetSizeOfHeapReserve() const
 {
@@ -946,7 +874,7 @@ inline BOOL PEDecoder::IsNativeMachineFormat() const
     if (!HasContents() || !HasNTHeaders() )
         return FALSE;
     _ASSERTE(m_pNTHeaders);
-    WORD expectedFormat = HasCorHeader() && (HasNativeHeader() || HasReadyToRunHeader()) ?
+    WORD expectedFormat = HasCorHeader() && HasReadyToRunHeader() ?
         IMAGE_FILE_MACHINE_NATIVE_NI :
         IMAGE_FILE_MACHINE_NATIVE;
     //do not call GetNTHeaders as we do not want to bother with PE32->PE32+ conversion
@@ -962,164 +890,6 @@ inline BOOL PEDecoder::IsI386() const
     return m_pNTHeaders->FileHeader.Machine==IMAGE_FILE_MACHINE_I386;
 }
 
-inline CORCOMPILE_HEADER *PEDecoder::GetNativeHeader() const
-{
-    CONTRACT(CORCOMPILE_HEADER *)
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNTHeaders());
-        PRECONDITION(HasCorHeader());
-        PRECONDITION(HasNativeHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-        POSTCONDITION(CheckPointer(RETVAL));
-        SUPPORTS_DAC;
-        CANNOT_TAKE_LOCK;
-    }
-    CONTRACT_END;
-
-    if (m_pNativeHeader == NULL)
-        const_cast<PEDecoder *>(this)->m_pNativeHeader =
-            dac_cast<PTR_CORCOMPILE_HEADER>(FindNativeHeader());
-
-    RETURN m_pNativeHeader;
-}
-
-#ifdef FEATURE_PREJIT
-inline const void * PEDecoder::GetNativePreferredBase() const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNativeHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    PREFIX_ASSUME (GetNativeHeader()!=NULL);
-    return (const void *) GetNativeHeader()->ImageBase;
-}
-
-inline BOOL PEDecoder::GetNativeILHasSecurityDirectory() const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNativeHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    PREFIX_ASSUME (GetNativeHeader()!=NULL);
-    return (GetNativeHeader()->Flags & CORCOMPILE_HEADER_HAS_SECURITY_DIRECTORY) != 0;
-}
-
-inline BOOL PEDecoder::GetNativeILIsIbcOptimized() const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNativeHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    PREFIX_ASSUME (GetNativeHeader()!=NULL);
-    return (GetNativeHeader()->Flags & CORCOMPILE_HEADER_IS_IBC_OPTIMIZED) != 0;
-}
-
-inline BOOL PEDecoder::GetNativeILHasReadyToRunHeader() const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNativeHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    PREFIX_ASSUME (GetNativeHeader()!=NULL);
-    return (GetNativeHeader()->Flags & CORCOMPILE_HEADER_IS_READY_TO_RUN) != 0;
-}
-
-inline BOOL PEDecoder::IsNativeILILOnly() const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNativeHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-        CANNOT_TAKE_LOCK;
-        SUPPORTS_DAC;
-    }
-    CONTRACTL_END;
-
-    PREFIX_ASSUME (GetNativeHeader()!=NULL);
-    return((GetNativeHeader()->COR20Flags & VAL32(COMIMAGE_FLAGS_ILONLY)) != 0);
-}
-
-inline BOOL PEDecoder::IsNativeILDll() const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNativeHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    PREFIX_ASSUME (GetNativeHeader()!=NULL);
-    return((GetNativeHeader()->Characteristics & VAL16(IMAGE_FILE_DLL)) != 0);
-}
-
-
-inline void PEDecoder::GetNativeILPEKindAndMachine(DWORD* pdwKind, DWORD* pdwMachine) const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNativeHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    CORCOMPILE_HEADER * pNativeHeader = GetNativeHeader();
-    PREFIX_ASSUME (pNativeHeader!=NULL);
-
-    if (pdwKind != NULL)
-        *pdwKind = pNativeHeader->PEKind;
-    if (pdwMachine != NULL)
-        *pdwMachine = pNativeHeader->Machine;
-}
-
-inline CORCOMPILE_DEPENDENCY * PEDecoder::GetNativeDependencies(COUNT_T *pCount) const
-{
-    CONTRACTL
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(CheckNativeHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    IMAGE_DATA_DIRECTORY *pDir = &GetNativeHeader()->Dependencies;
-
-    if (pCount != NULL)
-        *pCount = VAL32(pDir->Size)/sizeof(CORCOMPILE_DEPENDENCY);
-
-    return (CORCOMPILE_DEPENDENCY *) GetDirectoryData(pDir);
-}
-
-#endif  // FEATURE_PREJIT
-
 // static
 inline PTR_IMAGE_SECTION_HEADER PEDecoder::FindFirstSection(IMAGE_NT_HEADERS * pNTHeaders)
 {
@@ -1128,7 +898,7 @@ inline PTR_IMAGE_SECTION_HEADER PEDecoder::FindFirstSection(IMAGE_NT_HEADERS * p
 
     return dac_cast<PTR_IMAGE_SECTION_HEADER>(
         dac_cast<TADDR>(pNTHeaders) +
-        FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader) +
+        offsetof(IMAGE_NT_HEADERS, OptionalHeader) +
         VAL16(pNTHeaders->FileHeader.SizeOfOptionalHeader));
 }
 
@@ -1203,23 +973,6 @@ inline IMAGE_COR20_HEADER *PEDecoder::FindCorHeader() const
 
     const IMAGE_COR20_HEADER * pCor=PTR_IMAGE_COR20_HEADER(GetDirectoryEntryData(IMAGE_DIRECTORY_ENTRY_COMHEADER));
     RETURN ((IMAGE_COR20_HEADER*)pCor);
-}
-
-inline CORCOMPILE_HEADER *PEDecoder::FindNativeHeader() const
-{
-    CONTRACT(CORCOMPILE_HEADER *)
-    {
-        INSTANCE_CHECK;
-        PRECONDITION(HasNativeHeader());
-        NOTHROW;
-        GC_NOTRIGGER;
-        POSTCONDITION(CheckPointer(RETVAL));
-        CANNOT_TAKE_LOCK;
-        SUPPORTS_DAC;
-    }
-    CONTRACT_END;
-
-    RETURN PTR_CORCOMPILE_HEADER(GetDirectoryData(&GetCorHeader()->ManagedNativeHeader));
 }
 
 inline CHECK PEDecoder::CheckBounds(RVA rangeBase, COUNT_T rangeSize, RVA rva)

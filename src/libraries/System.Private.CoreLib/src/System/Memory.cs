@@ -3,13 +3,12 @@
 
 using System.Buffers;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Text;
+
 using EditorBrowsableAttribute = System.ComponentModel.EditorBrowsableAttribute;
 using EditorBrowsableState = System.ComponentModel.EditorBrowsableState;
-
-using Internal.Runtime.CompilerServices;
 
 namespace System
 {
@@ -36,7 +35,7 @@ namespace System
         /// </summary>
         /// <param name="array">The target array.</param>
         /// <remarks>Returns default when <paramref name="array"/> is null.</remarks>
-        /// <exception cref="System.ArrayTypeMismatchException">Thrown when <paramref name="array"/> is covariant and array's type is not exactly T[].</exception>
+        /// <exception cref="ArrayTypeMismatchException">Thrown when <paramref name="array"/> is covariant and array's type is not exactly T[].</exception>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Memory(T[]? array)
         {
@@ -81,8 +80,8 @@ namespace System
         /// <param name="start">The index at which to begin the memory.</param>
         /// <param name="length">The number of items in the memory.</param>
         /// <remarks>Returns default when <paramref name="array"/> is null.</remarks>
-        /// <exception cref="System.ArrayTypeMismatchException">Thrown when <paramref name="array"/> is covariant and array's type is not exactly T[].</exception>
-        /// <exception cref="System.ArgumentOutOfRangeException">
+        /// <exception cref="ArrayTypeMismatchException">Thrown when <paramref name="array"/> is covariant and array's type is not exactly T[].</exception>
+        /// <exception cref="ArgumentOutOfRangeException">
         /// Thrown when the specified <paramref name="start"/> or end index is not in the range (&lt;0 or &gt;Length).
         /// </exception>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -117,7 +116,7 @@ namespace System
         /// </summary>
         /// <param name="manager">The memory manager.</param>
         /// <param name="length">The number of items in the memory.</param>
-        /// <exception cref="System.ArgumentOutOfRangeException">
+        /// <exception cref="ArgumentOutOfRangeException">
         /// Thrown when the specified <paramref name="length"/> is negative.
         /// </exception>
         /// <remarks>For internal infrastructure only</remarks>
@@ -141,7 +140,7 @@ namespace System
         /// <param name="manager">The memory manager.</param>
         /// <param name="start">The index at which to begin the memory.</param>
         /// <param name="length">The number of items in the memory.</param>
-        /// <exception cref="System.ArgumentOutOfRangeException">
+        /// <exception cref="ArgumentOutOfRangeException">
         /// Thrown when the specified <paramref name="start"/> or <paramref name="length"/> is negative.
         /// </exception>
         /// <remarks>For internal infrastructure only</remarks>
@@ -215,14 +214,14 @@ namespace System
             {
                 return (_object is string str) ? str.Substring(_index, _length) : Span.ToString();
             }
-            return string.Format("System.Memory<{0}>[{1}]", typeof(T).Name, _length);
+            return $"System.Memory<{typeof(T).Name}>[{_length}]";
         }
 
         /// <summary>
         /// Forms a slice out of the given memory, beginning at 'start'.
         /// </summary>
         /// <param name="start">The index at which to begin this slice.</param>
-        /// <exception cref="System.ArgumentOutOfRangeException">
+        /// <exception cref="ArgumentOutOfRangeException">
         /// Thrown when the specified <paramref name="start"/> index is not in range (&lt;0 or &gt;Length).
         /// </exception>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -242,7 +241,7 @@ namespace System
         /// </summary>
         /// <param name="start">The index at which to begin this slice.</param>
         /// <param name="length">The desired length for the slice (exclusive).</param>
-        /// <exception cref="System.ArgumentOutOfRangeException">
+        /// <exception cref="ArgumentOutOfRangeException">
         /// Thrown when the specified <paramref name="start"/> or end index is not in range (&lt;0 or &gt;Length).
         /// </exception>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -356,22 +355,20 @@ namespace System
         /// Copies the contents of the memory into the destination. If the source
         /// and destination overlap, this method behaves as if the original values are in
         /// a temporary location before the destination is overwritten.
-        ///
+        /// </summary>
         /// <param name="destination">The Memory to copy items into.</param>
-        /// <exception cref="System.ArgumentException">
+        /// <exception cref="ArgumentException">
         /// Thrown when the destination is shorter than the source.
         /// </exception>
-        /// </summary>
         public void CopyTo(Memory<T> destination) => Span.CopyTo(destination.Span);
 
         /// <summary>
         /// Copies the contents of the memory into the destination. If the source
         /// and destination overlap, this method behaves as if the original values are in
         /// a temporary location before the destination is overwritten.
-        ///
+        /// </summary>
         /// <returns>If the destination is shorter than the source, this method
         /// return false and no data is written to the destination.</returns>
-        /// </summary>
         /// <param name="destination">The span to copy items into.</param>
         public bool TryCopyTo(Memory<T> destination) => Span.TryCopyTo(destination.Span);
 
@@ -379,10 +376,10 @@ namespace System
         /// Creates a handle for the memory.
         /// The GC will not move the memory until the returned <see cref="MemoryHandle"/>
         /// is disposed, enabling taking and using the memory's address.
-        /// <exception cref="System.ArgumentException">
+        /// </summary>
+        /// <exception cref="ArgumentException">
         /// An instance with nonprimitive (non-blittable) members cannot be pinned.
         /// </exception>
-        /// </summary>
         public unsafe MemoryHandle Pin()
         {
             // Just like the Span property getter, we have special support for a mutable Memory<char>
@@ -401,6 +398,7 @@ namespace System
             {
                 if (typeof(T) == typeof(char) && tmpObject is string s)
                 {
+                    // Unsafe.AsPointer is safe since the handle pins it
                     GCHandle handle = GCHandle.Alloc(tmpObject, GCHandleType.Pinned);
                     ref char stringData = ref Unsafe.Add(ref s.GetRawStringData(), _index);
                     return new MemoryHandle(Unsafe.AsPointer(ref stringData), handle);
@@ -413,11 +411,13 @@ namespace System
                     // Array is already pre-pinned
                     if (_index < 0)
                     {
+                        // Unsafe.AsPointer is safe since it's pinned
                         void* pointer = Unsafe.Add<T>(Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(Unsafe.As<T[]>(tmpObject))), _index & ReadOnlyMemory<T>.RemoveFlagsBitMask);
                         return new MemoryHandle(pointer);
                     }
                     else
                     {
+                        // Unsafe.AsPointer is safe since the handle pins it
                         GCHandle handle = GCHandle.Alloc(tmpObject, GCHandleType.Pinned);
                         void* pointer = Unsafe.Add<T>(Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(Unsafe.As<T[]>(tmpObject))), _index);
                         return new MemoryHandle(pointer, handle);
@@ -445,7 +445,7 @@ namespace System
         /// Returns true if the object is Memory or ReadOnlyMemory and if both objects point to the same array and have the same length.
         /// </summary>
         [EditorBrowsable(EditorBrowsableState.Never)]
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             if (obj is ReadOnlyMemory<T>)
             {

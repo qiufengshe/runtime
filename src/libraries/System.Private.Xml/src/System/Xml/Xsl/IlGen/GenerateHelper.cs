@@ -2,29 +2,30 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Globalization;
-using System.Xml;
-using System.Xml.XPath;
-using System.Xml.Schema;
-using System.Text;
-using System.IO;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.IO;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.Versioning;
 using System.Security;
-using System.Diagnostics;
+using System.Text;
+using System.Xml;
+using System.Xml.Schema;
+using System.Xml.XPath;
 using System.Xml.Xsl.Qil;
 using System.Xml.Xsl.Runtime;
-using System.Runtime.Versioning;
-using System.Diagnostics.CodeAnalysis;
 
 namespace System.Xml.Xsl.IlGen
 {
     /// <summary>
     /// List of all XmlIL runtime constructors.
     /// </summary>
-    internal class XmlILStorageMethods
+    [RequiresDynamicCode("Calls MakeGenericType on value types")]
+    internal sealed class XmlILStorageMethods
     {
         // Aggregates
         public readonly MethodInfo? AggAvg;
@@ -143,7 +144,7 @@ namespace System.Xml.Xsl.IlGen
             if (storageType == typeof(byte[]))
                 ToAtomicValue = typeof(XmlILStorageConverter).GetMethod("BytesToAtomicValue");
             else if (storageType != typeof(XPathItem) && storageType != typeof(XPathNavigator))
-                ToAtomicValue = typeof(XmlILStorageConverter).GetMethod(storageType.Name + "ToAtomicValue");
+                ToAtomicValue = typeof(XmlILStorageConverter).GetMethod($"{storageType.Name}ToAtomicValue");
         }
     }
 
@@ -165,6 +166,7 @@ namespace System.Xml.Xsl.IlGen
     /// <summary>
     /// List of all XmlIL runtime methods.
     /// </summary>
+    [RequiresDynamicCode("Calls MakeGenericType on value types")]
     internal static class XmlILMethods
     {
         // Iterators
@@ -303,7 +305,11 @@ namespace System.Xml.Xsl.IlGen
         public static readonly MethodInfo GetDataSource = typeof(XmlQueryContext).GetMethod("GetDataSource")!;
         public static readonly MethodInfo GetDefaultDataSource = typeof(XmlQueryContext).GetMethod("get_DefaultDataSource")!;
         public static readonly MethodInfo GetParam = typeof(XmlQueryContext).GetMethod("GetParameter")!;
-        public static readonly MethodInfo InvokeXsltLate = typeof(XmlQueryContext).GetMethod("InvokeXsltLateBoundFunction")!;
+        public static readonly MethodInfo InvokeXsltLate = GetInvokeXsltLateBoundFunction();
+        [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
+            Justification = "Suppressing warning about not having the RequiresUnreferencedCode attribute since this code path " +
+            "will only be emitting IL that will later be called by Transform() method which is already annotated as RequiresUnreferencedCode")]
+        private static MethodInfo GetInvokeXsltLateBoundFunction() => typeof(XmlQueryContext).GetMethod("InvokeXsltLateBoundFunction")!;
 
         // XmlILIndex
         public static readonly MethodInfo IndexAdd = typeof(XmlILIndex).GetMethod("Add")!;
@@ -467,7 +473,8 @@ namespace System.Xml.Xsl.IlGen
     /// <summary>
     /// Contains helper methods used during the code generation phase.
     /// </summary>
-    internal class GenerateHelper
+    [RequiresDynamicCode("Creates DynamicMethods")]
+    internal sealed class GenerateHelper
     {
         private MethodBase? _methInfo;
         private ILGenerator? _ilgen;
@@ -601,8 +608,7 @@ namespace System.Xml.Xsl.IlGen
         public void CallSyncToNavigator()
         {
             // Get helper method from module
-            if (_methSyncToNav == null)
-                _methSyncToNav = _module.FindMethod("SyncToNavigator");
+            _methSyncToNav ??= _module.FindMethod("SyncToNavigator");
 
             Call(_methSyncToNav!);
         }
@@ -799,6 +805,7 @@ namespace System.Xml.Xsl.IlGen
             Emit(OpCodes.Ret);
         }
 
+#pragma warning disable CA1822
         [Conditional("DEBUG")]
         private void TraceCall(OpCode opcode, MethodInfo meth)
         {
@@ -826,6 +833,7 @@ namespace System.Xml.Xsl.IlGen
             }
 #endif
         }
+#pragma warning restore CA1822
 
         public void Call(MethodInfo meth)
         {

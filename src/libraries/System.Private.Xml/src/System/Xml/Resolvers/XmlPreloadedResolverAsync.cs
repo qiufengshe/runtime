@@ -2,8 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.IO;
-using System.Xml;
 using System.Threading.Tasks;
+using System.Xml;
 
 namespace System.Xml.Resolvers
 {
@@ -18,10 +18,7 @@ namespace System.Xml.Resolvers
                                              string? role,
                                              Type? ofObjectToReturn)
         {
-            if (absoluteUri == null)
-            {
-                throw new ArgumentNullException(nameof(absoluteUri));
-            }
+            ArgumentNullException.ThrowIfNull(absoluteUri);
 
             PreloadedData? data;
             if (!_mappings.TryGetValue(absoluteUri, out data))

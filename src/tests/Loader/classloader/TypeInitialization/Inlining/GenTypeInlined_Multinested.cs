@@ -7,6 +7,7 @@
 using System;
 using System.IO;
 using System.Runtime.CompilerServices;
+using Xunit;
 
 public class Bar<T>
 {
@@ -124,9 +125,10 @@ public struct InlinedVal<T>
 }
 
 
-public class Test
+public class Test_GenTypeInlined_Multinested
 {
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		Foo<int>.Meth_In();
 

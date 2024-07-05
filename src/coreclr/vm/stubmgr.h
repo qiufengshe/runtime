@@ -86,7 +86,7 @@ public:
     // Get a string representation of this TraceDestination
     // Uses the supplied buffer to store the memory (or may return a string literal).
     // This will also print the TD's arguments.
-    const WCHAR * DbgToString(SString &buffer);
+    const CHAR * DbgToString(SString &buffer);
 #endif
 
     // Initialize for unmanaged code.
@@ -203,7 +203,6 @@ typedef VPTR(class StubManager) PTR_StubManager;
 
 class StubManager
 {
-#ifndef CROSSGEN_COMPILE
     friend class StubManagerIterator;
 
     VPTR_BASE_VTABLE_CLASS(StubManager)
@@ -211,13 +210,12 @@ class StubManager
   public:
     // Startup and shutdown the global stubmanager service.
     static void InitializeStubManagers();
-    static void TerminateStubManagers();
 
     // Does any sub manager recognise this EIP?
     static BOOL IsStub(PCODE stubAddress)
     {
         WRAPPER_NO_CONTRACT;
-        return FindStubManager(stubAddress) != NULL;
+        return FindStubManager(stubAddress) != nullptr;
     }
 
     // Find stub manager for given code address
@@ -337,10 +335,8 @@ private:
     PTR_StubManager m_pNextManager;
 
     static CrstStatic s_StubManagerListCrst;
-#endif // !CROSSGEN_COMPILE
 };
 
-#ifndef CROSSGEN_COMPILE
 
 //-----------------------------------------------------------
 // Stub manager for the prestub.  Although there is just one, it has
@@ -449,10 +445,14 @@ class StubLinkStubManager : public StubManager
 
     static void Init();
 
-#ifndef DACCESS_COMPILE
+#if !defined(DACCESS_COMPILE)
+    static BOOL TraceDelegateObject(BYTE *orDel, TraceDestination *trace);
+#endif // DACCESS_COMPILE
+
+#if !defined(DACCESS_COMPILE)
     StubLinkStubManager() : StubManager(), m_rangeList() {LIMITED_METHOD_CONTRACT;}
     ~StubLinkStubManager() {WRAPPER_NO_CONTRACT;}
-#endif
+#endif // DACCESS_COMPILE
 
   protected:
     LockedRangeList m_rangeList;
@@ -466,6 +466,7 @@ class StubLinkStubManager : public StubManager
         return PTR_RangeList(addr);
     }
 
+    void RemoveStubRange(BYTE* start, UINT length);
 
     virtual BOOL CheckIsStub_Internal(PCODE stubStartAddress);
 
@@ -594,8 +595,6 @@ class RangeSectionStubManager : public StubManager
 
     static StubCodeBlockKind GetStubKind(PCODE stubStartAddress);
 
-    static PCODE GetMethodThunkTarget(PCODE stubStartAddress);
-
   public:
 #ifdef _DEBUG
     virtual const char * DbgGetName() { LIMITED_METHOD_CONTRACT; return "RangeSectionStubManager"; }
@@ -628,7 +627,7 @@ class RangeSectionStubManager : public StubManager
 typedef VPTR(class ILStubManager) PTR_ILStubManager;
 
 #ifdef FEATURE_COMINTEROP
-struct ComPlusCallInfo;
+struct CLRToCOMCallInfo;
 #endif // FEATURE_COMINTEROP
 
 class ILStubManager : public StubManager
@@ -665,10 +664,6 @@ class ILStubManager : public StubManager
     virtual BOOL DoTraceStub(PCODE stubStartAddress, TraceDestination *trace);
 
 #ifndef DACCESS_COMPILE
-#ifdef FEATURE_COMINTEROP
-    static PCODE GetCOMTarget(Object *pThis, ComPlusCallInfo *pComPlusCallInfo);
-#endif // FEATURE_COMINTEROP
-
     virtual BOOL TraceManager(Thread *thread,
                               TraceDestination *trace,
                               T_CONTEXT *pContext,
@@ -685,7 +680,7 @@ class ILStubManager : public StubManager
 };
 
 // This is used to recognize
-//   GenericComPlusCallStub()
+//   GenericCLRToCOMCallStub()
 //   VarargPInvokeStub()
 //   GenericPInvokeCalliHelper()
 typedef VPTR(class InteropDispatchStubManager) PTR_InteropDispatchStubManager;
@@ -725,68 +720,6 @@ class InteropDispatchStubManager : public StubManager
   protected:
     virtual LPCWSTR GetStubManagerName(PCODE addr)
         { LIMITED_METHOD_CONTRACT; return W("InteropDispatchStub"); }
-#endif
-};
-
-//
-// Since we don't generate delegate invoke stubs at runtime on WIN64, we
-// can't use the StubLinkStubManager for these stubs.  Instead, we create
-// an additional DelegateInvokeStubManager instead.
-//
-typedef VPTR(class DelegateInvokeStubManager) PTR_DelegateInvokeStubManager;
-
-class DelegateInvokeStubManager : public StubManager
-{
-    VPTR_VTABLE_CLASS(DelegateInvokeStubManager, StubManager)
-
-  public:
-
-    SPTR_DECL(DelegateInvokeStubManager, g_pManager);
-
-    static void Init();
-
-#if !defined(DACCESS_COMPILE)
-    DelegateInvokeStubManager() : StubManager(), m_rangeList() {LIMITED_METHOD_CONTRACT;}
-    ~DelegateInvokeStubManager() {WRAPPER_NO_CONTRACT;}
-#endif // DACCESS_COMPILE
-
-    BOOL AddStub(Stub* pStub);
-    void RemoveStub(Stub* pStub);
-
-#ifdef _DEBUG
-    virtual const char * DbgGetName() { LIMITED_METHOD_CONTRACT; return "DelegateInvokeStubManager"; }
-#endif
-
-    virtual BOOL CheckIsStub_Internal(PCODE stubStartAddress);
-
-#if !defined(DACCESS_COMPILE)
-    virtual BOOL TraceManager(Thread *thread, TraceDestination *trace, T_CONTEXT *pContext, BYTE **pRetAddr);
-    static BOOL TraceDelegateObject(BYTE *orDel, TraceDestination *trace);
-#endif // DACCESS_COMPILE
-
-  private:
-
-    virtual BOOL DoTraceStub(PCODE stubStartAddress, TraceDestination *trace);
-
-   protected:
-    LockedRangeList m_rangeList;
-   public:
-    // Get dac-ized pointer to rangelist.
-    PTR_RangeList GetRangeList()
-    {
-        SUPPORTS_DAC;
-
-        TADDR addr = PTR_HOST_MEMBER_TADDR(DelegateInvokeStubManager, this, m_rangeList);
-        return PTR_RangeList(addr);
-    }
-
-
-#ifdef DACCESS_COMPILE
-    virtual void DoEnumMemoryRegions(CLRDataEnumMemoryFlags flags);
-
-  protected:
-    virtual LPCWSTR GetStubManagerName(PCODE addr)
-        { LIMITED_METHOD_CONTRACT; return W("DelegateInvokeStub"); }
 #endif
 };
 
@@ -920,7 +853,6 @@ public:
 #endif
     }
 
-#ifndef CROSSGEN_COMPILE
     static PCODE GetRetAddrFromMulticastILStubFrame(T_CONTEXT * pContext)
     {
         /*
@@ -950,7 +882,6 @@ public:
         return NULL;
 #endif
     }
-#endif // !CROSSGEN_COMPILE
 
     static TADDR GetSecondArg(T_CONTEXT * pContext)
     {
@@ -974,5 +905,4 @@ public:
 
 };
 
-#endif // !CROSSGEN_COMPILE
 #endif // !__stubmgr_h__

@@ -12,7 +12,7 @@ using Xunit;
 
 namespace System.Runtime.Serialization.Formatters.Tests
 {
-    [ConditionalClass(typeof(PlatformDetection), nameof(PlatformDetection.IsBinaryFormatterSupported))]
+    [ConditionalClass(typeof(TestConfiguration), nameof(TestConfiguration.IsBinaryFormatterEnabled))]
     public static class SerializationGuardTests
     {
         [Fact]
@@ -91,7 +91,7 @@ namespace System.Runtime.Serialization.Formatters.Tests
         {
             string tempPath = Path.GetTempFileName();
             File.WriteAllText(tempPath, "This better not be written...");
-            throw new InvalidOperationException("Unreachable code (SerializationGuard should have kicked in)");
+            throw new UnreachableException("Unreachable code (SerializationGuard should have kicked in)");
         }
 
         public void GetObjectData(SerializationInfo info, StreamingContext context)

@@ -12,13 +12,12 @@ using CultureInfo = System.Globalization.CultureInfo;
 namespace System
 {
     // Made serializable in anticipation of this class eventually having state.
-    internal class OleAutBinder : DefaultBinder
+    internal sealed class OleAutBinder : DefaultBinder
     {
         // ChangeType
         // This binder uses OLEAUT to change the type of the variant.
         public override object ChangeType(object value, Type type, CultureInfo? cultureInfo)
         {
-            Variant myValue = new Variant(value);
             cultureInfo ??= CultureInfo.CurrentCulture;
 
 #if DISPLAY_DEBUG_INFO
@@ -62,7 +61,7 @@ namespace System
 #endif
                 // Specify the LocalBool flag to have BOOL values converted to local language rather
                 // than 0 or -1.
-                object RetObj = OAVariantLib.ChangeType(myValue, type, OAVariantLib.LocalBool, cultureInfo).ToObject()!;
+                object RetObj = OAVariantLib.ChangeType(value, type, OAVariantLib.LocalBool, cultureInfo)!;
 
 #if DISPLAY_DEBUG_INFO
                 Console.WriteLine("Object returned from ChangeType is of type: " + RetObj.GetType().Name);

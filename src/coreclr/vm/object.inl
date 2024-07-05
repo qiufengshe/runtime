@@ -34,7 +34,7 @@ inline SIZE_T Object::GetSize()
 {
     LIMITED_METHOD_DAC_CONTRACT;
 
-    // mask the alignment bits because this methos is called during GC
+    // mask the alignment bits because this method is called during GC
     MethodTable *mT = GetGCSafeMethodTable();
 
     // strings have component size2, all other non-arrays should have 0
@@ -91,7 +91,7 @@ inline void Object::EnumMemoryRegions(void)
     // Unfortunately, DacEnumMemoryRegion takes only ULONG32 as size argument
     while (size > 0) {
         // Use 0x10000000 instead of MAX_ULONG32 so that the chunks stays aligned
-        SIZE_T chunk = min(size, 0x10000000);
+        SIZE_T chunk = min(size, (SIZE_T)0x10000000);
         // If for any reason we can't enumerate the memory, stop.  This would generally mean
         // that we have target corruption, or that the target is executing, etc.
         if (!DacEnumMemoryRegion(ptr, chunk))
@@ -114,7 +114,7 @@ FORCEINLINE bool Object::TryEnterObjMonitorSpinHelper()
     } CONTRACTL_END;
 
     Thread *pCurThread = GetThread();
-    if (pCurThread->CatchAtSafePointOpportunistic())
+    if (pCurThread->CatchAtSafePoint())
     {
         return false;
     }
@@ -191,7 +191,7 @@ inline /* static */ unsigned ArrayBase::GetLowerBoundsOffset(MethodTable* pMT)
         sizeof(INT32);
 }
 
-// Get the element type for the array, this works whether the the element
+// Get the element type for the array, this works whether the element
 // type is stored in the array or not
 inline TypeHandle ArrayBase::GetArrayElementTypeHandle() const
 {
@@ -270,40 +270,6 @@ inline TypeHandle Object::GetGCSafeTypeHandle() const
     _ASSERTE(pMT != NULL);
 
     return TypeHandle(pMT);
-}
-
-template<class F>
-inline void FindByRefPointerOffsetsInByRefLikeObject(PTR_MethodTable pMT, SIZE_T baseOffset, const F processPointerOffset)
-{
-    WRAPPER_NO_CONTRACT;
-    _ASSERTE(pMT != nullptr);
-    _ASSERTE(pMT->IsByRefLike());
-
-    if (pMT->HasSameTypeDefAs(g_pByReferenceClass))
-    {
-        processPointerOffset(baseOffset);
-        return;
-    }
-
-    ApproxFieldDescIterator fieldIterator(pMT, ApproxFieldDescIterator::INSTANCE_FIELDS);
-    for (FieldDesc *pFD = fieldIterator.Next(); pFD != NULL; pFD = fieldIterator.Next())
-    {
-        if (pFD->GetFieldType() != ELEMENT_TYPE_VALUETYPE)
-        {
-            continue;
-        }
-
-        // TODO: GetApproxFieldTypeHandleThrowing may throw. This is a potential stress problem for fragile NGen of non-CoreLib
-        // assemblies. It won't ever throw for CoreCLR with R2R. Figure out if anything needs to be done to deal with the
-        // exception.
-        PTR_MethodTable pFieldMT = pFD->GetApproxFieldTypeHandleThrowing().AsMethodTable();
-        if (!pFieldMT->IsByRefLike())
-        {
-            continue;
-        }
-
-        FindByRefPointerOffsetsInByRefLikeObject(pFieldMT, baseOffset + pFD->GetOffset(), processPointerOffset);
-    }
 }
 
 #endif  // _OBJECT_INL_

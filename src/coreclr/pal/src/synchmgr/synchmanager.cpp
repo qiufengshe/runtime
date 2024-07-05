@@ -28,6 +28,7 @@ SET_DEFAULT_DEBUG_CHANNEL(SYNC); // some headers have code with asserts, so do t
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <sched.h>
 #include <signal.h>
@@ -410,7 +411,7 @@ namespace CorUnix
                 break;
             }
             case WaitSucceeded:
-            case MutexAbondoned:
+            case MutexAbandoned:
                 *pdwSignaledObject = dwSigObjIdx;
                 break;
             default:
@@ -613,7 +614,7 @@ namespace CorUnix
             // Signal the object and trigger thread awakening
             psdSynchData->Signal(pthrCurrent, 1, false);
 
-            // Release reference to to SynchData
+            // Release reference to SynchData
             psdSynchData->Release(pthrCurrent);
 
             // Return node to the cache
@@ -643,7 +644,7 @@ namespace CorUnix
             // if the thread is currently waiting/sleeping and it wakes up
             // before shutdown code manage to suspend it, it will be rerouted
             // to ThreadPrepareForShutdown (that will be done without holding
-            // any internal lock, in a way to accomodate shutdown time thread
+            // any internal lock, in a way to accommodate shutdown time thread
             // suspension).
             // At this time we also unregister the wait, so no dummy nodes are
             // left around on waiting objects.
@@ -1500,7 +1501,7 @@ namespace CorUnix
 
         if ((NULL == pSynchManager) || ((LONG)SynchMgrStatusRunning != s_lInitStatus))
         {
-            ERROR("Trying to to create worker thread in invalid state\n");
+            ERROR("Trying to create worker thread in invalid state\n");
             return ERROR_INTERNAL_ERROR;
         }
 
@@ -1707,6 +1708,10 @@ namespace CorUnix
             reinterpret_cast<CPalSynchronizationManager*>(pArg);
         CPalThread * pthrWorker = InternalGetCurrentThread();
 
+        InternalSetThreadDescription(pthrWorker,
+                                     PAL_GetCurrentThread(),
+                                     W(".NET SynchManager"));
+
         while (!fWorkerIsDone)
         {
             LONG lProcessCount;
@@ -1836,7 +1841,7 @@ namespace CorUnix
                         // resetting the data by acquiring the object ownership
                         if (psdSynchData->IsAbandoned())
                         {
-                            twrWakeUpReason = MutexAbondoned;
+                            twrWakeUpReason = MutexAbandoned;
                         }
 
                         // Acquire ownership
@@ -2328,7 +2333,7 @@ namespace CorUnix
                 }
                 else if (0 > iRet)
                 {
-                    ERROR("Unable to read %d bytes from the the process pipe "
+                    ERROR("Unable to read %d bytes from the process pipe "
                           "[pipe=%d ret=%d errno=%d (%s)]\n", iBytes - iBytesRead,
                           m_iProcessPipeRead, iRet, errno, strerror(errno));
                     goto RBFPP_exit;
@@ -2977,7 +2982,7 @@ namespace CorUnix
     Method:
       CPalSynchronizationManager::MarkWaitForDelegatedObjectSignalingInProgress
 
-    Marks all the thread waiting list nodes involved in the the current wait-all
+    Marks all the thread waiting list nodes involved in the current wait-all
     for "delegated object signaling in progress", so that this wait cannot be
     involved in another delegated object signaling that may happen while the
     current object singaling is being tranfered to the target process (while
@@ -4623,7 +4628,11 @@ namespace CorUnix
                 ptsAbsTmo->tv_nsec = tv.tv_usec * tccMicroSecondsToNanoSeconds;
             }
 #else
-            #error "Don't know how to get hi-res current time on this platform"
+#ifdef DBI_COMPONENT_MONO
+    return ERROR_INTERNAL_ERROR;
+#else
+    #error "Don't know how to get hi-res current time on this platform"
+#endif
 #endif // HAVE_WORKING_CLOCK_GETTIME, HAVE_WORKING_GETTIMEOFDAY
 #if HAVE_CLOCK_MONOTONIC && HAVE_PTHREAD_CONDATTR_SETCLOCK
         }

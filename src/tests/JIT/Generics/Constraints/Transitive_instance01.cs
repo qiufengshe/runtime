@@ -3,6 +3,7 @@
 //
 
 using System;
+using Xunit;
 
 public interface IFoo { }
 
@@ -32,7 +33,7 @@ public struct GenStruct<T> where T : IFoo
         return new Transition<T>();
     }
 }
-public class Test
+public class Test_Transitive_instance01
 {
     public static int counter = 0;
     public static bool result = true;
@@ -47,7 +48,8 @@ public class Test
 
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         Eval(new GenClass<FooClass>().TransitiveConstraint().GetType().Equals(typeof(Transition<FooClass>)));
         Eval(new GenClass<FooStruct>().TransitiveConstraint().GetType().Equals(typeof(Transition<FooStruct>)));

@@ -12,7 +12,7 @@ namespace Internal.TypeSystem
         /// <summary>
         /// Bit flags for layout
         /// </summary>
-        private class FieldLayoutFlags
+        private static class FieldLayoutFlags
         {
             /// <summary>
             /// True if ContainsGCPointers has been computed
@@ -53,9 +53,34 @@ namespace Internal.TypeSystem
             /// True if the layout of the type is not stable for use in the ABI
             /// </summary>
             public const int ComputedInstanceLayoutAbiUnstable = 0x80;
+
+            /// <summary>
+            /// True if IsUnsafeValueType has been computed
+            /// </summary>
+            public const int ComputedIsUnsafeValueType = 0x100;
+
+            /// <summary>
+            /// True if type transitively has UnsafeValueTypeAttribute
+            /// </summary>
+            public const int IsUnsafeValueType = 0x200;
+
+            /// <summary>
+            /// True if the type transitively has any types with LayoutKind.Auto in its layout.
+            /// </summary>
+            public const int IsAutoLayoutOrHasAutoLayoutFields = 0x400;
+
+            /// <summary>
+            /// True if the type transitively has an Int128 in it or is an Int128
+            /// </summary>
+            public const int IsInt128OrHasInt128Fields = 0x800;
+
+            /// <summary>
+            /// True if the type transitively has a Vector<T> in it or is Vector<T>
+            /// </summary>
+            public const int IsVectorTOrHasVectorTFields = 0x1000;
         }
 
-        private class StaticBlockInfo
+        private sealed class StaticBlockInfo
         {
             public StaticsBlock NonGcStatics;
             public StaticsBlock GcStatics;
@@ -63,17 +88,15 @@ namespace Internal.TypeSystem
             public StaticsBlock ThreadGcStatics;
         }
 
-        ThreadSafeFlags _fieldLayoutFlags;
-
-        LayoutInt _instanceFieldSize;
-        LayoutInt _instanceFieldAlignment;
-        LayoutInt _instanceByteCountUnaligned;
-        LayoutInt _instanceByteAlignment;
+        private ThreadSafeFlags _fieldLayoutFlags;
+        private LayoutInt _instanceFieldSize;
+        private LayoutInt _instanceFieldAlignment;
+        private LayoutInt _instanceByteCountUnaligned;
+        private LayoutInt _instanceByteAlignment;
 
         // Information about various static blocks is rare, so we keep it out of line.
-        StaticBlockInfo _staticBlockInfo;
-
-        ValueTypeShapeCharacteristics _valueTypeShapeCharacteristics;
+        private StaticBlockInfo _staticBlockInfo;
+        private ValueTypeShapeCharacteristics _valueTypeShapeCharacteristics;
 
         /// <summary>
         /// Does a type transitively have any fields which are GC object pointers
@@ -87,6 +110,66 @@ namespace Internal.TypeSystem
                     ComputeTypeContainsGCPointers();
                 }
                 return _fieldLayoutFlags.HasFlags(FieldLayoutFlags.ContainsGCPointers);
+            }
+        }
+
+        /// <summary>
+        /// Does a type transitively have any fields which are marked with System.Runtime.CompilerServices.UnsafeValueTypeAttribute
+        /// </summary>
+        public bool IsUnsafeValueType
+        {
+            get
+            {
+                if (!_fieldLayoutFlags.HasFlags(FieldLayoutFlags.ComputedIsUnsafeValueType))
+                {
+                    ComputeIsUnsafeValueType();
+                }
+                return _fieldLayoutFlags.HasFlags(FieldLayoutFlags.IsUnsafeValueType);
+            }
+        }
+
+        /// <summary>
+        /// Does a type have auto-layout or transitively have any fields of a type with auto-layout.
+        /// </summary>
+        public virtual bool IsAutoLayoutOrHasAutoLayoutFields
+        {
+            get
+            {
+                if (!_fieldLayoutFlags.HasFlags(FieldLayoutFlags.ComputedInstanceTypeLayout))
+                {
+                    ComputeInstanceLayout(InstanceLayoutKind.TypeAndFields);
+                }
+                return _fieldLayoutFlags.HasFlags(FieldLayoutFlags.IsAutoLayoutOrHasAutoLayoutFields);
+            }
+        }
+
+        /// <summary>
+        /// Is a type Int128 or transitively have any fields of a type Int128.
+        /// </summary>
+        public virtual bool IsInt128OrHasInt128Fields
+        {
+            get
+            {
+                if (!_fieldLayoutFlags.HasFlags(FieldLayoutFlags.ComputedInstanceTypeLayout))
+                {
+                    ComputeInstanceLayout(InstanceLayoutKind.TypeAndFields);
+                }
+                return _fieldLayoutFlags.HasFlags(FieldLayoutFlags.IsInt128OrHasInt128Fields);
+            }
+        }
+
+        /// <summary>
+        /// Is a type Vector<T> or transitively have any fields of a type Vector<T>.
+        /// </summary>
+        public virtual bool IsVectorTOrHasVectorTFields
+        {
+            get
+            {
+                if (!_fieldLayoutFlags.HasFlags(FieldLayoutFlags.ComputedInstanceTypeLayout))
+                {
+                    ComputeInstanceLayout(InstanceLayoutKind.TypeAndFields);
+                }
+                return _fieldLayoutFlags.HasFlags(FieldLayoutFlags.IsVectorTOrHasVectorTFields);
             }
         }
 
@@ -158,6 +241,27 @@ namespace Internal.TypeSystem
                     ComputeInstanceLayout(InstanceLayoutKind.TypeOnly);
                 }
                 return _instanceByteAlignment;
+            }
+        }
+
+        public bool IsZeroSizedReferenceType
+        {
+            get
+            {
+                if (Category != TypeFlags.Class)
+                {
+                    throw new InvalidOperationException("Only reference types are allowed.");
+                }
+
+                if (!_fieldLayoutFlags.HasFlags(FieldLayoutFlags.ComputedInstanceTypeLayout))
+                {
+                    ComputeInstanceLayout(InstanceLayoutKind.TypeOnly);
+                }
+
+                // test that size without padding is zero:
+                //   _instanceByteCountUnaligned - _instanceByteAlignment == LayoutInt.Zero
+                // simplified to:
+                return _instanceByteCountUnaligned == _instanceByteAlignment;
             }
         }
 
@@ -359,6 +463,18 @@ namespace Internal.TypeSystem
             {
                 _fieldLayoutFlags.AddFlags(FieldLayoutFlags.ComputedInstanceLayoutAbiUnstable);
             }
+            if (computedLayout.IsAutoLayoutOrHasAutoLayoutFields)
+            {
+                _fieldLayoutFlags.AddFlags(FieldLayoutFlags.IsAutoLayoutOrHasAutoLayoutFields);
+            }
+            if (computedLayout.IsInt128OrHasInt128Fields)
+            {
+                _fieldLayoutFlags.AddFlags(FieldLayoutFlags.IsInt128OrHasInt128Fields);
+            }
+            if (computedLayout.IsVectorTOrHasVectorTFields)
+            {
+                _fieldLayoutFlags.AddFlags(FieldLayoutFlags.IsVectorTOrHasVectorTFields);
+            }
 
             if (computedLayout.Offsets != null)
             {
@@ -424,6 +540,21 @@ namespace Internal.TypeSystem
             if (this.Context.GetLayoutAlgorithmForType(this).ComputeContainsGCPointers(this))
             {
                 flagsToAdd |= FieldLayoutFlags.ContainsGCPointers;
+            }
+
+            _fieldLayoutFlags.AddFlags(flagsToAdd);
+        }
+
+        public void ComputeIsUnsafeValueType()
+        {
+            if (_fieldLayoutFlags.HasFlags(FieldLayoutFlags.ComputedIsUnsafeValueType))
+                return;
+
+            int flagsToAdd = FieldLayoutFlags.ComputedIsUnsafeValueType;
+
+            if (this.Context.GetLayoutAlgorithmForType(this).ComputeIsUnsafeValueType(this))
+            {
+                flagsToAdd |= FieldLayoutFlags.IsUnsafeValueType;
             }
 
             _fieldLayoutFlags.AddFlags(flagsToAdd);

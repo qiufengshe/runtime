@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using Xunit;
 
 public class Foo 
 {
@@ -21,7 +22,7 @@ public class FooSub : Foo
 
 }
 
-public class Test 
+public class Test_method001c 
 {
 	public static int counter = 0;
 	public static bool result = true;
@@ -36,7 +37,8 @@ public class Test
 	
 	}
 	
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		FooSub t = new FooSub();
 

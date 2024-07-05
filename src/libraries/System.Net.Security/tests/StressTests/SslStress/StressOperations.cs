@@ -24,7 +24,7 @@ namespace SslStress
 {
     public struct DataSegment
     {
-        private readonly byte[] _buffer;
+        private byte[] _buffer;
 
         public DataSegment(int length)
         {
@@ -37,7 +37,12 @@ namespace SslStress
         public Span<byte> AsSpan() => new Span<byte>(_buffer, 0, Length);
 
         public ulong Checksum => CRC.CalculateCRC(AsSpan());
-        public void Return() => ArrayPool<byte>.Shared.Return(_buffer);
+        public void Return()
+        {
+            byte[] toReturn = _buffer;
+            _buffer = null;
+            ArrayPool<byte>.Shared.Return(toReturn);
+        }
 
         /// Create and populate a segment with random data
         public static DataSegment CreateRandom(Random random, int maxLength)
@@ -189,6 +194,36 @@ namespace SslStress
     {
         public StressClient(Configuration config) : base(config) { }
 
+        public async Task InitializeAsync()
+        {
+            Console.WriteLine($"Trying to connect to the server {_config.ServerEndpoint}");
+
+            // Before starting the full-blown test, make sure can communicate with the server
+            // Needed for scenaria where we're deploying server & client in separate containers, simultaneously.
+            await TestConnection(maxRetries: 10);
+
+            Console.WriteLine($"Connected successfully.");
+
+            async Task TestConnection(int maxRetries)
+            {
+                for (int remainingRetries = maxRetries; ; remainingRetries--)
+                {
+                    try
+                    {
+                        using var client = new TcpClient();
+                        await client.ConnectAsync(_config.ServerEndpoint.Address, _config.ServerEndpoint.Port);
+                        using var sslStream = await EstablishSslStream(client.GetStream(), CancellationToken.None);
+                        return;
+                    }
+                    catch (SocketException) when (remainingRetries > 0)
+                    {
+                        Console.WriteLine($"Test connection to {_config.ServerEndpoint} failed, {remainingRetries} attempts remaining");
+                        await Task.Delay(TimeSpan.FromSeconds(1));
+                    }
+                }
+            }
+        }
+
         protected override async Task HandleConnection(int workerId, long jobId, SslStream stream, TcpClient client, Random random, TimeSpan duration, CancellationToken token)
         {
             // token used for signalling cooperative cancellation; do not pass this to SslStream methods
@@ -253,7 +288,7 @@ namespace SslStress
                             await Task.Delay(20);
                         }
 
-                        if(isLogged)
+                        if (isLogged)
                         {
                             Console.WriteLine($"worker #{workerId}: resumed tx after {stopwatch.Elapsed}");
                         }
@@ -292,17 +327,17 @@ namespace SslStress
                 {
                     await Task.Delay(500);
 
-                    if((DateTime.Now - lastWrite) >= TimeSpan.FromSeconds(10))
+                    if ((DateTime.Now - lastWrite) >= TimeSpan.FromSeconds(10))
                     {
                         throw new Exception($"worker #{workerId} job #{jobId} has stopped writing bytes to server");
                     }
 
-                    if((DateTime.Now - lastRead) >= TimeSpan.FromSeconds(10))
+                    if ((DateTime.Now - lastRead) >= TimeSpan.FromSeconds(10))
                     {
                         throw new Exception($"worker #{workerId} job #{jobId} has stopped receiving bytes from server");
                     }
                 }
-                while(!token.IsCancellationRequested && !connectionLifetimeToken.IsCancellationRequested);
+                while (!token.IsCancellationRequested && !connectionLifetimeToken.IsCancellationRequested);
             }
         }
     }

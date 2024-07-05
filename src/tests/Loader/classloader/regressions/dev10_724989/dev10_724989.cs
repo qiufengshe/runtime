@@ -3,6 +3,7 @@
 
 using System;
 
+using Xunit;
 
 //====================  Cases of nested classes  ====================//
 class Outer1
@@ -91,7 +92,7 @@ class Derived4<T> : Base4<T>
 }
 
 
-public class Test
+public class Test_dev10_724989
 {
     static bool Success = true;
 
@@ -148,7 +149,8 @@ public class Test
     }
 
 
-    static int Main()
+    [Fact]
+    public static void TestEntryPoint()
     {
         NestedClassesTest();
         Console.WriteLine();
@@ -156,12 +158,6 @@ public class Test
         DerivedClassesTest();
         Console.WriteLine();
 
-        if (Success)
-        {
-            Console.WriteLine("Pass");
-            return 100;
-        }
-        Console.WriteLine("Fail");
-        return -1;
+        Assert.True(Success);
     }
 }

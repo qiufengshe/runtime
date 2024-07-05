@@ -17,9 +17,12 @@ MONO_HWCAP_VAR(arm_has_thumb2)
 
 #elif defined (TARGET_ARM64)
 
-// Nothing here yet.
-
-#elif defined (TARGET_MIPS)
+MONO_HWCAP_VAR(arm64_has_crc32)
+MONO_HWCAP_VAR(arm64_has_dot)
+MONO_HWCAP_VAR(arm64_has_rdm)
+MONO_HWCAP_VAR(arm64_has_sha1)
+MONO_HWCAP_VAR(arm64_has_sha256)
+MONO_HWCAP_VAR(arm64_has_aes)
 
 // Nothing here yet.
 
@@ -60,14 +63,10 @@ MONO_HWCAP_VAR(s390x_has_mie3)
 MONO_HWCAP_VAR(s390x_has_gs)
 MONO_HWCAP_VAR(s390x_has_vef2)
 MONO_HWCAP_VAR(s390x_has_eif)
-
-#elif defined (TARGET_SPARC) || defined (TARGET_SPARC64)
-
-MONO_HWCAP_VAR(sparc_is_v9)
+MONO_HWCAP_VAR(s390x_has_lsoc2)
 
 #elif defined (TARGET_X86) || defined (TARGET_AMD64)
 
-MONO_HWCAP_VAR(x86_is_xen)
 MONO_HWCAP_VAR(x86_has_cmov)
 MONO_HWCAP_VAR(x86_has_fcmov)
 MONO_HWCAP_VAR(x86_has_sse1)
@@ -81,7 +80,9 @@ MONO_HWCAP_VAR(x86_has_lzcnt)
 MONO_HWCAP_VAR(x86_has_popcnt)
 MONO_HWCAP_VAR(x86_has_avx)
 
-gboolean
-mono_hwcap_x86_call_cpuidex (int id, int sub_id, int *p_eax, int *p_ebx, int *p_ecx, int *p_edx);
+#ifndef MONO_X86_CPUIDEX
+#define MONO_X86_CPUIDEX
+gboolean mono_hwcap_x86_call_cpuidex (int id, int sub_id, int *p_eax, int *p_ebx, int *p_ecx, int *p_edx);
+#endif
 
 #endif

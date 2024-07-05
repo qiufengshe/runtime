@@ -9,6 +9,40 @@
 #define EP_UNLIKELY(expr) ep_rt_redefine
 
 /*
+ * EventPipe.
+ */
+
+#define ep_rt_method_desc_t ep_rt_redefine
+
+/*
+ * PAL.
+ */
+
+#define ep_rt_file_handle_t ep_rt_redefine
+
+#define ep_rt_wait_event_handle_t ep_rt_redefine
+
+#define ep_rt_lock_handle_t ep_rt_redefine
+
+#define ep_rt_spin_lock_handle_t ep_rt_redefine
+
+/*
+ * Thread.
+ */
+
+#define ep_rt_thread_handle_t ep_rt_redefine;
+
+#define ep_rt_thread_activity_id_handle_t ep_rt_redefine;
+
+#define ep_rt_thread_id_t ep_rt_redefine;
+
+#define ep_rt_thread_start_func ep_rt_redefine;
+
+#define ep_rt_thread_start_func_return_t ep_rt_redefine
+
+#define ep_rt_thread_params_t ep_rt_redefine
+
+/*
  * ErrorHandling.
  */
 

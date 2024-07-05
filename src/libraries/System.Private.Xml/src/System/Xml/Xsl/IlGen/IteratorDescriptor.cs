@@ -4,15 +4,15 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Xml;
-using System.Xml.XPath;
-using System.Xml.Schema;
-using System.Globalization;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Xml;
+using System.Xml.Schema;
+using System.Xml.XPath;
 using System.Xml.Xsl.Runtime;
-using System.Diagnostics.CodeAnalysis;
 
 namespace System.Xml.Xsl.IlGen
 {
@@ -35,7 +35,12 @@ namespace System.Xml.Xsl.IlGen
     /// True--Branch if boolean expression evaluates to true
     /// False--Branch if boolean expression evaluates to false
     /// </summary>
-    internal enum BranchingContext { None, OnTrue, OnFalse };
+    internal enum BranchingContext
+    {
+        None,
+        OnTrue,
+        OnFalse
+    };
 
     /// <summary>
     /// Describes the Clr type and location of items returned by an iterator.
@@ -93,7 +98,7 @@ namespace System.Xml.Xsl.IlGen
         {
             Debug.Assert(loc.LocalType == itemStorageType ||
                          typeof(IList<>).MakeGenericType(itemStorageType).IsAssignableFrom(loc.LocalType),
-                         "Type " + itemStorageType + " does not match the local variable's type");
+                $"Type {itemStorageType} does not match the local variable's type");
 
             StorageDescriptor storage = default;
             storage._location = ItemLocation.Local;
@@ -109,7 +114,7 @@ namespace System.Xml.Xsl.IlGen
         public static StorageDescriptor Current(LocalBuilder locIter, MethodInfo currentMethod, Type itemStorageType)
         {
             Debug.Assert(currentMethod.ReturnType == itemStorageType,
-                         "Type " + itemStorageType + " does not match type of Current property.");
+                         $"Type {itemStorageType} does not match type of Current property.");
 
             StorageDescriptor storage = default;
             storage._location = ItemLocation.Current;
@@ -125,7 +130,7 @@ namespace System.Xml.Xsl.IlGen
         {
             Debug.Assert(methGlobal.ReturnType == itemStorageType ||
                          typeof(IList<>).MakeGenericType(itemStorageType).IsAssignableFrom(methGlobal.ReturnType),
-                         "Type " + itemStorageType + " does not match the global method's return type");
+                $"Type {itemStorageType} does not match the global method's return type");
 
             StorageDescriptor storage = default;
             storage._location = ItemLocation.Global;
@@ -227,7 +232,7 @@ namespace System.Xml.Xsl.IlGen
     /// <summary>
     /// A data class to hold information for a "Current" StorageLocation.
     /// </summary>
-    internal class CurrentContext
+    internal sealed class CurrentContext
     {
         public CurrentContext(LocalBuilder local, MethodInfo currentMethod)
         {
@@ -243,7 +248,8 @@ namespace System.Xml.Xsl.IlGen
     /// Iterators are joined together, are nested within each other, and reference each other.  This internal class
     /// contains detailed information about iteration next labels, caching, iterator item location, etc.
     /// </summary>
-    internal class IteratorDescriptor
+    [RequiresDynamicCode("Creates DynamicMethods")]
+    internal sealed class IteratorDescriptor
     {
         private GenerateHelper _helper;
 

@@ -15,18 +15,11 @@
 #include "contract.h"
 #include "sstring.h"
 
-// Maximum size for a string in event log entry
-#define MAX_SIZE_EVENTLOG_ENTRY_STRING 0x8000 // decimal 32768
-
-// The (approx.) maximum size that Vista appears to allow. Post discussion with the OS event log team,
-// it has been identified that Vista has taken a breaking change in ReportEventW API implementation
-// without getting it publicly documented.
+// The (approx.) maximum size that EventLog appears to allow.
 //
-// An event entry comprises of string to be written and event header information. Prior to Vista,
-// 32K length strings were allowed and event header size was over it. Vista onwards, the total
-// permissible length of the string and event header became 32K, resulting in strings becoming
-// shorter in length. Hence, the change in size.
-#define MAX_SIZE_EVENTLOG_ENTRY_STRING_WINVISTA 0x7C62 // decimal 31842
+// An event entry comprises of string to be written and event header information.
+// The total permissible length of the string and event header is 32K.
+#define MAX_SIZE_EVENTLOG_ENTRY_STRING 0x7C62 // decimal 31842
 
 class EventReporter
 {
@@ -52,7 +45,7 @@ public:
     // Construct
     EventReporter(EventReporterType type);
     // Add extra info into description part of the log
-    void AddDescription(__in WCHAR *pString);
+    void AddDescription(_In_ WCHAR *pString);
     void AddDescription(SString& s);
     // Start callstack record
     void BeginStackTrace();

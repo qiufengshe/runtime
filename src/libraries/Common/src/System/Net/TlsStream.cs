@@ -1,15 +1,19 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-#nullable enable
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
+
+#pragma warning disable SYSLIB0014 // ServicePointManager is obsolete
+// This type is used by FtpWebRequest (already obsolete) and SmtpClient (discouraged).
 
 namespace System.Net
 {
-    internal class TlsStream : NetworkStream
+    internal sealed class TlsStream : NetworkStream
     {
         private readonly SslStream _sslStream;
         private readonly string _host;
@@ -47,6 +51,11 @@ namespace System.Net
             _sslStream.EndAuthenticateAsClient(asyncResult);
         }
 
+        public override void Write(byte[] buffer, int offset, int size)
+        {
+            _sslStream.Write(buffer, offset, size);
+        }
+
         public override IAsyncResult BeginWrite(byte[] buffer, int offset, int size, AsyncCallback? callback, object? state)
         {
             return _sslStream.BeginWrite(buffer, offset, size, callback, state);
@@ -57,14 +66,19 @@ namespace System.Net
             _sslStream.EndWrite(result);
         }
 
-        public override void Write(byte[] buffer, int offset, int size)
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
-            _sslStream.Write(buffer, offset, size);
+            return _sslStream.WriteAsync(buffer, offset, count, cancellationToken);
         }
 
         public override int Read(byte[] buffer, int offset, int size)
         {
             return _sslStream.Read(buffer, offset, size);
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            return _sslStream.ReadAsync(buffer, offset, count, cancellationToken);
         }
 
         public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state)
@@ -81,10 +95,7 @@ namespace System.Net
         {
             base.Close();
 
-            if (_sslStream != null)
-            {
-                _sslStream.Close();
-            }
+            _sslStream?.Close();
         }
     }
 }

@@ -68,7 +68,7 @@ namespace System.Globalization
                 Debug.Assert(ret >= -1 && ret <= source.Length);
 
                 // SetLastError is only performed under debug builds.
-                Debug.Assert(ret >= 0 || Marshal.GetLastWin32Error() == Interop.Errors.ERROR_SUCCESS);
+                Debug.Assert(ret >= 0 || Marshal.GetLastPInvokeError() == Interop.Errors.ERROR_SUCCESS);
 
                 return ret;
             }
@@ -150,7 +150,7 @@ namespace System.Globalization
                 // Note in calls to LCMapStringEx below, the input buffer is specified in wchars (and wchar count),
                 // but the output buffer is specified in bytes (and byte count). This is because when generating
                 // sort keys, LCMapStringEx treats the output buffer as containing opaque binary data.
-                // See https://docs.microsoft.com/en-us/windows/desktop/api/winnls/nf-winnls-lcmapstringex.
+                // See https://learn.microsoft.com/windows/desktop/api/winnls/nf-winnls-lcmapstringex.
 
                 byte[]? borrowedArr = null;
                 Span<byte> span = sortKeyLength <= 512 ?
@@ -300,7 +300,7 @@ namespace System.Globalization
                 Debug.Assert(result >= -1 && result <= lpStringSource.Length);
 
                 // SetLastError is only performed under debug builds.
-                Debug.Assert(result >= 0 || Marshal.GetLastWin32Error() == Interop.Errors.ERROR_SUCCESS);
+                Debug.Assert(result >= 0 || Marshal.GetLastPInvokeError() == Interop.Errors.ERROR_SUCCESS);
 
                 return result;
             }
@@ -368,10 +368,10 @@ namespace System.Globalization
 
         private unsafe SortKey NlsCreateSortKey(string source, CompareOptions options)
         {
+            ArgumentNullException.ThrowIfNull(source);
+
             Debug.Assert(!GlobalizationMode.Invariant);
             Debug.Assert(GlobalizationMode.UseNls);
-
-            if (source == null) { throw new ArgumentNullException(nameof(source)); }
 
             if ((options & ValidCompareMaskOffFlags) != 0)
             {
@@ -506,7 +506,7 @@ namespace System.Globalization
                 // to allocate a temporary buffer large enough to hold intermediate state,
                 // or the destination buffer being too small.
 
-                if (Marshal.GetLastWin32Error() == Interop.Errors.ERROR_INSUFFICIENT_BUFFER)
+                if (Marshal.GetLastPInvokeError() == Interop.Errors.ERROR_INSUFFICIENT_BUFFER)
                 {
                     ThrowHelper.ThrowArgumentException_DestinationTooShort();
                 }

@@ -3,13 +3,15 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using Xunit;
 
 namespace ArrayBound
 {
     public delegate void RngTest();
-    internal class Class1
+    public class Class1
     {
-        private static int Main()
+        [Fact]
+        public static int TestEntryPoint()
         {
             int retVal = 100;
             int testNum = 0;
@@ -88,7 +90,7 @@ namespace ArrayBound
         public static void Test3()
         {
             int[] numbers = new int[100];
-            int upper = int.MinValue; ;
+            int upper = int.MinValue;
             int index;
             for (index = 0; index < upper - 1; index++)
             {

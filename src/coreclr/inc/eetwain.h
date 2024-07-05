@@ -35,8 +35,8 @@
 #define USE_GC_INFO_DECODER
 #endif
 
-#if (defined(TARGET_X86) && !defined(TARGET_UNIX)) || defined(TARGET_AMD64)
-#define HAS_QUICKUNWIND
+#ifdef TARGET_AMD64
+#define HAS_LIGHTUNWIND
 #endif
 
 #define CHECK_APP_DOMAIN    0
@@ -61,7 +61,7 @@ typedef struct _DAC_SLOT_LOCATION
 
 typedef void (*GCEnumCallback)(
     LPVOID          hCallback,      // callback data
-    OBJECTREF*      pObject,        // address of obect-reference we are reporting
+    OBJECTREF*      pObject,        // address of object-reference we are reporting
     uint32_t        flags           // is this a pinned and/or interior pointer
     DAC_ARG(DacSlotLocation loc)    // where the reference came from
 );
@@ -89,7 +89,6 @@ enum ICodeManagerFlags
     ExecutionAborted =  0x0002, // execution of this function has been aborted
                                     // (i.e. it will not continue execution at the
                                     // current location)
-    AbortingCall    =   0x0004, // The current call will never return
     UpdateAllRegs   =   0x0008, // update full register set
     CodeAltered     =   0x0010, // code of that function might be altered
                                     // (e.g. by debugger), need to call EE
@@ -103,6 +102,11 @@ enum ICodeManagerFlags
     NoReportUntracked
                     =   0x0080, // EnumGCRefs/EnumerateLiveSlots should *not* include
                                 // any untracked slots
+
+    LightUnwind     =   0x0100, // Unwind just enough to get return addresses
+    ReportFPBasedSlotsOnly
+                    =   0x0200, // EnumGCRefs/EnumerateLiveSlots should only include
+                                // slots that are based on the frame pointer
 };
 
 //*****************************************************************************
@@ -190,7 +194,6 @@ virtual TADDR GetAmbientSP(PREGDISPLAY     pContext,
 */
 virtual ULONG32 GetStackParameterSize(EECodeInfo* pCodeInfo) = 0;
 
-#ifndef CROSSGEN_COMPILE
 /*
     Unwind the current stack frame, i.e. update the virtual register
     set in pContext. This will be similar to the state after the function
@@ -202,9 +205,7 @@ virtual ULONG32 GetStackParameterSize(EECodeInfo* pCodeInfo) = 0;
 virtual bool UnwindStackFrame(PREGDISPLAY     pContext,
                               EECodeInfo     *pCodeInfo,
                               unsigned        flags,
-                              CodeManState   *pState,
-                              StackwalkCacheUnwindInfo  *pUnwindInfo) = 0;
-#endif // CROSSGEN_COMPILE
+                              CodeManState   *pState) = 0;
 
 /*
     Is the function currently at a "GC safe point" ?
@@ -213,9 +214,9 @@ virtual bool UnwindStackFrame(PREGDISPLAY     pContext,
 virtual bool IsGcSafe(EECodeInfo     *pCodeInfo,
                       DWORD           dwRelOffset) = 0;
 
-#if defined(TARGET_ARM) || defined(TARGET_ARM64)
+#if defined(TARGET_ARM) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
 virtual bool HasTailCalls(EECodeInfo *pCodeInfo) = 0;
-#endif // TARGET_ARM || TARGET_ARM64
+#endif // TARGET_ARM || TARGET_ARM64 || TARGET_LOONGARCH64 || TARGET_RISCV64
 
 #if defined(TARGET_AMD64) && defined(_DEBUG)
 /*
@@ -228,7 +229,6 @@ virtual unsigned FindEndOfLastInterruptibleRegion(unsigned curOffset,
                                                   GCInfoToken gcInfoToken) = 0;
 #endif // TARGET_AMD64 && _DEBUG
 
-#ifndef CROSSGEN_COMPILE
 /*
     Enumerate all live object references in that function using
     the virtual register set. Same reference location cannot be enumerated
@@ -242,9 +242,7 @@ virtual bool EnumGcRefs(PREGDISPLAY     pContext,
                         GCEnumCallback  pCallback,
                         LPVOID          hCallBack,
                         DWORD           relOffsetOverride = NO_OVERRIDE_OFFSET) = 0;
-#endif // !CROSSGEN_COMPILE
 
-#ifndef CROSSGEN_COMPILE
 /*
     For a non-static method, "this" pointer is passed in as argument 0.
     However, if there is a "ldarga 0" or "starg 0" in the IL,
@@ -257,22 +255,18 @@ virtual bool EnumGcRefs(PREGDISPLAY     pContext,
 */
 virtual OBJECTREF GetInstance(PREGDISPLAY     pContext,
                               EECodeInfo*     pCodeInfo) = 0;
-#endif // !CROSSGEN_COMPILE
 
-#ifndef CROSSGEN_COMPILE
 /*
-    Returns the extra argument passed to to shared generic code if it is still alive.
+    Returns the extra argument passed to shared generic code if it is still alive.
     Returns NULL in all other cases.
 */
 virtual PTR_VOID GetParamTypeArg(PREGDISPLAY     pContext,
                                  EECodeInfo *    pCodeInfo) = 0;
-#endif // !CROSSGEN_COMPILE
 
 // Returns the type of the context parameter (this, methodtable, methoddesc, or none)
 virtual GenericParamContextType GetParamContextType(PREGDISPLAY     pContext,
                                                     EECodeInfo *    pCodeInfo) = 0;
 
-#ifndef CROSSGEN_COMPILE
 /*
     Returns the offset of the GuardStack cookie if it exists.
     Returns NULL if there is no cookie.
@@ -280,7 +274,6 @@ virtual GenericParamContextType GetParamContextType(PREGDISPLAY     pContext,
 virtual void * GetGSCookieAddr(PREGDISPLAY     pContext,
                                EECodeInfo    * pCodeInfo,
                                CodeManState  * pState) = 0;
-#endif
 
 #ifndef USE_GC_INFO_DECODER
 /*
@@ -342,7 +335,7 @@ virtual void            LeaveCatch(GCInfoToken gcInfoToken,
                                    PCONTEXT pCtx)=0;
 #endif // FEATURE_EH_FUNCLETS
 
-#ifdef EnC_SUPPORTED
+#ifdef FEATURE_REMAP_FUNCTION
 
 /*
     Last chance for the runtime support to do fixups in the context
@@ -357,7 +350,7 @@ virtual HRESULT FixContextForEnC(PCONTEXT        pCtx,
                const ICorDebugInfo::NativeVarInfo * newMethodVars,
                                     SIZE_T          newMethodVarsCount) = 0;
 
-#endif // EnC_SUPPORTED
+#endif // FEATURE_REMAP_FUNCTION
 
 #endif // #ifndef DACCESS_COMPILE
 
@@ -422,7 +415,6 @@ TADDR GetAmbientSP(PREGDISPLAY     pContext,
 virtual
 ULONG32 GetStackParameterSize(EECodeInfo* pCodeInfo);
 
-#ifndef CROSSGEN_COMPILE
 /*
     Unwind the current stack frame, i.e. update the virtual register
     set in pContext. This will be similar to the state after the function
@@ -436,12 +428,10 @@ bool UnwindStackFrame(
                 PREGDISPLAY     pContext,
                 EECodeInfo     *pCodeInfo,
                 unsigned        flags,
-                CodeManState   *pState,
-                StackwalkCacheUnwindInfo  *pUnwindInfo);
-#endif // CROSSGEN_COMPILE
+                CodeManState   *pState);
 
-#ifdef HAS_QUICKUNWIND
-enum QuickUnwindFlag
+#ifdef HAS_LIGHTUNWIND
+enum LightUnwindFlag
 {
     UnwindCurrentStackFrame,
     EnsureCallerStackFrameIsValid
@@ -453,11 +443,11 @@ enum QuickUnwindFlag
   */
 
 static
-void QuickUnwindStackFrame(
+void LightUnwindStackFrame(
              PREGDISPLAY pRD,
-             StackwalkCacheEntry *pCacheEntry,
-             QuickUnwindFlag flag);
-#endif // HAS_QUICKUNWIND
+             EECodeInfo     *pCodeInfo,
+             LightUnwindFlag flag);
+#endif // HAS_LIGHTUNWIND
 
 /*
     Is the function currently at a "GC safe point" ?
@@ -467,10 +457,13 @@ virtual
 bool IsGcSafe(  EECodeInfo     *pCodeInfo,
                 DWORD           dwRelOffset);
 
-#if defined(TARGET_ARM) || defined(TARGET_ARM64)
+static
+bool InterruptibleSafePointsEnabled();
+
+#if defined(TARGET_ARM) || defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
 virtual
 bool HasTailCalls(EECodeInfo *pCodeInfo);
-#endif // TARGET_ARM || TARGET_ARM64
+#endif // TARGET_ARM || TARGET_ARM64 || TARGET_LOONGARCH64 || defined(TARGET_RISCV64)
 
 #if defined(TARGET_AMD64) && defined(_DEBUG)
 /*
@@ -484,7 +477,6 @@ unsigned FindEndOfLastInterruptibleRegion(unsigned curOffset,
                                           GCInfoToken gcInfoToken);
 #endif // TARGET_AMD64 && _DEBUG
 
-#ifndef CROSSGEN_COMPILE
 /*
     Enumerate all live object references in that function using
     the virtual register set. Same reference location cannot be enumerated
@@ -499,7 +491,6 @@ bool EnumGcRefs(PREGDISPLAY     pContext,
                 GCEnumCallback  pCallback,
                 LPVOID          hCallBack,
                 DWORD           relOffsetOverride = NO_OVERRIDE_OFFSET);
-#endif // !CROSSGEN_COMPILE
 
 #ifdef FEATURE_CONSERVATIVE_GC
 // Temporary conservative collection, for testing purposes, until we have
@@ -511,28 +502,24 @@ bool EnumGcRefsConservative(PREGDISPLAY     pRD,
                             LPVOID          hCallBack);
 #endif // FEATURE_CONSERVATIVE_GC
 
-#ifndef CROSSGEN_COMPILE
 virtual
 OBJECTREF GetInstance(
                 PREGDISPLAY     pContext,
                 EECodeInfo *    pCodeInfo);
-#endif // !CROSSGEN_COMPILE
 
-#ifndef CROSSGEN_COMPILE
 /*
-    Returns the extra argument passed to to shared generic code if it is still alive.
+    Returns the extra argument passed to shared generic code if it is still alive.
     Returns NULL in all other cases.
 */
 virtual
 PTR_VOID GetParamTypeArg(PREGDISPLAY     pContext,
                          EECodeInfo *    pCodeInfo);
-#endif // !CROSSGEN_COMPILE
 
 // Returns the type of the context parameter (this, methodtable, methoddesc, or none)
 virtual GenericParamContextType GetParamContextType(PREGDISPLAY     pContext,
                                                     EECodeInfo *    pCodeInfo);
 
-#if defined(FEATURE_EH_FUNCLETS) && defined(USE_GC_INFO_DECODER) && !defined(CROSSGEN_COMPILE)
+#if defined(FEATURE_EH_FUNCLETS) && defined(USE_GC_INFO_DECODER)
 /*
     Returns the generics token.  This is used by GetInstance() and GetParamTypeArg() on WIN64.
 */
@@ -545,9 +532,8 @@ PTR_VOID GetExactGenericsToken(SIZE_T          baseStackSlot,
                                EECodeInfo *    pCodeInfo);
 
 
-#endif // FEATURE_EH_FUNCLETS && USE_GC_INFO_DECODER && !CROSSGEN_COMPILE
+#endif // FEATURE_EH_FUNCLETS && USE_GC_INFO_DECODER
 
-#ifndef CROSSGEN_COMPILE
 /*
     Returns the offset of the GuardStack cookie if it exists.
     Returns NULL if there is no cookie.
@@ -556,7 +542,6 @@ virtual
 void * GetGSCookieAddr(PREGDISPLAY     pContext,
                        EECodeInfo    * pCodeInfo,
                        CodeManState  * pState);
-#endif
 
 
 #ifndef USE_GC_INFO_DECODER
@@ -617,7 +602,7 @@ virtual void LeaveCatch(GCInfoToken gcInfoToken,
                          PCONTEXT pCtx);
 #endif // FEATURE_EH_FUNCLETS
 
-#ifdef EnC_SUPPORTED
+#ifdef FEATURE_REMAP_FUNCTION
 /*
     Last chance for the runtime support to do fixups in the context
     before execution continues inside an EnC updated function.
@@ -630,12 +615,12 @@ HRESULT FixContextForEnC(PCONTEXT        pCtx,
                             EECodeInfo    * pNewCodeInfo,
        const ICorDebugInfo::NativeVarInfo * newMethodVars,
                             SIZE_T          newMethodVarsCount);
-#endif // EnC_SUPPORTED
+#endif // FEATURE_REMAP_FUNCTION
 
 #endif // #ifndef DACCESS_COMPILE
 
 #ifdef FEATURE_EH_FUNCLETS
-    static void EnsureCallerContextIsValid( PREGDISPLAY pRD, StackwalkCacheEntry* pCacheEntry, EECodeInfo * pCodeInfo = NULL );
+    static void EnsureCallerContextIsValid( PREGDISPLAY pRD, EECodeInfo * pCodeInfo = NULL, unsigned flags = 0);
     static size_t GetCallerSp( PREGDISPLAY  pRD );
 #ifdef TARGET_X86
     static size_t GetResumeSp( PCONTEXT  pContext );
@@ -649,121 +634,7 @@ HRESULT FixContextForEnC(PCONTEXT        pCtx,
 };
 
 #ifdef TARGET_X86
-bool UnwindStackFrame(PREGDISPLAY     pContext,
-                      EECodeInfo     *pCodeInfo,
-                      unsigned        flags,
-                      CodeManState   *pState,
-                      StackwalkCacheUnwindInfo  *pUnwindInfo);
-#endif
-
-/*****************************************************************************
- <TODO>ToDo: Do we want to include JIT/IL/target.h? </TODO>
- */
-
-enum regNum
-{
-        REGI_EAX, REGI_ECX, REGI_EDX, REGI_EBX,
-        REGI_ESP, REGI_EBP, REGI_ESI, REGI_EDI,
-        REGI_COUNT,
-        REGI_NA = REGI_COUNT
-};
-
-/*****************************************************************************
- Register masks
- */
-
-enum RegMask
-{
-    RM_EAX = 0x01,
-    RM_ECX = 0x02,
-    RM_EDX = 0x04,
-    RM_EBX = 0x08,
-    RM_ESP = 0x10,
-    RM_EBP = 0x20,
-    RM_ESI = 0x40,
-    RM_EDI = 0x80,
-
-    RM_NONE = 0x00,
-    RM_ALL = (RM_EAX|RM_ECX|RM_EDX|RM_EBX|RM_ESP|RM_EBP|RM_ESI|RM_EDI),
-    RM_CALLEE_SAVED = (RM_EBP|RM_EBX|RM_ESI|RM_EDI),
-    RM_CALLEE_TRASHED = (RM_ALL & ~RM_CALLEE_SAVED),
-};
-
-/*****************************************************************************
- *
- *  Helper to extract basic info from a method info block.
- */
-
-struct hdrInfo
-{
-    unsigned int        methodSize;     // native code bytes
-    unsigned int        argSize;        // in bytes
-    unsigned int        stackSize;      // including callee saved registers
-    unsigned int        rawStkSize;     // excluding callee saved registers
-    ReturnKind          returnKind;     // The ReturnKind for this method.
-
-    unsigned int        prologSize;
-
-    // Size of the epilogs in the method.
-    // For methods which use CEE_JMP, some epilogs may end with a "ret" instruction
-    // and some may end with a "jmp". The epilogSize reported should be for the
-    // epilog with the smallest size.
-    unsigned int        epilogSize;
-
-    unsigned char       epilogCnt;
-    bool                epilogEnd;      // is the epilog at the end of the method
-
-    bool                ebpFrame;       // locals and arguments addressed relative to EBP
-    bool                doubleAlign;    // is the stack double-aligned? locals addressed relative to ESP, and arguments relative to EBP
-    bool                interruptible;  // intr. at all times (excluding prolog/epilog), not just call sites
-
-    bool                securityCheck;  // has a slot for security object
-    bool                handlers;       // has callable handlers
-    bool                localloc;       // uses localloc
-    bool                editNcontinue;  // has been compiled in EnC mode
-    bool                varargs;        // is this a varargs routine
-    bool                profCallbacks;  // does the method have Enter-Leave callbacks
-    bool                genericsContext;// has a reported generic context paramter
-    bool                genericsContextIsMethodDesc;// reported generic context parameter is methoddesc
-    bool                isSpeculativeStackWalk; // is the stackwalk seeded by an untrusted source (e.g., sampling profiler)?
-
-    // These always includes EBP for EBP-frames and double-aligned-frames
-    RegMask             savedRegMask:8; // which callee-saved regs are saved on stack
-
-    // Count of the callee-saved registers, excluding the frame pointer.
-    // This does not include EBP for EBP-frames and double-aligned-frames.
-    unsigned int        savedRegsCountExclFP;
-
-    unsigned int        untrackedCnt;
-    unsigned int        varPtrTableSize;
-    unsigned int        argTabOffset;   // INVALID_ARGTAB_OFFSET if argtab must be reached by stepping through ptr tables
-    unsigned int        gsCookieOffset; // INVALID_GS_COOKIE_OFFSET if there is no GuardStack cookie
-
-    unsigned int        syncStartOffset; // start/end code offset of the protected region in synchronized methods.
-    unsigned int        syncEndOffset;   // INVALID_SYNC_OFFSET if there not synchronized method
-    unsigned int        syncEpilogStart; // The start of the epilog. Synchronized methods are guaranteed to have no more than one epilog.
-    unsigned int        revPInvokeOffset; // INVALID_REV_PINVOKE_OFFSET if there is no Reverse PInvoke frame
-
-    enum { NOT_IN_PROLOG = -1, NOT_IN_EPILOG = -1 };
-
-    int                 prologOffs;     // NOT_IN_PROLOG if not in prolog
-    int                 epilogOffs;     // NOT_IN_EPILOG if not in epilog. It is never 0
-
-    //
-    // Results passed back from scanArgRegTable
-    //
-    regNum              thisPtrResult;  // register holding "this"
-    RegMask             regMaskResult;  // registers currently holding GC ptrs
-    RegMask            iregMaskResult;  // iptr qualifier for regMaskResult
-    unsigned            argHnumResult;
-    PTR_CBYTE            argTabResult;  // Table of encoded offsets of pending ptr args
-    unsigned              argTabBytes;  // Number of bytes in argTabResult[]
-
-    // These next two are now large structs (i.e 132 bytes each)
-
-    ptrArgTP            argMaskResult;  // pending arguments mask
-    ptrArgTP           iargMaskResult;  // iptr qualifier for argMaskResult
-};
+#include "gc_unwind_x86.h"
 
 /*****************************************************************************
   How the stackwalkers buffer will be interpreted
@@ -774,6 +645,9 @@ struct CodeManStateBuf
     DWORD       hdrInfoSize;
     hdrInfo     hdrInfoBody;
 };
+
+#endif
+
 //*****************************************************************************
 #endif // _EETWAIN_H
 //*****************************************************************************

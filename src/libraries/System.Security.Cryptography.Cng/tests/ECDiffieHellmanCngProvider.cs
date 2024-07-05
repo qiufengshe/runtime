@@ -15,12 +15,10 @@ namespace System.Security.Cryptography.EcDiffieHellman.Tests
             return new ECDiffieHellmanCng(keySize);
         }
 
-#if NETCOREAPP
         public ECDiffieHellman Create(ECCurve curve)
         {
             return new ECDiffieHellmanCng(curve);
         }
-#endif
 
         public bool IsCurveValid(Oid oid)
         {
@@ -35,6 +33,10 @@ namespace System.Security.Cryptography.EcDiffieHellman.Tests
                 return PlatformDetection.WindowsVersion >= 10;
             }
         }
+
+        public bool CanDeriveNewPublicKey => true;
+        public bool SupportsRawDerivation => PlatformDetection.IsWindows10OrLater;
+        public bool SupportsSha3 => PlatformDetection.SupportsSha3;
 
         private static bool NativeOidFriendlyNameExists(string oidFriendlyName)
         {

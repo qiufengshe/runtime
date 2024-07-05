@@ -91,7 +91,7 @@ struct RCW
     {
         CF_None                 = 0x00,
         // unused               = 0x01,
-        CF_QueryForIdentity     = 0x02, // Need to QI for the real identity IUnknown during creating RCW
+        // unused               = 0x02,
         // unused               = 0x04,
         CF_NeedUniqueObject     = 0x08, // always create a new RCW/object even if we have one cached already
         // unused               = 0x10,
@@ -520,7 +520,7 @@ private:
     static HRESULT __stdcall ReleaseAllInterfacesCallBack(LPVOID pData);
 
     //---------------------------------------------------------------------
-    // Helper function called from ReleaseAllInterfaces_CallBack do do the
+    // Helper function called from ReleaseAllInterfaces_CallBack to do the
     // actual releases.
     void ReleaseAllInterfaces();
 
@@ -727,7 +727,7 @@ public:
 
     //--------------------------------------------------------------
     // Init the ComClassFactory
-    void Init(__in_opt PCWSTR wszServer, MethodTable* pClassMT);
+    void Init(_In_opt_ PCWSTR wszServer, MethodTable* pClassMT);
 
     //-------------------------------------------------------------
     // create instance, calls IClassFactory::CreateInstance
@@ -738,11 +738,9 @@ public:
     void Cleanup();
 
 protected :
-#ifndef CROSSGEN_COMPILE
     //-------------------------------------------------------------
     // Create instance. Overridable from child classes
     virtual IUnknown *CreateInstanceInternal(IUnknown *pOuter, BOOL *pfDidContainment);
-#endif
     //-------------------------------------------------------------
     // Throw exception message
     void ThrowHRMsg(HRESULT hr, DWORD dwMsgResID);
@@ -790,11 +788,11 @@ FORCEINLINE void NewRCWHolderRelease(RCW* p)
     }
 };
 
-class NewRCWHolder : public Wrapper<RCW*, NewRCWHolderDoNothing, NewRCWHolderRelease, NULL>
+class NewRCWHolder : public Wrapper<RCW*, NewRCWHolderDoNothing, NewRCWHolderRelease, 0>
 {
 public:
     NewRCWHolder(RCW* p = NULL)
-        : Wrapper<RCW*, NewRCWHolderDoNothing, NewRCWHolderRelease, NULL>(p)
+        : Wrapper<RCW*, NewRCWHolderDoNothing, NewRCWHolderRelease, 0>(p)
     {
         WRAPPER_NO_CONTRACT;
     }
@@ -802,7 +800,7 @@ public:
     FORCEINLINE void operator=(RCW* p)
     {
         WRAPPER_NO_CONTRACT;
-        Wrapper<RCW*, NewRCWHolderDoNothing, NewRCWHolderRelease, NULL>::operator=(p);
+        Wrapper<RCW*, NewRCWHolderDoNothing, NewRCWHolderRelease, 0>::operator=(p);
     }
 };
 
@@ -1426,11 +1424,11 @@ FORCEINLINE void CtxEntryHolderRelease(CtxEntry *p)
     }
 }
 
-class CtxEntryHolder : public Wrapper<CtxEntry *, CtxEntryDoNothing, CtxEntryHolderRelease, NULL>
+class CtxEntryHolder : public Wrapper<CtxEntry *, CtxEntryDoNothing, CtxEntryHolderRelease, 0>
 {
 public:
     CtxEntryHolder(CtxEntry *p = NULL)
-        : Wrapper<CtxEntry *, CtxEntryDoNothing, CtxEntryHolderRelease, NULL>(p)
+        : Wrapper<CtxEntry *, CtxEntryDoNothing, CtxEntryHolderRelease, 0>(p)
     {
         WRAPPER_NO_CONTRACT;
     }
@@ -1439,7 +1437,7 @@ public:
     {
         WRAPPER_NO_CONTRACT;
 
-        Wrapper<CtxEntry *, CtxEntryDoNothing, CtxEntryHolderRelease, NULL>::operator=(p);
+        Wrapper<CtxEntry *, CtxEntryDoNothing, CtxEntryHolderRelease, 0>::operator=(p);
     }
 
 };

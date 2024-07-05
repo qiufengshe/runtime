@@ -380,7 +380,7 @@ namespace System.Threading.Tests
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
         [OuterLoop]
         public static void ReleaseReadersWhenWaitingWriterTimesOut()
         {
@@ -446,10 +446,12 @@ namespace System.Threading.Tests
                 // Typical order of execution: 7
 
                 writeWaiterThread.Join();
+                readerThreads[0].Join();
+                readerThreads[1].Join();
             }
         }
 
-        [Fact]
+        [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsThreadingSupported))]
         [OuterLoop]
         public static void DontReleaseWaitingReadersWhenThereAreWaitingWriters()
         {

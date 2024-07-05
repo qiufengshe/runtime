@@ -3,7 +3,7 @@
 
 using System;
 using System.Runtime.InteropServices;
-using TestLibrary;
+using Xunit;
 
 unsafe partial class GenericsNative
 {
@@ -23,9 +23,11 @@ unsafe partial class GenericsNative
     public static extern ReadOnlySpan<long> AddReadOnlySpanLs(in ReadOnlySpan<long> pValues, int count);
 }
 
-unsafe partial class GenericsTest
+public unsafe partial class GenericsTest
 {
-    private static void TestReadOnlySpanL()
+    [Fact]
+    [ActiveIssue("https://github.com/dotnet/runtimelab/issues/177", typeof(TestLibrary.Utilities), nameof(TestLibrary.Utilities.IsNativeAot))]
+    public static void TestReadOnlySpanL()
     {
         Assert.Throws<MarshalDirectiveException>(() => GenericsNative.GetReadOnlySpanL(1L));
 

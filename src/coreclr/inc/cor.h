@@ -23,35 +23,6 @@
 extern "C" {
 #endif
 
-// {BED7F4EA-1A96-11d2-8F08-00A0C9A6186D}
-EXTERN_GUID(LIBID_ComPlusRuntime, 0xbed7f4ea, 0x1a96, 0x11d2, 0x8f, 0x8, 0x0, 0xa0, 0xc9, 0xa6, 0x18, 0x6d);
-
-// {90883F05-3D28-11D2-8F17-00A0C9A6186D}
-EXTERN_GUID(GUID_ExportedFromComPlus, 0x90883f05, 0x3d28, 0x11d2, 0x8f, 0x17, 0x0, 0xa0, 0xc9, 0xa6, 0x18, 0x6d);
-
-// {0F21F359-AB84-41e8-9A78-36D110E6D2F9}
-EXTERN_GUID(GUID_ManagedName, 0xf21f359, 0xab84, 0x41e8, 0x9a, 0x78, 0x36, 0xd1, 0x10, 0xe6, 0xd2, 0xf9);
-
-// {54FC8F55-38DE-4703-9C4E-250351302B1C}
-EXTERN_GUID(GUID_Function2Getter, 0x54fc8f55, 0x38de, 0x4703, 0x9c, 0x4e, 0x25, 0x3, 0x51, 0x30, 0x2b, 0x1c);
-
-// CLSID_CorMetaDataDispenserRuntime: {1EC2DE53-75CC-11d2-9775-00A0C9B4D50C}
-//  Dispenser coclass for version 1.5 and 2.0 meta data.  To get the "latest" bind
-//  to CLSID_MetaDataDispenser.
-EXTERN_GUID(CLSID_CorMetaDataDispenserRuntime, 0x1ec2de53, 0x75cc, 0x11d2, 0x97, 0x75, 0x0, 0xa0, 0xc9, 0xb4, 0xd5, 0xc);
-
-// {CD2BC5C9-F452-4326-B714-F9C539D4DA58}
-EXTERN_GUID(GUID_DispIdOverride, 0xcd2bc5c9, 0xf452, 0x4326, 0xb7, 0x14, 0xf9, 0xc5, 0x39, 0xd4, 0xda, 0x58);
-
-// {B64784EB-D8D4-4d9b-9ACD-0E30806426F7}
-EXTERN_GUID(GUID_ForceIEnumerable, 0xb64784eb, 0xd8d4, 0x4d9b, 0x9a, 0xcd, 0x0e, 0x30, 0x80, 0x64, 0x26, 0xf7);
-
-// {2941FF83-88D8-4F73-B6A9-BDF8712D000D}
-EXTERN_GUID(GUID_PropGetCA, 0x2941ff83, 0x88d8, 0x4f73, 0xb6, 0xa9, 0xbd, 0xf8, 0x71, 0x2d, 0x00, 0x0d);
-
-// {29533527-3683-4364-ABC0-DB1ADD822FA2}
-EXTERN_GUID(GUID_PropPutCA, 0x29533527, 0x3683, 0x4364, 0xab, 0xc0, 0xdb, 0x1a, 0xdd, 0x82, 0x2f, 0xa2);
-
 // CLSID_CLR_v1_MetaData: {005023CA-72B1-11D3-9FC4-00C04F79A0A3}
 //  Used to generate v1 metadata (for v1.0 and v1.1 CLR compatibility).
 EXTERN_GUID(CLSID_CLR_v1_MetaData, 0x005023ca, 0x72b1, 0x11d3, 0x9f, 0xc4, 0x0, 0xc0, 0x4f, 0x79, 0xa0, 0xa3);
@@ -122,8 +93,6 @@ interface IMetaDataImport;
 interface IMetaDataAssemblyEmit;
 interface IMetaDataAssemblyImport;
 interface IMetaDataEmit;
-interface ICeeGen;
-
 
 typedef UNALIGNED void const *UVCP_CONSTANT;
 
@@ -167,18 +136,6 @@ EXTERN_GUID(CLSID_Cor, 0xbee00010, 0xee77, 0x11d0, 0xa0, 0x15, 0x00, 0xc0, 0x4f,
 //  This is the "Master Dispenser", always guaranteed to be the most recent
 //  dispenser on the machine.
 EXTERN_GUID(CLSID_CorMetaDataDispenser, 0xe5cb7a31, 0x7512, 0x11d2, 0x89, 0xce, 0x0, 0x80, 0xc7, 0x92, 0xe5, 0xd8);
-
-
-// CLSID_CorMetaDataDispenserReg: {435755FF-7397-11d2-9771-00A0C9B4D50C}
-//  Dispenser coclass for version 1.0 meta data.  To get the "latest" bind
-//  to CLSID_CorMetaDataDispenser.
-EXTERN_GUID(CLSID_CorMetaDataDispenserReg, 0x435755ff, 0x7397, 0x11d2, 0x97, 0x71, 0x0, 0xa0, 0xc9, 0xb4, 0xd5, 0xc);
-
-
-// CLSID_CorMetaDataReg: {87F3A1F5-7397-11d2-9771-00A0C9B4D50C}
-// For COM+ Meta Data, Data Driven Registration
-EXTERN_GUID(CLSID_CorMetaDataReg, 0x87f3a1f5, 0x7397, 0x11d2, 0x97, 0x71, 0x0, 0xa0, 0xc9, 0xb4, 0xd5, 0xc);
-
 
 interface IMetaDataDispenser;
 
@@ -1443,7 +1400,7 @@ DECLARE_INTERFACE_(IMetaDataDispenserEx, IMetaDataDispenser)
         LPCWSTR  szAssemblyName,            // [IN] required - this is the assembly you are requesting
         LPCWSTR  szName,                    // [OUT] buffer - to hold name
         ULONG    cchName,                   // [IN] the name buffer's size
-        ULONG    *pcName) PURE;             // [OUT] the number of characters returend in the buffer
+        ULONG    *pcName) PURE;             // [OUT] the number of characters returned in the buffer
 
     STDMETHOD(FindAssemblyModule)(          // S_OK or error
         LPCWSTR  szAppBase,                 // [IN] optional - can be NULL
@@ -1454,205 +1411,9 @@ DECLARE_INTERFACE_(IMetaDataDispenserEx, IMetaDataDispenser)
       _Out_writes_to_opt_(cchName, *pcName)
         LPWSTR   szName,                    // [OUT] buffer - to hold name
         ULONG    cchName,                   // [IN]  the name buffer's size
-        ULONG    *pcName) PURE;             // [OUT] the number of characters returend in the buffer
+        ULONG    *pcName) PURE;             // [OUT] the number of characters returned in the buffer
 
 };
-
-//*****************************************************************************
-//*****************************************************************************
-//
-// Registration declarations.  Will be replace by Services' Registration
-//  implementation.
-//
-//*****************************************************************************
-//*****************************************************************************
-// Various flags for use in installing a module or a composite
-typedef enum
-{
-    regNoCopy = 0x00000001,         // Don't copy files into destination
-    regConfig = 0x00000002,         // Is a configuration
-    regHasRefs = 0x00000004         // Has class references
-} CorRegFlags;
-
-typedef GUID CVID;
-
-typedef struct {
-    short Major;
-    short Minor;
-    short Sub;
-    short Build;
-} CVStruct;
-
-
-//*****************************************************************************
-//*****************************************************************************
-//
-// CeeGen interfaces for generating in-memory Common Language Runtime files
-//
-//*****************************************************************************
-//*****************************************************************************
-
-typedef void *HCEESECTION;
-
-typedef enum  {
-    sdNone =        0,
-    sdReadOnly =    IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA,
-    sdReadWrite =   sdReadOnly | IMAGE_SCN_MEM_WRITE,
-    sdExecute =     IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE
-} CeeSectionAttr;
-
-//
-// Relocation types.
-//
-
-typedef enum  {
-    // generate only a section-relative reloc, nothing into .reloc section
-    srRelocAbsolute,
-
-    // generate a .reloc for a pointer sized location,
-    // This is transformed into BASED_HIGHLOW or BASED_DIR64 based on the platform
-    srRelocHighLow      = 3,
-
-    // generate a .reloc for the top 16-bits of a 32 bit number, where the
-    // bottom 16 bits are included in the next word in the .reloc table
-    srRelocHighAdj,     // Never Used
-
-    // generate a token map relocation, nothing into .reloc section
-    srRelocMapToken,
-
-    // relative address fixup
-    srRelocRelative,
-
-    // Generate only a section-relative reloc, nothing into .reloc
-    // section.  This reloc is relative to the file position of the
-    // section, not the section's virtual address.
-    srRelocFilePos,
-
-    // code relative address fixup
-    srRelocCodeRelative,
-
-    // generate a .reloc for a 64 bit address in an ia64 movl instruction
-    srRelocIA64Imm64,
-
-    // generate a .reloc for a 64 bit address
-    srRelocDir64,
-
-    // generate a .reloc for a 25-bit PC relative address in an ia64 br.call instruction
-    srRelocIA64PcRel25,
-
-    // generate a .reloc for a 64-bit PC relative address in an ia64 brl.call instruction
-    srRelocIA64PcRel64,
-
-    // generate a 30-bit section-relative reloc, used for tagged pointer values
-    srRelocAbsoluteTagged,
-
-
-    // A sentinel value to help ensure any additions to this enum are reflected
-    // in PEWriter.cpp's RelocName array.
-    srRelocSentinel,
-
-    // Flags that can be used with the above reloc types
-
-    // do not emit base reloc
-    srNoBaseReloc = 0x4000,
-
-    // pre-fixup contents of memory are ptr rather than a section offset
-    srRelocPtr = 0x8000,
-
-    // legal enums which include the Ptr flag
-    srRelocAbsolutePtr  = srRelocPtr + srRelocAbsolute,
-    srRelocHighLowPtr   = srRelocPtr + srRelocHighLow,
-    srRelocRelativePtr  = srRelocPtr + srRelocRelative,
-    srRelocIA64Imm64Ptr = srRelocPtr + srRelocIA64Imm64,
-    srRelocDir64Ptr     = srRelocPtr + srRelocDir64,
-
-} CeeSectionRelocType;
-
-typedef union  {
-    USHORT highAdj;
-} CeeSectionRelocExtra;
-
-//-------------------------------------
-//--- ICeeGen
-//-------------------------------------
-// {7ED1BDFF-8E36-11d2-9C56-00A0C9B7CC45}
-EXTERN_GUID(IID_ICeeGen, 0x7ed1bdff, 0x8e36, 0x11d2, 0x9c, 0x56, 0x0, 0xa0, 0xc9, 0xb7, 0xcc, 0x45);
-
-DECLARE_INTERFACE_(ICeeGen, IUnknown)
-{
-    STDMETHOD (EmitString) (
-      _In_
-        LPWSTR lpString,                    // [IN] String to emit
-        ULONG *RVA) PURE;                   // [OUT] RVA for string emitted string
-
-    STDMETHOD (GetString) (
-        ULONG RVA,                          // [IN] RVA for string to return
-      _Out_opt_
-        LPWSTR *lpString) PURE;             // [OUT] Returned string
-
-    STDMETHOD (AllocateMethodBuffer) (
-        ULONG cchBuffer,                    // [IN] Length of buffer to create
-        UCHAR **lpBuffer,                   // [OUT] Returned buffer
-        ULONG *RVA) PURE;                   // [OUT] RVA for method
-
-    STDMETHOD (GetMethodBuffer) (
-        ULONG RVA,                          // [IN] RVA for method to return
-        UCHAR **lpBuffer) PURE;             // [OUT] Returned buffer
-
-    STDMETHOD (GetIMapTokenIface) (
-        IUnknown **pIMapToken) PURE;
-
-    STDMETHOD (GenerateCeeFile) () PURE;
-
-    STDMETHOD (GetIlSection) (
-        HCEESECTION *section) PURE;
-
-    STDMETHOD (GetStringSection) (
-        HCEESECTION *section) PURE;
-
-    STDMETHOD (AddSectionReloc) (
-        HCEESECTION section,
-        ULONG offset,
-        HCEESECTION relativeTo,
-        CeeSectionRelocType relocType) PURE;
-
-    // use these only if you have special section requirements not handled
-    // by other APIs
-    STDMETHOD (GetSectionCreate) (
-        const char *name,
-        DWORD flags,
-        HCEESECTION *section) PURE;
-
-    STDMETHOD (GetSectionDataLen) (
-        HCEESECTION section,
-        ULONG *dataLen) PURE;
-
-    STDMETHOD (GetSectionBlock) (
-        HCEESECTION section,
-        ULONG len,
-        ULONG align=1,
-        void **ppBytes=0) PURE;
-
-    STDMETHOD (TruncateSection) (
-        HCEESECTION section,
-        ULONG len) PURE;
-
-    STDMETHOD (GenerateCeeMemoryImage) (
-        void **ppImage) PURE;
-
-    STDMETHOD (ComputePointer) (
-        HCEESECTION section,
-        ULONG RVA,                          // [IN] RVA for method to return
-        UCHAR **lpBuffer) PURE;             // [OUT] Returned buffer
-
-};
-
-//*****************************************************************************
-//*****************************************************************************
-//
-// End of CeeGen declarations.
-//
-//*****************************************************************************
 
 //**********************************************************************
 //**********************************************************************
@@ -1832,12 +1593,6 @@ DECLARE_INTERFACE_(IMetaDataInfo, IUnknown)
 // Native Link method custom value definitions. This is for N-direct support.
 //
 
-#define COR_NATIVE_LINK_CUSTOM_VALUE        L"COMPLUS_NativeLink"
-#define COR_NATIVE_LINK_CUSTOM_VALUE_ANSI   "COMPLUS_NativeLink"
-
-// count of chars for COR_NATIVE_LINK_CUSTOM_VALUE(_ANSI)
-#define COR_NATIVE_LINK_CUSTOM_VALUE_CC     18
-
 #include <pshpack1.h>
 typedef struct
 {
@@ -2011,6 +1766,7 @@ FORCEINLINE ULONG CorSigUncompressData(
     return CorSigUncompressBigData(pData);
 }
 
+#ifdef HOST_WINDOWS
 inline HRESULT CorSigUncompressData(// return S_OK or E_BADIMAGEFORMAT if the signature is bad
     PCCOR_SIGNATURE pData,          // [IN] compressed data
     DWORD           len,            // [IN] length of the signature
@@ -2073,6 +1829,70 @@ inline HRESULT CorSigUncompressData(// return S_OK or E_BADIMAGEFORMAT if the si
 
     return hr;
 }
+#endif // HOST_WINDOWS
+
+inline HRESULT CorSigUncompressData(// return S_OK or E_BADIMAGEFORMAT if the signature is bad
+    PCCOR_SIGNATURE pData,          // [IN] compressed data
+    DWORD           len,            // [IN] length of the signature
+    uint32_t *      pDataOut,       // [OUT] the expanded *pData
+    uint32_t *      pDataLen)       // [OUT] length of the expanded *pData
+{
+    HRESULT hr = S_OK;
+    BYTE const  *pBytes = reinterpret_cast<BYTE const*>(pData);
+
+    // Smallest.
+    if ((*pBytes & 0x80) == 0x00)       // 0??? ????
+    {
+        if (len < 1)
+        {
+            *pDataOut = 0;
+            *pDataLen = 0;
+            hr = META_E_BAD_SIGNATURE;
+        }
+        else
+        {
+            *pDataOut = *pBytes;
+            *pDataLen = 1;
+        }
+    }
+    // Medium.
+    else if ((*pBytes & 0xC0) == 0x80)  // 10?? ????
+    {
+        if (len < 2)
+        {
+            *pDataOut = 0;
+            *pDataLen = 0;
+            hr = META_E_BAD_SIGNATURE;
+        }
+        else
+        {
+            *pDataOut = (uint32_t)(((*pBytes & 0x3f) << 8 | *(pBytes+1)));
+            *pDataLen = 2;
+        }
+    }
+    else if ((*pBytes & 0xE0) == 0xC0)      // 110? ????
+    {
+        if (len < 4)
+        {
+            *pDataOut = 0;
+            *pDataLen = 0;
+            hr = META_E_BAD_SIGNATURE;
+        }
+        else
+        {
+            *pDataOut = (uint32_t)(((*pBytes & 0x1f) << 24 | *(pBytes+1) << 16 | *(pBytes+2) << 8 | *(pBytes+3)));
+            *pDataLen = 4;
+        }
+    }
+    else // We don't recognize this encoding
+    {
+        *pDataOut = 0;
+        *pDataLen = 0;
+        hr = META_E_BAD_SIGNATURE;
+    }
+
+    return hr;
+}
 
 inline ULONG CorSigUncompressData(      // return number of bytes of that compressed data occupied in pData
     PCCOR_SIGNATURE pData,              // [IN] compressed data
@@ -2081,7 +1901,7 @@ inline ULONG CorSigUncompressData(      // return number of bytes of that compre
     ULONG dwSizeOfData = 0;
 
     // We don't know how big the signature is, so we'll just say that it's big enough
-    if (FAILED(CorSigUncompressData(pData, 0xff, pDataOut, &dwSizeOfData)))
+    if (FAILED(CorSigUncompressData(pData, 0xff, reinterpret_cast<uint32_t *>(pDataOut), reinterpret_cast<uint32_t *>(&dwSizeOfData))))
     {
         *pDataOut = 0;
         return (ULONG)-1;
@@ -2128,14 +1948,14 @@ inline ULONG CorSigUncompressToken( // return number of bytes of that compressed
 
 inline HRESULT CorSigUncompressToken(
     PCCOR_SIGNATURE pData,          // [IN] compressed data
-    DWORD           dwLen,          // [IN] Remaining length of sigature
+    uint32_t        dwLen,          // [IN] Remaining length of sigature
     mdToken *       pToken,         // [OUT] the expanded *pData
-    DWORD *         dwTokenLength)  // [OUT] The length of the token in the sigature
+    uint32_t *      dwTokenLength)  // [OUT] The length of the token in the sigature
 {
     mdToken tk;
     mdToken tkType;
 
-    HRESULT hr = CorSigUncompressData(pData, dwLen, (ULONG *)&tk, dwTokenLength);
+    HRESULT hr = CorSigUncompressData(pData, dwLen, (uint32_t *)&tk, dwTokenLength);
 
     if (SUCCEEDED(hr))
     {
@@ -2161,7 +1981,7 @@ FORCEINLINE ULONG CorSigUncompressCallingConv(
 FORCEINLINE HRESULT CorSigUncompressCallingConv(
     PCCOR_SIGNATURE pData,      // [IN] Signature
     DWORD           dwLen,      // [IN] Length of signature
-    ULONG *         data)       // [OUT] Compressed data
+    uint32_t *      data)       // [OUT] Compressed data
 {
     if (dwLen > 0)
     {
@@ -2350,7 +2170,7 @@ inline ULONG CorSigCompressSignedInt(   // return number of bytes that compresse
         *(pBytes + 3) = BYTE(iData & 0xff);
         return 4;
     }
-    // Out of compressable range
+    // Out of compressible range
     return (ULONG)-1;
 } // CorSigCompressSignedInt
 

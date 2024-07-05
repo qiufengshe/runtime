@@ -3,10 +3,12 @@
 using System;
 using System.Reflection;
 using System.Security;
+using Xunit;
 
 [SecuritySafeCritical]
-class Program {
-    static int Main() {
+public class Program {
+    [Fact]
+    public static int TestEntryPoint() {
         Console.WriteLine("Attempting delegate construction with null method pointer.");
         Console.WriteLine("Expecting: ArgumentNullException wrapped in TargetInvocationException.");
         try {
@@ -19,7 +21,7 @@ class Program {
             if (ex.InnerException == null) {
                 Console.WriteLine("No inner exception was provided");
                 Console.WriteLine("FAILED");
-                return 201;;
+                return 201;
             }
             else if (ex.InnerException is ArgumentNullException) {
                 Console.WriteLine("Inner exception is ArgumentNullException as expected");

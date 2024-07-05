@@ -3,6 +3,7 @@
 //
 
 using System;
+using Xunit;
 
 interface IGen<T>
 {
@@ -93,9 +94,10 @@ class GenString : IGen<string>
 
 }
 
-public class Test
+public class Test_interface_class02
 {
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         int ret = 100;
 

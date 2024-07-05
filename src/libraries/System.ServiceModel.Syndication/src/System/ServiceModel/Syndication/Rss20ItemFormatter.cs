@@ -1,10 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Xml;
-using System.Xml.Serialization;
 using System.Diagnostics.CodeAnalysis;
+using System.Xml;
 using System.Xml.Schema;
+using System.Xml.Serialization;
 
 namespace System.ServiceModel.Syndication
 {
@@ -22,10 +22,11 @@ namespace System.ServiceModel.Syndication
 
         public Rss20ItemFormatter(Type itemTypeToCreate) : base()
         {
-            if (itemTypeToCreate == null)
+            if (itemTypeToCreate is null)
             {
                 throw new ArgumentNullException(nameof(itemTypeToCreate));
             }
+
             if (!typeof(SyndicationItem).IsAssignableFrom(itemTypeToCreate))
             {
                 throw new ArgumentException(SR.Format(SR.InvalidObjectTypePassed, nameof(itemTypeToCreate), nameof(SyndicationItem)), nameof(itemTypeToCreate));
@@ -87,7 +88,7 @@ namespace System.ServiceModel.Syndication
 
         public override bool CanRead(XmlReader reader)
         {
-            if (reader == null)
+            if (reader is null)
             {
                 throw new ArgumentNullException(nameof(reader));
             }
@@ -99,7 +100,7 @@ namespace System.ServiceModel.Syndication
 
         void IXmlSerializable.ReadXml(XmlReader reader)
         {
-            if (reader == null)
+            if (reader is null)
             {
                 throw new ArgumentNullException(nameof(reader));
             }
@@ -109,7 +110,7 @@ namespace System.ServiceModel.Syndication
 
         void IXmlSerializable.WriteXml(XmlWriter writer)
         {
-            if (writer == null)
+            if (writer is null)
             {
                 throw new ArgumentNullException(nameof(writer));
             }
@@ -129,7 +130,7 @@ namespace System.ServiceModel.Syndication
 
         public override void WriteTo(XmlWriter writer)
         {
-            if (writer == null)
+            if (writer is null)
             {
                 throw new ArgumentNullException(nameof(writer));
             }

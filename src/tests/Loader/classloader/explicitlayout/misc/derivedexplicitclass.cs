@@ -3,6 +3,7 @@
 
 using System;
 using System.Runtime.InteropServices;
+using Xunit;
 
 [StructLayout(LayoutKind.Explicit)]
 // non-generic base class
@@ -18,9 +19,10 @@ public class Sub : Base
   [FieldOffset(8)]public object Fld1;
 }
 
-public class Test
+public class Test_derivedexplicitclass
 {
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
 		try
 		{

@@ -15,10 +15,8 @@ using Internal.TypeSystem.Ecma;
 
 namespace ILCompiler.DependencyAnalysis.ReadyToRun
 {
-    public class MethodEntryPointTableNode : HeaderTableNode
+    public class MethodEntryPointTableNode : ModuleSpecificHeaderTableNode
     {
-        private readonly EcmaModule _module;
-
         private struct EntryPoint
         {
             public static EntryPoint Null = new EntryPoint(-1, null);
@@ -35,18 +33,11 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             }
         }
 
-        public MethodEntryPointTableNode(EcmaModule module, TargetDetails target)
-            : base(target)
+        public MethodEntryPointTableNode(EcmaModule module) : base(module)
         {
-            _module = module;
         }
-        
-        public override void AppendMangledName(NameMangler nameMangler, Utf8StringBuilder sb)
-        {
-            sb.Append(nameMangler.CompilationUnitPrefix);
-            sb.Append("__ReadyToRunMethodEntryPointTable__");
-            sb.Append(_module.Assembly.GetName().Name);
-        }
+
+        protected override string ModuleSpecificName => "__ReadyToRunMethodEntryPointTable__";
 
         public override ObjectData GetData(NodeFactory factory, bool relocsOnly = false)
         {
@@ -83,8 +74,6 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
             VertexArray vertexArray = new VertexArray(arraySection);
             arraySection.Place(vertexArray);
 
-            Section fixupSection = writer.NewSection();
-
             Dictionary<byte[], BlobVertex> uniqueFixups = new Dictionary<byte[], BlobVertex>(ByteArrayComparer.Instance);
 
             for (int rid = 0; rid < ridToEntryPoint.Count; rid++)
@@ -98,7 +87,6 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                     if (fixups != null && !uniqueFixups.TryGetValue(fixups, out fixupBlobVertex))
                     {
                         fixupBlobVertex = new BlobVertex(fixups);
-                        fixupSection.Place(fixupBlobVertex);
                         uniqueFixups.Add(fixups, fixupBlobVertex);
                     }
                     EntryPointVertex entryPointVertex = new EntryPointVertex((uint)entryPoint.MethodIndex, fixupBlobVertex);
@@ -115,12 +103,6 @@ namespace ILCompiler.DependencyAnalysis.ReadyToRun
                 relocs: null,
                 alignment: 8,
                 definedSymbols: new ISymbolDefinitionNode[] { this });
-        }
-
-        public override int CompareToImpl(ISortableNode other, CompilerComparer comparer)
-        {
-            MethodEntryPointTableNode otherMethodEntryPointTable = (MethodEntryPointTableNode)other;
-            return _module.Assembly.GetName().Name.CompareTo(otherMethodEntryPointTable._module.Assembly.GetName().Name);
         }
 
         protected internal override int Phase => (int)ObjectNodePhase.Ordered;

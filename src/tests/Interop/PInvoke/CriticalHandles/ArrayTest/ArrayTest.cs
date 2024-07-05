@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using TestLibrary;
+using Xunit;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
@@ -39,17 +39,17 @@ internal class MyCriticalHandle : CriticalHandle
         {
             return handle;
         }
-        set 
+        set
         {
             handle = value;
         }
     }
-    
+
     internal static IntPtr GetUniqueHandle()
     {
         return new IntPtr(s_uniqueHandleValue++);
     }
-    
+
     internal static bool IsHandleClosed(IntPtr handle)
     {
         return s_closedHandles.Contains(handle.ToInt32());
@@ -75,7 +75,7 @@ internal class Native
 
     [DllImport("CriticalHandlesNative", CallingConvention = CallingConvention.StdCall)]
     internal static extern IntPtr RefModify(IntPtr handleValue, [MarshalAs(UnmanagedType.LPArray)]ref MyCriticalHandle[] handle);
-    
+
     [DllImport("CriticalHandlesNative", CallingConvention = CallingConvention.StdCall)]
     internal static extern MyCriticalHandle[] Ret(IntPtr handleValue);
 
@@ -83,9 +83,10 @@ internal class Native
     internal static extern IntPtr SetIsHandleClosedCallback([MarshalAs(UnmanagedType.FunctionPtr)]IsHandleClosed isHandleClosed);
 }
 
+[ActiveIssue("https://github.com/dotnet/runtime/issues/91388", typeof(TestLibrary.PlatformDetection), nameof(TestLibrary.PlatformDetection.PlatformDoesNotSupportNativeTestAssets))]
 public class CriticalHandleArrayTest
 {
-    private static Native.IsHandleClosed s_isHandleClose = (handleValue) => 
+    private static Native.IsHandleClosed s_isHandleClose = (handleValue) =>
     {
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -134,7 +135,8 @@ public class CriticalHandleArrayTest
         Assert.Throws<MarshalDirectiveException>(() => Native.RefModify(handleValue2, ref myCriticalHandleArray));
     }
 
-    public static int Main(string[] args)
+    [Fact]
+    public static int TestEntryPoint()
     {
         try
         {

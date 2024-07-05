@@ -18,14 +18,6 @@ namespace System
     {
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Abs(double value);
-
-        [Intrinsic]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Abs(float value);
-
-        [Intrinsic]
-        [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern double Acos(double d);
 
         [Intrinsic]
@@ -46,11 +38,11 @@ namespace System
 
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Atan2(double y, double x);
+        public static extern double Atanh(double d);
 
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Atanh(double d);
+        public static extern double Atan2(double y, double x);
 
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
@@ -80,12 +72,11 @@ namespace System
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern double FusedMultiplyAdd(double x, double y, double z);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern int ILogB(double x);
-
+        [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern double Log(double d);
 
+        [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern double Log2(double x);
 
@@ -97,12 +88,22 @@ namespace System
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern double Pow(double x, double y);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double ScaleB(double x, int n);
-
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static extern double Sin(double a);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe (double Sin, double Cos) SinCos(double x)
+        {
+            if (RuntimeHelpers.IsKnownConstant(x))
+            {
+                return (Sin(x), Cos(x));
+            }
+
+            double sin, cos;
+            SinCos(x, &sin, &cos);
+            return (sin, cos);
+        }
 
         [Intrinsic]
         [MethodImpl(MethodImplOptions.InternalCall)]
@@ -121,9 +122,9 @@ namespace System
         public static extern double Tanh(double value);
 
         [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern double FMod(double x, double y);
+        private static extern unsafe double ModF(double x, double* intptr);
 
         [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern unsafe double ModF(double x, double* intptr);
+        private static extern unsafe void SinCos(double x, double* sin, double* cos);
     }
 }

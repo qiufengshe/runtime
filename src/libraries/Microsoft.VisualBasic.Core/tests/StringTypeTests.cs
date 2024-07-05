@@ -246,7 +246,7 @@ namespace Microsoft.VisualBasic.CompilerServices.Tests
             yield return new object[] { (float)1, "1" };
             yield return new object[] { float.PositiveInfinity, float.PositiveInfinity.ToString() };
             yield return new object[] { float.NegativeInfinity, float.NegativeInfinity.ToString() };
-            yield return new object[] { float.NaN, "NaN" };
+            yield return new object[] { float.NaN, float.NaN.ToString() };
         }
 
         public static IEnumerable<object[]> FromDouble_TestData()
@@ -256,7 +256,7 @@ namespace Microsoft.VisualBasic.CompilerServices.Tests
             yield return new object[] { (double)1, "1" };
             yield return new object[] { double.PositiveInfinity, double.PositiveInfinity.ToString() };
             yield return new object[] { double.NegativeInfinity, double.NegativeInfinity.ToString() };
-            yield return new object[] { double.NaN, "NaN" };
+            yield return new object[] { double.NaN, double.NaN.ToString() };
         }
 
         public static IEnumerable<object[]> FromDecimal_TestData()
@@ -363,7 +363,7 @@ namespace Microsoft.VisualBasic.CompilerServices.Tests
             Assert.Throws<ArgumentException>(() => StringType.MidStmtStr(ref str, start, length, insert));
         }
 
-        [Theory]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsNotHybridGlobalizationOnBrowser))]
         [MemberData(nameof(StrCmp_TestData))]
         public void StrCmp(string left, string right, int expectedBinaryCompare, int expectedTextCompare)
         {
@@ -388,7 +388,7 @@ namespace Microsoft.VisualBasic.CompilerServices.Tests
             yield return new object[] { "abc", "ABC", 32, 0 };
         }
 
-        [Theory]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsNotHybridGlobalizationOnBrowser))]
         [InlineData(null, null, true, true)]
         [InlineData("", null, true, true)]
         [InlineData("", "*", true, true)]

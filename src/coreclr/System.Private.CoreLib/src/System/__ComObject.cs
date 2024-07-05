@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable CA1852 // __ComObject should not be sealed
+
 using System.Collections;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
@@ -117,10 +119,6 @@ namespace System
             // If we don't then we need to create one.
             return CreateEventProvider(t);
         }
-
-        internal int ReleaseSelf() => Marshal.InternalReleaseComObject(this);
-
-        internal void FinalReleaseSelf() => Marshal.InternalFinalReleaseComObject(this);
 
         private object CreateEventProvider(
             [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)] RuntimeType t)

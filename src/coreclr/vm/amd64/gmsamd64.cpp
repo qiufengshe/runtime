@@ -11,8 +11,7 @@
 void LazyMachState::unwindLazyState(LazyMachState* baseState,
                                     MachState* unwoundState,
                                     DWORD threadId,
-                                    int funCallDepth /* = 1 */,
-                                    HostCallPreference hostCallPreference /* = (HostCallPreference)(-1) */)
+                                    int funCallDepth /* = 1 */)
 {
     CONTRACTL
     {
@@ -24,6 +23,8 @@ void LazyMachState::unwindLazyState(LazyMachState* baseState,
 
     CONTEXT                         ctx;
     KNONVOLATILE_CONTEXT_POINTERS   nonVolRegPtrs;
+
+    ctx.ContextFlags = 0; // Read by PAL_VirtualUnwind.
 
     ctx.Rip = baseState->m_CaptureRip;
     ctx.Rsp = baseState->m_CaptureRsp + 8; // +8 for return addr pushed before calling LazyMachStateCaptureState
@@ -81,20 +82,7 @@ void LazyMachState::unwindLazyState(LazyMachState* baseState,
         {
             // Determine  whether given IP resides in JITted code. (It returns nonzero in that case.)
             // Use it now to see if we've unwound to managed code yet.
-            BOOL fFailedReaderLock = FALSE;
-            BOOL fIsManagedCode = ExecutionManager::IsManagedCode(pvControlPc, hostCallPreference, &fFailedReaderLock);
-            if (fFailedReaderLock)
-            {
-                // We don't know if we would have been able to find a JIT
-                // manager, because we couldn't enter the reader lock without
-                // yielding (and our caller doesn't want us to yield).  So abort
-                // now.
-
-                // Invalidate the lazyState we're returning, so the caller knows
-                // we aborted before we could fully unwind
-                unwoundState->_pRetAddr = NULL;
-                return;
-            }
+            BOOL fIsManagedCode = ExecutionManager::IsManagedCode(pvControlPc);
 
             if (fIsManagedCode)
                 break;
@@ -134,7 +122,7 @@ void LazyMachState::unwindLazyState(LazyMachState* baseState,
 
 #else  // !DACCESS_COMPILE
 
-#define CALLEE_SAVED_REGISTER(regname) unwoundState->m_Ptrs.p##regname = PTR_ULONG64(nonVolRegPtrs.regname);
+#define CALLEE_SAVED_REGISTER(regname) unwoundState->m_Ptrs.p##regname = PTR_TADDR(nonVolRegPtrs.regname);
     ENUM_CALLEE_SAVED_REGISTERS();
 #undef CALLEE_SAVED_REGISTER
 

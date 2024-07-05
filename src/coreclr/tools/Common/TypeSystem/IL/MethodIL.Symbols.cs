@@ -4,11 +4,9 @@
 using System;
 using System.Collections.Generic;
 
-using Internal.TypeSystem;
-
 namespace Internal.IL
 {
-    partial class MethodIL
+    public partial class MethodIL
     {
         public virtual MethodDebugInformation GetDebugInfo()
         {
@@ -16,7 +14,7 @@ namespace Internal.IL
         }
     }
 
-    partial class InstantiatedMethodIL
+    public partial class InstantiatedMethodIL
     {
         public override MethodDebugInformation GetDebugInfo()
         {
@@ -31,19 +29,21 @@ namespace Internal.IL
     {
         public static MethodDebugInformation None = new MethodDebugInformation();
 
+        public virtual bool IsStateMachineMoveNextMethod => false;
+
         public virtual IEnumerable<ILSequencePoint> GetSequencePoints()
         {
-            return null;
+            return Array.Empty<ILSequencePoint>();
         }
 
         public virtual IEnumerable<ILLocalVariable> GetLocalVariables()
         {
-            return null;
+            return Array.Empty<ILLocalVariable>();
         }
 
         public virtual IEnumerable<string> GetParameterNames()
         {
-            return null;
+            return Array.Empty<string>();
         }
     }
 

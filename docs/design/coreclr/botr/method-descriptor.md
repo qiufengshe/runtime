@@ -91,7 +91,7 @@ The slot is either in MethodTable or in MethodDesc itself. The location of the s
 
 The slot is stored in MethodTable for methods that require efficient lookup via slot index, e.g. virtual methods or methods on generic types. The MethodDesc contains the slot index to allow fast lookup of the entry point in this case.
 
-Otherwise, the slot is part of the MethodDesc itself. This arrangement improves data locality and saves working set. Also, it is not even always possible to preallocate a slot in a MethodTable upfront for dynamically created MethodDescs, such as for methods added by Edit & Continue, instantiations of generic methods or [dynamic methods](https://github.com/dotnet/runtime/blob/master/src/coreclr/System.Private.CoreLib/src/System/Reflection/Emit/DynamicMethod.cs).
+Otherwise, the slot is part of the MethodDesc itself. This arrangement improves data locality and saves working set. Also, it is not even always possible to preallocate a slot in a MethodTable upfront for dynamically created MethodDescs, such as for methods added by Edit & Continue, instantiations of generic methods or [dynamic methods](https://github.com/dotnet/runtime/blob/main/src/coreclr/System.Private.CoreLib/src/System/Reflection/Emit/DynamicMethod.cs).
 
 MethodDesc Chunks
 -----------------
@@ -206,10 +206,10 @@ For example, it may be a bad idea to use the temporary entry point to call the m
 
 The methods to get callable entry points from MethodDesc are:
 
-- MethodDesc::GetSingleCallableAddrOfCode
-- MethodDesc::GetMultiCallableAddrOfCode
-- MethodDesc::GetSingleCallableAddrOfVirtualizedCode
-- MethodDesc::GetMultiCallableAddrOfVirtualizedCode
+- `MethodDesc::GetSingleCallableAddrOfCode`
+- `MethodDesc::GetMultiCallableAddrOfCode`
+- `MethodDesc::GetSingleCallableAddrOfVirtualizedCode`
+- `MethodDesc::GetMultiCallableAddrOfVirtualizedCode`
 
 Types of precode
 ----------------

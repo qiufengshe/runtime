@@ -3,11 +3,11 @@
 
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
 
 namespace Microsoft.NET.HostModel.AppHost
 {
@@ -15,7 +15,7 @@ namespace Microsoft.NET.HostModel.AppHost
     /// Embeds the App Name into the AppHost.exe
     /// If an apphost is a single-file bundle, updates the location of the bundle headers.
     /// </summary>
-    public static class HostWriter
+    public static partial class HostWriter
     {
         /// <summary>
         /// hash value embedded in default apphost executable in a place where the path to the app binary should be stored.
@@ -30,13 +30,17 @@ namespace Microsoft.NET.HostModel.AppHost
         /// <param name="appHostDestinationFilePath">The destination path for desired location to place, including the file name</param>
         /// <param name="appBinaryFilePath">Full path to app binary or relative path to the result apphost file</param>
         /// <param name="windowsGraphicalUserInterface">Specify whether to set the subsystem to GUI. Only valid for PE apphosts.</param>
-        /// <param name="assemblyToCopyResorcesFrom">Path to the intermediate assembly, used for copying resources to PE apphosts.</param>
+        /// <param name="assemblyToCopyResourcesFrom">Path to the intermediate assembly, used for copying resources to PE apphosts.</param>
+        /// <param name="enableMacOSCodeSign">Sign the app binary using codesign with an anonymous certificate.</param>
+        /// <param name="disableCetCompat">Remove CET Shadow Stack compatibility flag if set</param>
         public static void CreateAppHost(
             string appHostSourceFilePath,
             string appHostDestinationFilePath,
             string appBinaryFilePath,
             bool windowsGraphicalUserInterface = false,
-            string assemblyToCopyResorcesFrom = null)
+            string assemblyToCopyResourcesFrom = null,
+            bool enableMacOSCodeSign = false,
+            bool disableCetCompat = false)
         {
             var bytesToWrite = Encoding.UTF8.GetBytes(appBinaryFilePath);
             if (bytesToWrite.Length > 1024)
@@ -44,65 +48,79 @@ namespace Microsoft.NET.HostModel.AppHost
                 throw new AppNameTooLongException(appBinaryFilePath);
             }
 
-            BinaryUtils.CopyFile(appHostSourceFilePath, appHostDestinationFilePath);
-
             bool appHostIsPEImage = false;
 
-            void RewriteAppHost()
+            void RewriteAppHost(MemoryMappedFile mappedFile, MemoryMappedViewAccessor accessor)
             {
                 // Re-write the destination apphost with the proper contents.
-                using (var memoryMappedFile = MemoryMappedFile.CreateFromFile(appHostDestinationFilePath))
+                BinaryUtils.SearchAndReplace(accessor, AppBinaryPathPlaceholderSearchValue, bytesToWrite);
+
+                appHostIsPEImage = PEUtils.IsPEImage(accessor);
+
+                if (windowsGraphicalUserInterface)
                 {
-                    using (MemoryMappedViewAccessor accessor = memoryMappedFile.CreateViewAccessor())
+                    if (!appHostIsPEImage)
                     {
-                        BinaryUtils.SearchAndReplace(accessor, AppBinaryPathPlaceholderSearchValue, bytesToWrite);
-
-                        appHostIsPEImage = PEUtils.IsPEImage(accessor);
-
-                        if (windowsGraphicalUserInterface)
-                        {
-                            if (!appHostIsPEImage)
-                            {
-                                throw new AppHostNotPEFileException();
-                            }
-
-                            PEUtils.SetWindowsGraphicalUserInterfaceBit(accessor);
-                        }
+                        throw new AppHostNotPEFileException("PE file signature not found.");
                     }
-                }
-            }
 
-            void UpdateResources()
-            {
-                if (assemblyToCopyResorcesFrom != null && appHostIsPEImage)
+                    PEUtils.SetWindowsGraphicalUserInterfaceBit(accessor);
+                }
+
+                if (disableCetCompat && appHostIsPEImage)
                 {
-                    if (ResourceUpdater.IsSupportedOS())
-                    {
-                        // Copy resources from managed dll to the apphost
-                        new ResourceUpdater(appHostDestinationFilePath)
-                            .AddResourcesFromPEImage(assemblyToCopyResorcesFrom)
-                            .Update();
-                    }
-                    else
-                    {
-                        throw new AppHostCustomizationUnsupportedOSException();
-                    }
+                    PEUtils.RemoveCetCompatBit(mappedFile, accessor);
                 }
-            }
-
-            void RemoveSignatureIfMachO()
-            {
-                MachOUtils.RemoveSignature(appHostDestinationFilePath);
-            }
-
-            void SetLastWriteTime()
-            {
-                // Memory-mapped write does not updating last write time
-                File.SetLastWriteTimeUtc(appHostDestinationFilePath, DateTime.UtcNow);
             }
 
             try
             {
+                RetryUtil.RetryOnIOError(() =>
+                {
+                    FileStream appHostSourceStream = null;
+                    MemoryMappedFile memoryMappedFile = null;
+                    MemoryMappedViewAccessor memoryMappedViewAccessor = null;
+                    try
+                    {
+                        // Open the source host file.
+                        appHostSourceStream = new FileStream(appHostSourceFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1);
+                        memoryMappedFile = MemoryMappedFile.CreateFromFile(appHostSourceStream, null, 0, MemoryMappedFileAccess.Read, HandleInheritability.None, true);
+                        memoryMappedViewAccessor = memoryMappedFile.CreateViewAccessor(0, 0, MemoryMappedFileAccess.CopyOnWrite);
+
+                        // Get the size of the source app host to ensure that we don't write extra data to the destination.
+                        // On Windows, the size of the view accessor is rounded up to the next page boundary.
+                        long sourceAppHostLength = appHostSourceStream.Length;
+
+                        // Transform the host file in-memory.
+                        RewriteAppHost(memoryMappedFile, memoryMappedViewAccessor);
+
+                        // Save the transformed host.
+                        using (FileStream fileStream = new FileStream(appHostDestinationFilePath, FileMode.Create))
+                        {
+                            BinaryUtils.WriteToStream(memoryMappedViewAccessor, fileStream, sourceAppHostLength);
+
+                            // Remove the signature from MachO hosts.
+                            if (!appHostIsPEImage)
+                            {
+                                MachOUtils.RemoveSignature(fileStream);
+                            }
+
+                            if (assemblyToCopyResourcesFrom != null && appHostIsPEImage)
+                            {
+                                using var updater = new ResourceUpdater(fileStream, true);
+                                updater.AddResourcesFromPEImage(assemblyToCopyResourcesFrom);
+                                updater.Update();
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        memoryMappedViewAccessor?.Dispose();
+                        memoryMappedFile?.Dispose();
+                        appHostSourceStream?.Dispose();
+                    }
+                });
+
                 if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
                     var filePermissionOctal = Convert.ToInt32("755", 8); // -rwxr-xr-x
@@ -117,17 +135,18 @@ namespace Microsoft.NET.HostModel.AppHost
 
                     if (chmodReturnCode == -1)
                     {
-                        throw new Win32Exception(Marshal.GetLastWin32Error(), $"Could not set file permission {filePermissionOctal} for {appHostDestinationFilePath}.");
+                        throw new Win32Exception(Marshal.GetLastWin32Error(), $"Could not set file permission {Convert.ToString(filePermissionOctal, 8)} for {appHostDestinationFilePath}.");
+                    }
+
+                    if (enableMacOSCodeSign && RuntimeInformation.IsOSPlatform(OSPlatform.OSX) && HostModelUtils.IsCodesignAvailable())
+                    {
+                        (int exitCode, string stdErr) = HostModelUtils.RunCodesign("-s -", appHostDestinationFilePath);
+                        if (exitCode != 0)
+                        {
+                            throw new AppHostSigningException(exitCode, stdErr);
+                        }
                     }
                 }
-
-                RetryUtil.RetryOnIOError(RewriteAppHost);
-
-                RetryUtil.RetryOnWin32Error(UpdateResources);
-
-                RetryUtil.RetryOnIOError(RemoveSignatureIfMachO);
-
-                RetryUtil.RetryOnIOError(SetLastWriteTime);
             }
             catch (Exception ex)
             {
@@ -172,6 +191,9 @@ namespace Microsoft.NET.HostModel.AppHost
                                              BitConverter.GetBytes(bundleHeaderOffset),
                                              pad0s: false));
 
+            RetryUtil.RetryOnIOError(() =>
+                MachOUtils.AdjustHeadersForBundle(appHostPath));
+
             // Memory-mapped write does not updating last write time
             RetryUtil.RetryOnIOError(() =>
                 File.SetLastWriteTimeUtc(appHostPath, DateTime.UtcNow));
@@ -196,9 +218,9 @@ namespace Microsoft.NET.HostModel.AppHost
             long headerOffset = 0;
             void FindBundleHeader()
             {
-                using (var memoryMappedFile = MemoryMappedFile.CreateFromFile(appHostFilePath))
+                using (var memoryMappedFile = MemoryMappedFile.CreateFromFile(appHostFilePath, FileMode.Open, null, 0, MemoryMappedFileAccess.Read))
                 {
-                    using (MemoryMappedViewAccessor accessor = memoryMappedFile.CreateViewAccessor())
+                    using (MemoryMappedViewAccessor accessor = memoryMappedFile.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read))
                     {
                         int position = BinaryUtils.SearchInFile(accessor, bundleSignature);
                         if (position == -1)
@@ -217,7 +239,7 @@ namespace Microsoft.NET.HostModel.AppHost
             return headerOffset != 0;
         }
 
-        [DllImport("libc", SetLastError = true)]
-        private static extern int chmod(string pathname, int mode);
+        [LibraryImport("libc", SetLastError = true)]
+        private static partial int chmod([MarshalAs(UnmanagedType.LPStr)] string pathname, int mode);
     }
 }

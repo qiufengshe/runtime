@@ -52,7 +52,7 @@ struct CallDescrData
 
 #define NUMBER_RETURNVALUE_SLOTS (ENREGISTERED_RETURNTYPE_MAXSIZE / sizeof(ARG_SLOT))
 
-#if !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
+#if !defined(DACCESS_COMPILE)
 
 extern "C" void STDCALL CallDescrWorkerInternal(CallDescrData * pCallDescrData);
 
@@ -297,7 +297,7 @@ public:
         m_pMD(pMD),
         m_pCallTarget(pCallTarget),
         m_methodSig(*pSig),
-        m_argIt(pSig)
+        m_argIt(pSig, pMD)
     {
         CONTRACTL
         {
@@ -346,7 +346,7 @@ public:
             }                                                                       \
             ARG_SLOT retval;                                                        \
             CallTargetWorker(pArguments, &retval, sizeof(retval));                  \
-            return *(rettype *)ArgSlotEndianessFixup(&retval, sizeof(rettype));     \
+            return *(rettype *)ArgSlotEndiannessFixup(&retval, sizeof(rettype));     \
         }
 
 #define MDCALLDEF_ARGSLOT(wrappedmethod, ext)                                       \
@@ -362,7 +362,7 @@ public:
             ARG_SLOT retval;                                                                    \
             CallTargetWorker(pArguments, &retval, sizeof(retval));                              \
             return ObjectTo##reftype(*(ptrtype *)                                               \
-                        ArgSlotEndianessFixup(&retval, sizeof(ptrtype)));                       \
+                        ArgSlotEndiannessFixup(&retval, sizeof(ptrtype)));                       \
         }
 
 
@@ -554,9 +554,9 @@ enum DispatchCallSimpleFlags
         DWORD   __dwDispatchCallSimpleFlags = 0;            \
 
 #define PREPARE_NONVIRTUAL_CALLSITE(id) \
-        static PCODE s_pAddr##id = NULL;                    \
+        static PCODE s_pAddr##id = 0;                       \
         PCODE __pSlot = VolatileLoad(&s_pAddr##id);         \
-        if ( __pSlot == NULL )                              \
+        if ( __pSlot == 0 )                                 \
         {                                                   \
             MethodDesc *pMeth = CoreLibBinder::GetMethod(id);   \
             _ASSERTE(pMeth);                                \
@@ -697,6 +697,6 @@ enum DispatchCallSimpleFlags
 
 void CallDefaultConstructor(OBJECTREF ref);
 
-#endif //!DACCESS_COMPILE && !CROSSGEN_COMPILE
+#endif //!DACCESS_COMPILE
 
 #endif // __CALLHELPERS_H__

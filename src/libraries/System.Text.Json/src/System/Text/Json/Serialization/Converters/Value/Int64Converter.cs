@@ -1,9 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics;
+using System.Text.Json.Nodes;
+using System.Text.Json.Schema;
+
 namespace System.Text.Json.Serialization.Converters
 {
-    internal sealed class Int64Converter : JsonConverter<long>
+    internal sealed class Int64Converter : JsonPrimitiveConverter<long>
     {
         public Int64Converter()
         {
@@ -20,17 +24,18 @@ namespace System.Text.Json.Serialization.Converters
             writer.WriteNumberValue(value);
         }
 
-        internal override long ReadWithQuotes(ref Utf8JsonReader reader)
+        internal override long ReadAsPropertyNameCore(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
+            Debug.Assert(reader.TokenType == JsonTokenType.PropertyName);
             return reader.GetInt64WithQuotes();
         }
 
-        internal override void WriteWithQuotes(Utf8JsonWriter writer, long value, JsonSerializerOptions options, ref WriteStack state)
+        internal override void WriteAsPropertyNameCore(Utf8JsonWriter writer, long value, JsonSerializerOptions options, bool isWritingExtensionDataProperty)
         {
             writer.WritePropertyName(value);
         }
 
-        internal override long ReadNumberWithCustomHandling(ref Utf8JsonReader reader, JsonNumberHandling handling)
+        internal override long ReadNumberWithCustomHandling(ref Utf8JsonReader reader, JsonNumberHandling handling, JsonSerializerOptions options)
         {
             if (reader.TokenType == JsonTokenType.String &&
                 (JsonNumberHandling.AllowReadingFromString & handling) != 0)
@@ -52,5 +57,8 @@ namespace System.Text.Json.Serialization.Converters
                 writer.WriteNumberValue(value);
             }
         }
+
+        internal override JsonSchema? GetSchema(JsonNumberHandling numberHandling) =>
+            GetSchemaForNumericType(JsonSchemaType.Integer, numberHandling);
     }
 }

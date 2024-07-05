@@ -31,15 +31,12 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 /*****************************************************************************/
 
-FILE* jitstdout = nullptr;
-
-ICorJitHost*   g_jitHost        = nullptr;
-static CILJit* ILJitter         = nullptr; // The one and only JITTER I return
-bool           g_jitInitialized = false;
+ICorJitHost* g_jitHost        = nullptr;
+bool         g_jitInitialized = false;
 
 /*****************************************************************************/
 
-extern "C" DLLEXPORT void __stdcall jitStartup(ICorJitHost* jitHost)
+extern "C" DLLEXPORT void jitStartup(ICorJitHost* jitHost)
 {
     if (g_jitInitialized)
     {
@@ -72,55 +69,88 @@ extern "C" DLLEXPORT void __stdcall jitStartup(ICorJitHost* jitHost)
 
     assert(!JitConfig.isInitialized());
     JitConfig.initialize(jitHost);
+    Compiler::compStartup();
 
-#ifdef DEBUG
+    g_jitInitialized = true;
+}
+
+static FILE* volatile s_jitstdout;
+
+static FILE* jitstdoutInit()
+{
     const WCHAR* jitStdOutFile = JitConfig.JitStdOutFile();
+    FILE*        file          = nullptr;
     if (jitStdOutFile != nullptr)
     {
-        jitstdout = _wfopen(jitStdOutFile, W("a"));
-        assert(jitstdout != nullptr);
+        file = _wfopen(jitStdOutFile, W("a"));
+        assert(file != nullptr);
     }
-#endif // DEBUG
 
 #if !defined(HOST_UNIX)
-    if (jitstdout == nullptr)
+    if (file == nullptr)
     {
         int stdoutFd = _fileno(procstdout());
         // Check fileno error output(s) -1 may overlap with errno result
-        // but is included for completness.
+        // but is included for completeness.
         // We want to detect the case where the initial handle is null
         // or bogus and avoid making further calls.
         if ((stdoutFd != -1) && (stdoutFd != -2) && (errno != EINVAL))
         {
-            int jitstdoutFd = _dup(_fileno(procstdout()));
+            int jitstdoutFd = _dup(stdoutFd);
             // Check the error status returned by dup.
             if (jitstdoutFd != -1)
             {
                 _setmode(jitstdoutFd, _O_TEXT);
-                jitstdout = _fdopen(jitstdoutFd, "w");
-                assert(jitstdout != nullptr);
+                file = _fdopen(jitstdoutFd, "w");
+                assert(file != nullptr);
 
                 // Prevent the FILE* from buffering its output in order to avoid calls to
                 // `fflush()` throughout the code.
-                setvbuf(jitstdout, nullptr, _IONBF, 0);
+                setvbuf(file, nullptr, _IONBF, 0);
             }
         }
     }
 #endif // !HOST_UNIX
 
-    // If jitstdout is still null, fallback to whatever procstdout() was
-    // initially set to.
-    if (jitstdout == nullptr)
+    if (file == nullptr)
     {
-        jitstdout = procstdout();
+        file = procstdout();
     }
 
-#ifdef FEATURE_TRACELOGGING
-    JitTelemetry::NotifyDllProcessAttach();
-#endif
-    Compiler::compStartup();
+    FILE* observed = InterlockedCompareExchangeT(&s_jitstdout, file, nullptr);
 
-    g_jitInitialized = true;
+    if (observed != nullptr)
+    {
+        if (file != procstdout())
+        {
+            fclose(file);
+        }
+
+        return observed;
+    }
+
+    return file;
+}
+
+FILE* jitstdout()
+{
+    FILE* file = s_jitstdout;
+    if (file != nullptr)
+    {
+        return file;
+    }
+
+    return jitstdoutInit();
+}
+
+// Like printf/logf, but only outputs to jitstdout -- skips call back into EE.
+int jitprintf(const char* fmt, ...)
+{
+    va_list vl;
+    va_start(vl, fmt);
+    int status = vfprintf(jitstdout(), fmt, vl);
+    va_end(vl);
+    return status;
 }
 
 void jitShutdown(bool processIsTerminating)
@@ -132,50 +162,33 @@ void jitShutdown(bool processIsTerminating)
 
     Compiler::compShutdown();
 
-    if (jitstdout != procstdout())
+    FILE* file = s_jitstdout;
+    if ((file != nullptr) && (file != procstdout()))
     {
         // When the process is terminating, the fclose call is unnecessary and is also prone to
         // crashing since the UCRT itself often frees the backing memory earlier on in the
         // termination sequence.
         if (!processIsTerminating)
         {
-            fclose(jitstdout);
+            fclose(file);
         }
     }
-
-#ifdef FEATURE_TRACELOGGING
-    JitTelemetry::NotifyDllProcessDetach();
-#endif
 
     g_jitInitialized = false;
 }
 
 /*****************************************************************************/
 
-struct CILJitSingletonAllocator
-{
-    int x;
-};
-const CILJitSingletonAllocator CILJitSingleton = {0};
+static CILJit g_CILJit;
 
-void* __cdecl operator new(size_t, const CILJitSingletonAllocator&)
-{
-    static char CILJitBuff[sizeof(CILJit)];
-    return CILJitBuff;
-}
-
-DLLEXPORT ICorJitCompiler* __stdcall getJit()
+DLLEXPORT ICorJitCompiler* getJit()
 {
     if (!g_jitInitialized)
     {
         return nullptr;
     }
 
-    if (ILJitter == nullptr)
-    {
-        ILJitter = new (CILJitSingleton) CILJit();
-    }
-    return (ILJitter);
+    return &g_CILJit;
 }
 
 /*****************************************************************************/
@@ -198,7 +211,9 @@ void SetJitTls(void* value)
 
 #if defined(DEBUG)
 
-JitTls::JitTls(ICorJitInfo* jitInfo) : m_compiler(nullptr), m_logEnv(jitInfo)
+JitTls::JitTls(ICorJitInfo* jitInfo)
+    : m_compiler(nullptr)
+    , m_logEnv(jitInfo)
 {
     m_next = reinterpret_cast<JitTls*>(GetJitTls());
     SetJitTls(this);
@@ -251,8 +266,11 @@ void JitTls::SetCompiler(Compiler* compiler)
 // interface. Things really don't get going inside the JIT until the code:Compiler::compCompile#Phases
 // method.  Usually that is where you want to go.
 
-CorJitResult CILJit::compileMethod(
-    ICorJitInfo* compHnd, CORINFO_METHOD_INFO* methodInfo, unsigned flags, BYTE** entryAddress, ULONG* nativeSizeOfCode)
+CorJitResult CILJit::compileMethod(ICorJitInfo*         compHnd,
+                                   CORINFO_METHOD_INFO* methodInfo,
+                                   unsigned             flags,
+                                   uint8_t**            entryAddress,
+                                   uint32_t*            nativeSizeOfCode)
 {
     JitFlags jitFlags;
 
@@ -297,48 +315,31 @@ void CILJit::getVersionIdentifier(GUID* versionIdentifier)
     memcpy(versionIdentifier, &JITEEVersionIdentifier, sizeof(GUID));
 }
 
+#ifdef TARGET_OS_RUNTIMEDETERMINED
+bool TargetOS::OSSettingConfigured = false;
+#ifndef TARGET_UNIX_OS_RUNTIMEDETERMINED // This define is only set if ONLY the different unix variants are
+                                         // runtimedetermined
+bool TargetOS::IsWindows = false;
+bool TargetOS::IsUnix    = false;
+#endif
+bool TargetOS::IsApplePlatform = false;
+#endif
+
 /*****************************************************************************
- * Determine the maximum length of SIMD vector supported by this JIT.
+ * Set the OS that this JIT should be generating code for. The contract with the VM
+ * is that this must be called before compileMethod is called.
  */
-
-unsigned CILJit::getMaxIntrinsicSIMDVectorLength(CORJIT_FLAGS cpuCompileFlags)
+void CILJit::setTargetOS(CORINFO_OS os)
 {
-    JitFlags jitFlags;
-    jitFlags.SetFromFlags(cpuCompileFlags);
-
-#ifdef FEATURE_SIMD
-#if defined(TARGET_XARCH)
-    if (!jitFlags.IsSet(JitFlags::JIT_FLAG_PREJIT) && jitFlags.IsSet(JitFlags::JIT_FLAG_FEATURE_SIMD) &&
-        jitFlags.GetInstructionSetFlags().HasInstructionSet(InstructionSet_AVX2))
-    {
-        // Since the ISAs can be disabled individually and since they are hierarchical in nature (that is
-        // disabling SSE also disables SSE2 through AVX2), we need to check each ISA in the hierarchy to
-        // ensure that AVX2 is actually supported. Otherwise, we will end up getting asserts downstream.
-        if ((JitConfig.EnableAVX2() != 0) && (JitConfig.EnableAVX() != 0) && (JitConfig.EnableSSE42() != 0) &&
-            (JitConfig.EnableSSE41() != 0) && (JitConfig.EnableSSSE3() != 0) && (JitConfig.EnableSSE3_4() != 0) &&
-            (JitConfig.EnableSSE3() != 0) && (JitConfig.EnableSSE2() != 0) && (JitConfig.EnableSSE() != 0) &&
-            (JitConfig.EnableHWIntrinsic() != 0))
-        {
-            if (GetJitTls() != nullptr && JitTls::GetCompiler() != nullptr)
-            {
-                JITDUMP("getMaxIntrinsicSIMDVectorLength: returning 32\n");
-            }
-            return 32;
-        }
-    }
-#endif // defined(TARGET_XARCH)
-    if (GetJitTls() != nullptr && JitTls::GetCompiler() != nullptr)
-    {
-        JITDUMP("getMaxIntrinsicSIMDVectorLength: returning 16\n");
-    }
-    return 16;
-#else  // !FEATURE_SIMD
-    if (GetJitTls() != nullptr && JitTls::GetCompiler() != nullptr)
-    {
-        JITDUMP("getMaxIntrinsicSIMDVectorLength: returning 0\n");
-    }
-    return 0;
-#endif // !FEATURE_SIMD
+#ifdef TARGET_OS_RUNTIMEDETERMINED
+    TargetOS::IsApplePlatform = os == CORINFO_APPLE;
+#ifndef TARGET_UNIX_OS_RUNTIMEDETERMINED // This define is only set if ONLY the different unix variants are
+                                         // runtimedetermined
+    TargetOS::IsUnix    = (os == CORINFO_UNIX) || (os == CORINFO_APPLE);
+    TargetOS::IsWindows = os == CORINFO_WINNT;
+#endif
+    TargetOS::OSSettingConfigured = true;
+#endif
 }
 
 //------------------------------------------------------------------------
@@ -346,11 +347,11 @@ unsigned CILJit::getMaxIntrinsicSIMDVectorLength(CORJIT_FLAGS cpuCompileFlags)
 //   including padding after the actual value.
 //
 // Arguments:
-//   list - the arg list handle pointing to the argument
-//   sig  - the signature for the arg's method
+//   corInfoType - EE type of the argument
+//   typeHnd     - if the type is a value class, its class handle
 //
 // Return value:
-//   the number of stack slots in stack arguments for the call.
+//   the size in bytes when the type is passed on the stack for the call.
 //
 // Notes:
 //   - On most platforms arguments are passed with TARGET_POINTER_SIZE alignment,
@@ -358,21 +359,19 @@ unsigned CILJit::getMaxIntrinsicSIMDVectorLength(CORJIT_FLAGS cpuCompileFlags)
 //   It is different for arm64 apple that packs some types without alignment and padding.
 //   If the argument is passed by reference then the method returns REF size.
 //
-unsigned Compiler::eeGetArgSize(CORINFO_ARG_LIST_HANDLE list, CORINFO_SIG_INFO* sig)
+unsigned Compiler::eeGetArgSize(CorInfoType corInfoType, CORINFO_CLASS_HANDLE typeHnd)
 {
+    var_types argType = JITtype2varType(corInfoType);
+
 #if defined(TARGET_AMD64)
 
     // Everything fits into a single 'slot' size
     // to accommodate irregular sized structs, they are passed byref
-    CLANG_FORMAT_COMMENT_ANCHOR;
 
 #ifdef UNIX_AMD64_ABI
-    CORINFO_CLASS_HANDLE argClass;
-    CorInfoType          argTypeJit = strip(info.compCompHnd->getArgType(sig, list, &argClass));
-    var_types            argType    = JITtype2varType(argTypeJit);
     if (varTypeIsStruct(argType))
     {
-        unsigned structSize = info.compCompHnd->getClassSize(argClass);
+        unsigned structSize = info.compCompHnd->getClassSize(typeHnd);
         return roundUp(structSize, TARGET_POINTER_SIZE);
     }
 #endif // UNIX_AMD64_ABI
@@ -380,26 +379,22 @@ unsigned Compiler::eeGetArgSize(CORINFO_ARG_LIST_HANDLE list, CORINFO_SIG_INFO* 
 
 #else // !TARGET_AMD64
 
-    CORINFO_CLASS_HANDLE argClass;
-    CorInfoType          argTypeJit = strip(info.compCompHnd->getArgType(sig, list, &argClass));
-    var_types            argType    = JITtype2varType(argTypeJit);
-    unsigned             argSize;
+    unsigned argSize;
 
     var_types hfaType = TYP_UNDEF;
     bool      isHfa   = false;
 
     if (varTypeIsStruct(argType))
     {
-        hfaType             = GetHfaType(argClass);
+        hfaType             = GetHfaType(typeHnd);
         isHfa               = (hfaType != TYP_UNDEF);
-        unsigned structSize = info.compCompHnd->getClassSize(argClass);
+        unsigned structSize = info.compCompHnd->getClassSize(typeHnd);
 
         // make certain the EE passes us back the right thing for refanys
-        assert(argTypeJit != CORINFO_TYPE_REFANY || structSize == 2 * TARGET_POINTER_SIZE);
+        assert(corInfoType != CORINFO_TYPE_REFANY || structSize == 2 * TARGET_POINTER_SIZE);
 
         // For each target that supports passing struct args in multiple registers
         // apply the target specific rules for them here:
-        CLANG_FORMAT_COMMENT_ANCHOR;
 
 #if FEATURE_MULTIREG_ARGS
 #if defined(TARGET_ARM64)
@@ -415,15 +410,13 @@ unsigned Compiler::eeGetArgSize(CORINFO_ARG_LIST_HANDLE list, CORINFO_SIG_INFO* 
             if (structSize > (2 * TARGET_POINTER_SIZE))
             {
 
-#ifndef TARGET_UNIX
-                if (info.compIsVarArgs)
+                if (TargetOS::IsWindows && info.compIsVarArgs)
                 {
                     // Arm64 Varargs ABI requires passing in general purpose
                     // registers. Force the decision of whether this is an HFA
                     // to false to correctly pass as if it was not an HFA.
                     isHfa = false;
                 }
-#endif // TARGET_UNIX
                 if (!isHfa)
                 {
                     // This struct is passed by reference using a single 'slot'
@@ -431,6 +424,14 @@ unsigned Compiler::eeGetArgSize(CORINFO_ARG_LIST_HANDLE list, CORINFO_SIG_INFO* 
                 }
             }
         }
+#elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+        // Any structs that are larger than MAX_PASS_MULTIREG_BYTES are always passed by reference
+        if (structSize > MAX_PASS_MULTIREG_BYTES)
+        {
+            // This struct is passed by reference using a single 'slot'
+            return TARGET_POINTER_SIZE;
+        }
+//  otherwise will we pass this struct by value in multiple registers
 #elif !defined(TARGET_ARM)
         NYI("unknown target");
 #endif // defined(TARGET_XXX)
@@ -443,47 +444,56 @@ unsigned Compiler::eeGetArgSize(CORINFO_ARG_LIST_HANDLE list, CORINFO_SIG_INFO* 
     {
         argSize = genTypeSize(argType);
     }
-    const unsigned argAlignment       = eeGetArgAlignment(argType, (hfaType == TYP_FLOAT));
-    const unsigned argSizeWithPadding = roundUp(argSize, argAlignment);
-    return argSizeWithPadding;
+
+    const unsigned argSizeAlignment = eeGetArgSizeAlignment(argType, (hfaType == TYP_FLOAT));
+    const unsigned alignedArgSize   = roundUp(argSize, argSizeAlignment);
+    return alignedArgSize;
 
 #endif
 }
 
 //------------------------------------------------------------------------
-// eeGetArgAlignment: Return arg passing alignment for the given type.
+// eeGetArgSizeAlignment: Return alignment for an argument size.
 //
 // Arguments:
 //   type - the argument type
 //   isFloatHfa - is it an HFA<float> type
 //
 // Return value:
-//   the required alignment in bytes.
+//   the required argument size alignment in bytes.
 //
 // Notes:
-//   It currently doesn't return smaller than required alignment for arm32 (4 bytes for double and int64)
-//   but it does not lead to issues because its alignment requirements are satisfied in other code parts.
-//   TODO: fix this function and delete the other code that is handling this.
+//   Usually values passed on the stack are aligned to stack slot (i.e. pointer size), except for
+//   on Apple ARM ABI that allows packing multiple args into a single stack slot.
+//
+//   The arg size alignment can be different from the normal alignment. One
+//   example is on arm32 where a struct containing a double and float can
+//   explicitly have size 12 but with alignment 8, in which case the size is
+//   aligned to 4 (the stack slot size) while frame layout must still handle
+//   aligning the argument to 8.
 //
 // static
-unsigned Compiler::eeGetArgAlignment(var_types type, bool isFloatHfa)
+unsigned Compiler::eeGetArgSizeAlignment(var_types type, bool isFloatHfa)
 {
-#if defined(OSX_ARM64_ABI)
-    if (isFloatHfa)
+    if (compAppleArm64Abi())
     {
-        assert(varTypeIsStruct(type));
-        return sizeof(float);
+        if (isFloatHfa)
+        {
+            assert(varTypeIsStruct(type));
+            return sizeof(float);
+        }
+        if (varTypeIsStruct(type))
+        {
+            return TARGET_POINTER_SIZE;
+        }
+        const unsigned argSize = genTypeSize(type);
+        assert((0 < argSize) && (argSize <= TARGET_POINTER_SIZE));
+        return argSize;
     }
-    if (varTypeIsStruct(type))
+    else
     {
         return TARGET_POINTER_SIZE;
     }
-    const unsigned argSize = genTypeSize(type);
-    assert((0 < argSize) && (argSize <= TARGET_POINTER_SIZE));
-    return argSize;
-#else
-    return TARGET_POINTER_SIZE;
-#endif
 }
 
 /*****************************************************************************/
@@ -500,13 +510,14 @@ GenTree* Compiler::eeGetPInvokeCookie(CORINFO_SIG_INFO* szMetaSig)
 //------------------------------------------------------------------------
 // eeGetArrayDataOffset: Gets the offset of a SDArray's first element
 //
-// Arguments:
-//    type - The array element type
-//
 // Return Value:
 //    The offset to the first array element.
-
-unsigned Compiler::eeGetArrayDataOffset(var_types type)
+//
+// Notes:
+//    See the comments at the definition of CORINFO_Array for a description of how arrays are laid out in memory.
+//
+// static
+unsigned Compiler::eeGetArrayDataOffset()
 {
     return OFFSETOF__CORINFO_Array__data;
 }
@@ -515,7 +526,6 @@ unsigned Compiler::eeGetArrayDataOffset(var_types type)
 // eeGetMDArrayDataOffset: Gets the offset of a MDArray's first element
 //
 // Arguments:
-//    type - The array element type
 //    rank - The array rank
 //
 // Return Value:
@@ -523,13 +533,56 @@ unsigned Compiler::eeGetArrayDataOffset(var_types type)
 //
 // Assumptions:
 //    The rank should be greater than 0.
-
-unsigned Compiler::eeGetMDArrayDataOffset(var_types type, unsigned rank)
+//
+// static
+unsigned Compiler::eeGetMDArrayDataOffset(unsigned rank)
 {
     assert(rank > 0);
     // Note that below we're specifically using genTypeSize(TYP_INT) because array
     // indices are not native int.
-    return eeGetArrayDataOffset(type) + 2 * genTypeSize(TYP_INT) * rank;
+    return eeGetArrayDataOffset() + 2 * genTypeSize(TYP_INT) * rank;
+}
+
+//------------------------------------------------------------------------
+// eeGetMDArrayLengthOffset: Returns the offset from the Array object to the
+//   size for the given dimension.
+//
+// Arguments:
+//    rank      - the rank of the array
+//    dimension - the dimension for which the lower bound offset will be returned.
+//
+// Return Value:
+//    The offset.
+//
+// static
+unsigned Compiler::eeGetMDArrayLengthOffset(unsigned rank, unsigned dimension)
+{
+    // Note that we don't actually need the `rank` value for this calculation, but we pass it anyway,
+    // to be consistent with other MD array functions.
+    assert(rank > 0);
+    assert(dimension < rank);
+    // Note that the lower bound and length fields of the Array object are always TYP_INT, even on 64-bit targets.
+    return eeGetArrayDataOffset() + genTypeSize(TYP_INT) * dimension;
+}
+
+//------------------------------------------------------------------------
+// eeGetMDArrayLowerBoundOffset: Returns the offset from the Array object to the
+//   lower bound for the given dimension.
+//
+// Arguments:
+//    rank      - the rank of the array
+//    dimension - the dimension for which the lower bound offset will be returned.
+//
+// Return Value:
+//    The offset.
+//
+// static
+unsigned Compiler::eeGetMDArrayLowerBoundOffset(unsigned rank, unsigned dimension)
+{
+    assert(rank > 0);
+    assert(dimension < rank);
+    // Note that the lower bound and length fields of the Array object are always TYP_INT, even on 64-bit targets.
+    return eeGetArrayDataOffset() + genTypeSize(TYP_INT) * (dimension + rank);
 }
 
 /*****************************************************************************/
@@ -537,10 +590,20 @@ unsigned Compiler::eeGetMDArrayDataOffset(var_types type, unsigned rank)
 void Compiler::eeGetStmtOffsets()
 {
     ULONG32                      offsetsCount;
-    DWORD*                       offsets;
+    uint32_t*                    offsets;
     ICorDebugInfo::BoundaryTypes offsetsImplicit;
 
-    info.compCompHnd->getBoundaries(info.compMethodHnd, &offsetsCount, &offsets, &offsetsImplicit);
+    if (compIsForInlining())
+    {
+        // We do not get explicit boundaries for inlinees, only implicit ones.
+        offsetsImplicit = impInlineRoot()->info.compStmtOffsetsImplicit;
+        offsetsCount    = 0;
+        offsets         = nullptr;
+    }
+    else
+    {
+        info.compCompHnd->getBoundaries(info.compMethodHnd, &offsetsCount, &offsets, &offsetsImplicit);
+    }
 
     /* Set the implicit boundaries */
 
@@ -627,9 +690,15 @@ void Compiler::eeSetLVdone()
         eeDispVars(info.compMethodHnd, eeVarsCount, (ICorDebugInfo::NativeVarInfo*)eeVars);
     }
 #endif // DEBUG
+    if ((eeVarsCount == 0) && (eeVars != nullptr))
+    {
+        // We still call setVars with nullptr when eeVarsCount is 0 as part of the contract.
+        // We also need to free the nonused memory.
+        info.compCompHnd->freeArray(eeVars);
+        eeVars = nullptr;
+    }
 
     info.compCompHnd->setVars(info.compMethodHnd, eeVarsCount, (ICorDebugInfo::NativeVarInfo*)eeVars);
-
     eeVars = nullptr; // We give up ownership after setVars()
 }
 
@@ -698,7 +767,7 @@ void Compiler::eeGetVars()
 
     /* If extendOthers is set, then assume the scope of unreported vars
        is the entire method. Note that this will cause fgExtendDbgLifetimes()
-       to zero-initalize all of them. This will be expensive if it's used
+       to zero-initialize all of them. This will be expensive if it's used
        for too many variables.
      */
     if (extendOthers)
@@ -776,8 +845,17 @@ void Compiler::eeDispVar(ICorDebugInfo::NativeVarInfo* var)
     {
         name = "typeCtx";
     }
-    printf("%3d(%10s) : From %08Xh to %08Xh, in ", var->varNumber,
-           (VarNameToStr(name) == nullptr) ? "UNKNOWN" : VarNameToStr(name), var->startOffset, var->endOffset);
+    if (0 <= var->varNumber && var->varNumber < lvaCount)
+    {
+        printf("(");
+        gtDispLclVar(var->varNumber, false);
+        printf(")");
+    }
+    else
+    {
+        printf("(%10s)", (VarNameToStr(name) == nullptr) ? "UNKNOWN" : VarNameToStr(name));
+    }
+    printf(" : From %08Xh to %08Xh, in ", var->startOffset, var->endOffset);
 
     switch ((CodeGenInterface::siVarLocType)var->loc.vlType)
     {
@@ -807,11 +885,11 @@ void Compiler::eeDispVar(ICorDebugInfo::NativeVarInfo* var)
             }
             break;
 
-#ifndef TARGET_AMD64
         case CodeGenInterface::VLT_REG_REG:
             printf("%s-%s", getRegName(var->loc.vlRegReg.vlrrReg1), getRegName(var->loc.vlRegReg.vlrrReg2));
             break;
 
+#ifndef TARGET_AMD64
         case CodeGenInterface::VLT_REG_STK:
             if ((int)var->loc.vlRegStk.vlrsStk.vlrssBaseReg != (int)ICorDebugInfo::REGNUM_AMBIENT_SP)
             {
@@ -858,6 +936,8 @@ void Compiler::eeDispVar(ICorDebugInfo::NativeVarInfo* var)
 // Same parameters as ICorStaticInfo::setVars().
 void Compiler::eeDispVars(CORINFO_METHOD_HANDLE ftn, ULONG32 cVars, ICorDebugInfo::NativeVarInfo* vars)
 {
+    // Estimate number of unique vars with debug info
+    //
     ALLVARSET_TP uniqueVars(AllVarSetOps::MakeEmpty(this));
     for (unsigned i = 0; i < cVars; i++)
     {
@@ -867,7 +947,8 @@ void Compiler::eeDispVars(CORINFO_METHOD_HANDLE ftn, ULONG32 cVars, ICorDebugInf
             AllVarSetOps::AddElemD(this, uniqueVars, vars[i].varNumber);
         }
     }
-    printf("; Variable debug info: %d live range(s), %d var(s) for method %s\n", cVars,
+
+    printf("; Variable debug info: %d live ranges, %d vars for method %s\n", cVars,
            AllVarSetOps::Count(this, uniqueVars), info.compFullName);
 
     for (unsigned i = 0; i < cVars; i++)
@@ -889,7 +970,8 @@ void Compiler::eeSetLIcount(unsigned count)
     eeBoundariesCount = count;
     if (eeBoundariesCount)
     {
-        eeBoundaries = (boundariesDsc*)info.compCompHnd->allocateArray(eeBoundariesCount * sizeof(eeBoundaries[0]));
+        eeBoundaries =
+            (ICorDebugInfo::OffsetMapping*)info.compCompHnd->allocateArray(eeBoundariesCount * sizeof(eeBoundaries[0]));
     }
     else
     {
@@ -897,19 +979,35 @@ void Compiler::eeSetLIcount(unsigned count)
     }
 }
 
-void Compiler::eeSetLIinfo(
-    unsigned which, UNATIVE_OFFSET nativeOffset, IL_OFFSET ilOffset, bool stkEmpty, bool callInstruction)
+void Compiler::eeSetLIinfo(unsigned which, UNATIVE_OFFSET nativeOffset, IPmappingDscKind kind, const ILLocation& loc)
 {
     assert(opts.compDbgInfo);
-    assert(eeBoundariesCount > 0);
+    assert(eeBoundariesCount > 0 && eeBoundaries != nullptr);
     assert(which < eeBoundariesCount);
 
-    if (eeBoundaries != nullptr)
+    eeBoundaries[which].nativeOffset = nativeOffset;
+    eeBoundaries[which].source       = (ICorDebugInfo::SourceTypes)0;
+
+    switch (kind)
     {
-        eeBoundaries[which].nativeIP     = nativeOffset;
-        eeBoundaries[which].ilOffset     = ilOffset;
-        eeBoundaries[which].sourceReason = stkEmpty ? ICorDebugInfo::STACK_EMPTY : 0;
-        eeBoundaries[which].sourceReason |= callInstruction ? ICorDebugInfo::CALL_INSTRUCTION : 0;
+        case IPmappingDscKind::Normal:
+            eeBoundaries[which].ilOffset = loc.GetOffset();
+            eeBoundaries[which].source   = loc.EncodeSourceTypes();
+            break;
+        case IPmappingDscKind::Prolog:
+            eeBoundaries[which].ilOffset = ICorDebugInfo::PROLOG;
+            eeBoundaries[which].source   = ICorDebugInfo::STACK_EMPTY;
+            break;
+        case IPmappingDscKind::Epilog:
+            eeBoundaries[which].ilOffset = ICorDebugInfo::EPILOG;
+            eeBoundaries[which].source   = ICorDebugInfo::STACK_EMPTY;
+            break;
+        case IPmappingDscKind::NoMapping:
+            eeBoundaries[which].ilOffset = ICorDebugInfo::NO_MAPPING;
+            eeBoundaries[which].source   = ICorDebugInfo::STACK_EMPTY;
+            break;
+        default:
+            unreached();
     }
 }
 
@@ -934,8 +1032,13 @@ void Compiler::eeSetLIdone()
 
 #if defined(DEBUG)
 
-/* static */
 void Compiler::eeDispILOffs(IL_OFFSET offs)
+{
+    printf("0x%04X", offs);
+}
+
+/* static */
+void Compiler::eeDispSourceMappingOffs(uint32_t offs)
 {
     const char* specialOffs[] = {"EPILOG", "PROLOG", "NO_MAP"};
 
@@ -951,33 +1054,34 @@ void Compiler::eeDispILOffs(IL_OFFSET offs)
             printf("%s", specialOffs[specialOffsNum]);
             break;
         default:
-            printf("0x%04X", offs);
+            eeDispILOffs(offs);
+            break;
     }
 }
 
 /* static */
-void Compiler::eeDispLineInfo(const boundariesDsc* line)
+void Compiler::eeDispLineInfo(const ICorDebugInfo::OffsetMapping* line)
 {
     printf("IL offs ");
 
-    eeDispILOffs(line->ilOffset);
+    eeDispSourceMappingOffs(line->ilOffset);
 
-    printf(" : 0x%08X", line->nativeIP);
-    if (line->sourceReason != 0)
+    printf(" : 0x%08X", line->nativeOffset);
+    if (line->source != 0)
     {
         // It seems like it should probably never be zero since ICorDebugInfo::SOURCE_TYPE_INVALID is zero.
         // However, the JIT has always generated this and printed "stack non-empty".
 
         printf(" ( ");
-        if ((line->sourceReason & ICorDebugInfo::STACK_EMPTY) != 0)
+        if ((line->source & ICorDebugInfo::STACK_EMPTY) != 0)
         {
             printf("STACK_EMPTY ");
         }
-        if ((line->sourceReason & ICorDebugInfo::CALL_INSTRUCTION) != 0)
+        if ((line->source & ICorDebugInfo::CALL_INSTRUCTION) != 0)
         {
             printf("CALL_INSTRUCTION ");
         }
-        if ((line->sourceReason & ICorDebugInfo::CALL_SITE) != 0)
+        if ((line->source & ICorDebugInfo::CALL_SITE) != 0)
         {
             printf("CALL_SITE ");
         }
@@ -986,7 +1090,7 @@ void Compiler::eeDispLineInfo(const boundariesDsc* line)
     printf("\n");
 
     // We don't expect to see any other bits.
-    assert((line->sourceReason & ~(ICorDebugInfo::STACK_EMPTY | ICorDebugInfo::CALL_INSTRUCTION)) == 0);
+    assert((line->source & ~(ICorDebugInfo::STACK_EMPTY | ICorDebugInfo::CALL_INSTRUCTION)) == 0);
 }
 
 void Compiler::eeDispLineInfos()
@@ -1009,13 +1113,74 @@ void Compiler::eeDispLineInfos()
  * (e.g., host AMD64, target ARM64), then VM will get confused anyway.
  */
 
-void Compiler::eeReserveUnwindInfo(BOOL isFunclet, BOOL isColdCode, ULONG unwindSize)
+void Compiler::eeAllocMem(AllocMemArgs* args, const UNATIVE_OFFSET roDataSectionAlignment)
+{
+#ifdef DEBUG
+
+    // Fake splitting implementation: place hot/cold code in contiguous section.
+    UNATIVE_OFFSET coldCodeOffset = 0;
+    if (JitConfig.JitFakeProcedureSplitting() && (args->coldCodeSize > 0))
+    {
+        coldCodeOffset = args->hotCodeSize;
+        assert(coldCodeOffset > 0);
+        args->hotCodeSize += args->coldCodeSize;
+        args->coldCodeSize = 0;
+    }
+
+#endif // DEBUG
+
+#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+
+    // For arm64/LoongArch64/RISCV64, we want to allocate JIT data always adjacent to code similar to what native
+    // compiler does.
+    // This way allows us to use a single `ldr` to access such data like float constant/jmp table.
+    // For LoongArch64 using `pcaddi + ld` to access such data.
+
+    UNATIVE_OFFSET roDataAlignmentDelta = 0;
+    if (args->roDataSize > 0)
+    {
+        roDataAlignmentDelta = AlignmentPad(args->hotCodeSize, roDataSectionAlignment);
+    }
+
+    const UNATIVE_OFFSET roDataOffset = args->hotCodeSize + roDataAlignmentDelta;
+    args->hotCodeSize                 = roDataOffset + args->roDataSize;
+    args->roDataSize                  = 0;
+
+#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+
+    info.compCompHnd->allocMem(args);
+
+#ifdef DEBUG
+
+    if (JitConfig.JitFakeProcedureSplitting() && (coldCodeOffset > 0))
+    {
+        // Fix up cold code pointers. Cold section is adjacent to hot section.
+        assert(args->coldCodeBlock == nullptr);
+        assert(args->coldCodeBlockRW == nullptr);
+        args->coldCodeBlock   = ((BYTE*)args->hotCodeBlock) + coldCodeOffset;
+        args->coldCodeBlockRW = ((BYTE*)args->hotCodeBlockRW) + coldCodeOffset;
+    }
+
+#endif // DEBUG
+
+#if defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+
+    // Fix up data section pointers.
+    assert(args->roDataBlock == nullptr);
+    assert(args->roDataBlockRW == nullptr);
+    args->roDataBlock   = ((BYTE*)args->hotCodeBlock) + roDataOffset;
+    args->roDataBlockRW = ((BYTE*)args->hotCodeBlockRW) + roDataOffset;
+
+#endif // defined(TARGET_ARM64) || defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+}
+
+void Compiler::eeReserveUnwindInfo(bool isFunclet, bool isColdCode, ULONG unwindSize)
 {
 #ifdef DEBUG
     if (verbose)
     {
-        printf("reserveUnwindInfo(isFunclet=%s, isColdCode=%s, unwindSize=0x%x)\n", isFunclet ? "TRUE" : "FALSE",
-               isColdCode ? "TRUE" : "FALSE", unwindSize);
+        printf("reserveUnwindInfo(isFunclet=%s, isColdCode=%s, unwindSize=0x%x)\n", isFunclet ? "true" : "false",
+               isColdCode ? "true" : "false", unwindSize);
     }
 #endif // DEBUG
 
@@ -1219,194 +1384,34 @@ void Compiler::eeGetSystemVAmd64PassStructInRegisterDescriptor(
 
 #endif // UNIX_AMD64_ABI
 
-bool Compiler::eeTryResolveToken(CORINFO_RESOLVED_TOKEN* resolvedToken)
-{
-    return info.compCompHnd->tryResolveToken(resolvedToken);
-}
-
 bool Compiler::eeRunWithErrorTrapImp(void (*function)(void*), void* param)
 {
     return info.compCompHnd->runWithErrorTrap(function, param);
 }
 
-/*****************************************************************************
- *
- *                      Utility functions
- */
-
-#if defined(DEBUG) || defined(FEATURE_JIT_METHOD_PERF) || defined(FEATURE_SIMD) || defined(FEATURE_TRACELOGGING)
-
-/*****************************************************************************/
-
-// static helper names - constant array
-const char* jitHlpFuncTable[CORINFO_HELP_COUNT] = {
-#define JITHELPER(code, pfnHelper, sig) #code,
-#define DYNAMICJITHELPER(code, pfnHelper, sig) #code,
-#include "jithelpers.h"
-};
-
-/*****************************************************************************
-*
-*  Filter wrapper to handle exception filtering.
-*  On Unix compilers don't support SEH.
-*/
-
-struct FilterSuperPMIExceptionsParam_ee_il
+bool Compiler::eeRunWithSPMIErrorTrapImp(void (*function)(void*), void* param)
 {
-    Compiler*             pThis;
-    Compiler::Info*       pJitInfo;
-    CORINFO_FIELD_HANDLE  field;
-    CORINFO_METHOD_HANDLE method;
-    CORINFO_CLASS_HANDLE  clazz;
-    const char**          classNamePtr;
-    const char*           fieldOrMethodOrClassNamePtr;
-    EXCEPTION_POINTERS    exceptionPointers;
-};
-
-static LONG FilterSuperPMIExceptions_ee_il(PEXCEPTION_POINTERS pExceptionPointers, LPVOID lpvParam)
-{
-    FilterSuperPMIExceptionsParam_ee_il* pSPMIEParam = (FilterSuperPMIExceptionsParam_ee_il*)lpvParam;
-    pSPMIEParam->exceptionPointers                   = *pExceptionPointers;
-
-    if (pSPMIEParam->pThis->IsSuperPMIException(pExceptionPointers->ExceptionRecord->ExceptionCode))
-    {
-        return EXCEPTION_EXECUTE_HANDLER;
-    }
-
-    return EXCEPTION_CONTINUE_SEARCH;
+    return info.compCompHnd->runWithSPMIErrorTrap(function, param);
 }
-
-const char* Compiler::eeGetMethodName(CORINFO_METHOD_HANDLE method, const char** classNamePtr)
-{
-    if (eeGetHelperNum(method) != CORINFO_HELP_UNDEF)
-    {
-        if (classNamePtr != nullptr)
-        {
-            *classNamePtr = "HELPER";
-        }
-        CorInfoHelpFunc ftnNum = eeGetHelperNum(method);
-        const char*     name   = info.compCompHnd->getHelperName(ftnNum);
-
-        // If it's something unknown from a RET VM, or from SuperPMI, then use our own helper name table.
-        if ((strcmp(name, "AnyJITHelper") == 0) || (strcmp(name, "Yickish helper name") == 0))
-        {
-            if ((unsigned)ftnNum < CORINFO_HELP_COUNT)
-            {
-                name = jitHlpFuncTable[ftnNum];
-            }
-        }
-        return name;
-    }
-
-    if (eeIsNativeMethod(method))
-    {
-        if (classNamePtr != nullptr)
-        {
-            *classNamePtr = "NATIVE";
-        }
-        method = eeGetMethodHandleForNative(method);
-    }
-
-    FilterSuperPMIExceptionsParam_ee_il param;
-
-    param.pThis        = this;
-    param.pJitInfo     = &info;
-    param.method       = method;
-    param.classNamePtr = classNamePtr;
-
-    PAL_TRY(FilterSuperPMIExceptionsParam_ee_il*, pParam, &param)
-    {
-        pParam->fieldOrMethodOrClassNamePtr =
-            pParam->pJitInfo->compCompHnd->getMethodName(pParam->method, pParam->classNamePtr);
-    }
-    PAL_EXCEPT_FILTER(FilterSuperPMIExceptions_ee_il)
-    {
-        if (param.classNamePtr != nullptr)
-        {
-            *(param.classNamePtr) = "hackishClassName";
-        }
-
-        param.fieldOrMethodOrClassNamePtr = "hackishMethodName";
-    }
-    PAL_ENDTRY
-
-    return param.fieldOrMethodOrClassNamePtr;
-}
-
-const char* Compiler::eeGetFieldName(CORINFO_FIELD_HANDLE field, const char** classNamePtr)
-{
-    FilterSuperPMIExceptionsParam_ee_il param;
-
-    param.pThis        = this;
-    param.pJitInfo     = &info;
-    param.field        = field;
-    param.classNamePtr = classNamePtr;
-
-    PAL_TRY(FilterSuperPMIExceptionsParam_ee_il*, pParam, &param)
-    {
-        pParam->fieldOrMethodOrClassNamePtr =
-            pParam->pJitInfo->compCompHnd->getFieldName(pParam->field, pParam->classNamePtr);
-    }
-    PAL_EXCEPT_FILTER(FilterSuperPMIExceptions_ee_il)
-    {
-        param.fieldOrMethodOrClassNamePtr = "hackishFieldName";
-    }
-    PAL_ENDTRY
-
-    return param.fieldOrMethodOrClassNamePtr;
-}
-
-const char* Compiler::eeGetClassName(CORINFO_CLASS_HANDLE clsHnd)
-{
-    FilterSuperPMIExceptionsParam_ee_il param;
-
-    param.pThis    = this;
-    param.pJitInfo = &info;
-    param.clazz    = clsHnd;
-
-    PAL_TRY(FilterSuperPMIExceptionsParam_ee_il*, pParam, &param)
-    {
-        pParam->fieldOrMethodOrClassNamePtr = pParam->pJitInfo->compCompHnd->getClassName(pParam->clazz);
-    }
-    PAL_EXCEPT_FILTER(FilterSuperPMIExceptions_ee_il)
-    {
-        param.fieldOrMethodOrClassNamePtr = "hackishClassName";
-    }
-    PAL_ENDTRY
-    return param.fieldOrMethodOrClassNamePtr;
-}
-
-#endif // DEBUG || FEATURE_JIT_METHOD_PERF
 
 #ifdef DEBUG
-
-const WCHAR* Compiler::eeGetCPString(size_t strHandle)
+//------------------------------------------------------------------------
+// eeTryGetClassSize: wraps getClassSize but if doing SuperPMI replay
+// and the value isn't found, use a bogus size.
+//
+// NOTE: This is only allowed for JitDump output.
+//
+// Return value:
+//      Either the actual class size, or (unsigned)-1 if SuperPMI didn't have it.
+//
+unsigned Compiler::eeTryGetClassSize(CORINFO_CLASS_HANDLE clsHnd)
 {
-#ifdef HOST_UNIX
-    return nullptr;
-#else
-    char buff[512 + sizeof(CORINFO_String)];
+    unsigned classSize = UINT_MAX;
+    eeRunFunctorWithSPMIErrorTrap([&]() {
+        classSize = info.compCompHnd->getClassSize(clsHnd);
+    });
 
-    // make this bulletproof, so it works even if we are wrong.
-    if (ReadProcessMemory(GetCurrentProcess(), (void*)strHandle, buff, 4, nullptr) == 0)
-    {
-        return (nullptr);
-    }
-
-    CORINFO_String* asString = *((CORINFO_String**)strHandle);
-
-    if (ReadProcessMemory(GetCurrentProcess(), asString, buff, sizeof(buff), nullptr) == 0)
-    {
-        return (nullptr);
-    }
-
-    if (asString->stringLen >= 255 || asString->chars[asString->stringLen] != 0)
-    {
-        return nullptr;
-    }
-
-    return (asString->chars);
-#endif // HOST_UNIX
+    return classSize;
 }
 
-#endif // DEBUG
+#endif // !DEBUG

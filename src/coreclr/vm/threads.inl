@@ -32,9 +32,16 @@ __declspec(selectany) __declspec(thread) ThreadLocalInfo gCurrentThreadInfo;
 EXTERN_C __thread ThreadLocalInfo gCurrentThreadInfo;
 #endif
 
-EXTERN_C inline Thread* STDCALL GetThread()
+inline Thread* GetThreadNULLOk()
 {
     return gCurrentThreadInfo.m_pThread;
+}
+
+inline Thread* GetThread()
+{
+    Thread* pThread = gCurrentThreadInfo.m_pThread;
+    _ASSERTE(pThread);
+    return pThread;
 }
 
 EXTERN_C inline AppDomain* STDCALL GetAppDomain()
@@ -101,7 +108,7 @@ inline void Thread::ClearThreadCurrNotification()
     }
     CONTRACTL_END;
 
-    m_hCurrNotification = NULL;
+    m_hCurrNotification = (OBJECTHANDLE)NULL;
 }
 
 
@@ -158,13 +165,13 @@ inline bool Thread::IsGCSpecial()
     return m_fGCSpecial;
 }
 
-inline void Thread::SetGCSpecial(bool fGCSpecial)
+inline void Thread::SetGCSpecial()
 {
     LIMITED_METHOD_CONTRACT;
-    m_fGCSpecial = fGCSpecial;
+    m_fGCSpecial = true;
 }
 
-#if !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
+#if !defined(DACCESS_COMPILE)
 
 inline Thread::CurrentPrepareCodeConfigHolder::CurrentPrepareCodeConfigHolder(Thread *thread, PrepareCodeConfig *config)
     : m_thread(thread)
@@ -173,7 +180,6 @@ inline Thread::CurrentPrepareCodeConfigHolder::CurrentPrepareCodeConfigHolder(Th
 #endif
 {
     LIMITED_METHOD_CONTRACT;
-    _ASSERTE(thread != nullptr);
     _ASSERTE(thread == GetThread());
     _ASSERTE(config != nullptr);
 
@@ -226,6 +232,6 @@ inline size_t Thread::GetOffsetOfThreadStatic(void* pThreadStatic)
 }
 #endif
 
-#endif // !DACCESS_COMPILE && !CROSSGEN_COMPILE
+#endif // !DACCESS_COMPILE
 
 #endif

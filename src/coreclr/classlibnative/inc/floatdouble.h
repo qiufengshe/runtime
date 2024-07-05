@@ -9,7 +9,6 @@
 
 class COMDouble {
 public:
-    FCDECL1_V(static double, Abs, double x);
     FCDECL1_V(static double, Acos, double x);
     FCDECL1_V(static double, Acosh, double x);
     FCDECL1_V(static double, Asin, double x);
@@ -23,16 +22,14 @@ public:
     FCDECL1_V(static double, Cosh, double x);
     FCDECL1_V(static double, Exp, double x);
     FCDECL1_V(static double, Floor, double x);
-    FCDECL2_VV(static double, FMod, double x, double y);
     FCDECL3_VVV(static double, FusedMultiplyAdd, double x, double y, double z);
-    FCDECL1_V(static int, ILogB, double x);
     FCDECL1_V(static double, Log, double x);
     FCDECL1_V(static double, Log2, double x);
     FCDECL1_V(static double, Log10, double x);
     FCDECL2_VI(static double, ModF, double x, double* intptr);
     FCDECL2_VV(static double, Pow, double x, double y);
-    FCDECL2_VI(static double, ScaleB, double x, int n);
     FCDECL1_V(static double, Sin, double x);
+    FCDECL3_VII(static void, SinCos, double x, double* sin, double* cos);
     FCDECL1_V(static double, Sinh, double x);
     FCDECL1_V(static double, Sqrt, double x);
     FCDECL1_V(static double, Tan, double x);

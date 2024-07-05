@@ -16,10 +16,11 @@
 #include <cor.h>
 #include <stgpool.h>
 #include <metamodelpub.h>
-#include "metadatatracker.h"
 
 #include "../datablob.h"
 #include "../debug_metadata.h"
+
+#include<minipal/utils.h>
 
 #ifdef FEATURE_METADATA_EMIT_PORTABLE_PDB
 #include "portablepdbmdds.h"
@@ -258,9 +259,9 @@ public:
         HAS_DELETE      =   0x80,       // If set, this metadata can contain _Delete tokens.
     };
 
-    unsigned __int64    m_maskvalid;            // Bit mask of present table counts.
+    uint64_t    m_maskvalid;            // Bit mask of present table counts.
 
-    unsigned __int64    m_sorted;               // Bit mask of sorted tables.
+    uint64_t    m_sorted;               // Bit mask of sorted tables.
     FORCEINLINE bool IsSorted(ULONG ixTbl)
         { return m_sorted & BIT(ixTbl) ? true : false; }
     void SetSorted(ULONG ixTbl, int bVal)
@@ -282,8 +283,8 @@ public:
 #endif
 
 private:
-    FORCEINLINE unsigned __int64 BIT(ULONG ixBit)
-    {   _ASSERTE(ixBit < (sizeof(__int64)*CHAR_BIT));
+    FORCEINLINE uint64_t BIT(ULONG ixBit)
+    {   _ASSERTE(ixBit < (sizeof(int64_t)*CHAR_BIT));
         return UI64(1) << ixBit; }
 
 };
@@ -315,13 +316,7 @@ public:
 // Direct getter for a field.  Defines an inline function like:
 //    getSomeFieldOfXyz(XyzRec *pRec) { return pRec->m_SomeField;}
 //  Note that the returned value declaration is NOT included.
-#if METADATATRACKER_ENABLED
-#define _GETFLD(tbl,fld) _GETTER(tbl,fld){ PVOID pVal = (BYTE*)pRec + offsetof(tbl##Rec, m_##fld); \
-    pVal = MetaDataTracker::NoteAccess(pVal); \
-    return ((tbl##Rec*)((BYTE*)pVal - offsetof(tbl##Rec, m_##fld)))->Get##fld(); }
-#else
 #define _GETFLD(tbl,fld) _GETTER(tbl,fld){  return pRec->Get##fld();}
-#endif
 
 // These functions call the helper function getIX to get a two or four byte value from a record,
 //  and then use that value as an index into the appropriate pool.
@@ -475,20 +470,6 @@ public:
         PVOID pVal = (BYTE *)pRec + def.m_oColumn;
         if (def.m_cbColumn == 2)
         {
-            METADATATRACKER_ONLY(pVal = MetaDataTracker::NoteAccess(pVal));
-            ULONG ix = GET_UNALIGNED_VAL16(pVal);
-            return ix;
-        }
-        _ASSERTE(def.m_cbColumn == 4);
-        METADATATRACKER_ONLY(pVal = MetaDataTracker::NoteAccess(pVal));
-        return GET_UNALIGNED_VAL32(pVal);
-    }
-
-    inline static ULONG getIX_NoLogging(const void *pRec, CMiniColDef &def)
-    {
-        PVOID pVal = (BYTE *)pRec + def.m_oColumn;
-        if (def.m_cbColumn == 2)
-        {
             ULONG ix = GET_UNALIGNED_VAL16(pVal);
             return ix;
         }
@@ -500,7 +481,6 @@ public:
     FORCEINLINE static ULONG getI1(const void *pRec, CMiniColDef &def)
     {
         PVOID pVal = (BYTE *)pRec + def.m_oColumn;
-        METADATATRACKER_ONLY(pVal = MetaDataTracker::NoteAccess(pVal));
         return *(BYTE*)pVal;
     }
 
@@ -508,7 +488,6 @@ public:
     FORCEINLINE static ULONG getI4(const void *pRec, CMiniColDef &def)
     {
         PVOID pVal = (BYTE *)pRec + def.m_oColumn;
-        METADATATRACKER_ONLY(pVal = MetaDataTracker::NoteAccess(pVal));
         return GET_UNALIGNED_VAL32(pVal);
     }
 
@@ -594,6 +573,7 @@ public:
 
 
 protected:
+    DAC_ALIGNAS(8)
     CMiniMdSchema   m_Schema;                       // data header.
     ULONG           m_TblCount;                     // Tables in this database.
     BOOL            m_fVerifiedByTrustedSource;     // whether the data was verified by a trusted source
@@ -656,7 +636,7 @@ protected:
     // Primitives -- these must be implemented in the Impl class.
 public:
     __checkReturn
-    FORCEINLINE HRESULT getString(UINT32 nIndex, __out LPCSTR *pszString)
+    FORCEINLINE HRESULT getString(UINT32 nIndex, _Out_ LPCSTR *pszString)
     {
         MINIMD_POSSIBLE_INTERNAL_POINTER_EXPOSED();
         return static_cast<Impl*>(this)->Impl_GetString(nIndex, pszString);
@@ -674,13 +654,13 @@ public:
         return static_cast<Impl*>(this)->Impl_GetGuid(nIndex, pGuid);
     }
     __checkReturn
-    FORCEINLINE HRESULT getBlob(UINT32 nIndex, __out MetaData::DataBlob *pData)
+    FORCEINLINE HRESULT getBlob(UINT32 nIndex, _Out_ MetaData::DataBlob *pData)
     {
         MINIMD_POSSIBLE_INTERNAL_POINTER_EXPOSED();
         return static_cast<Impl*>(this)->Impl_GetBlob(nIndex, pData);
     }
     __checkReturn
-    FORCEINLINE HRESULT getRow(UINT32 nTableIndex, UINT32 nRowIndex, __deref_out void **ppRow)
+    FORCEINLINE HRESULT getRow(UINT32 nTableIndex, UINT32 nRowIndex, _Outptr_ void **ppRow)
     {
         MINIMD_POSSIBLE_INTERNAL_POINTER_EXPOSED();
         return static_cast<Impl*>(this)->Impl_GetRow(nTableIndex, nRowIndex, reinterpret_cast<BYTE **>(ppRow));
@@ -691,7 +671,7 @@ public:
               RID          nRowIndex,
               CMiniColDef &columnDefinition,
               UINT32       nTargetTableIndex,
-        __out RID         *pEndRid)
+        _Out_ RID         *pEndRid)
     {
         MINIMD_POSSIBLE_INTERNAL_POINTER_EXPOSED();
         return static_cast<Impl*>(this)->Impl_GetEndRidForColumn(nTableIndex, nRowIndex, columnDefinition, nTargetTableIndex, pEndRid);
@@ -736,8 +716,8 @@ public:
         RID        *pFoundRid)  // First RID found, or 0.
     {
         HRESULT hr;
-        ULONG   ridBegin;   // RID of first entry.
-        ULONG   ridEnd;     // RID of first entry past last entry.
+        RID     ridBegin;   // RID of first entry.
+        RID     ridEnd;     // RID of first entry past last entry.
 
         // Search for any entry in the table.
         IfFailRet(static_cast<Impl*>(this)->vSearchTable(ixTbl, sColumn, ulTarget, &ridBegin));
@@ -752,12 +732,6 @@ public:
             *pFoundRid = 0;
             return S_OK;
         }
-
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        // If you change the rows touched while searching, please update
-        // CMiniMdRW::GetHotMetadataTokensSearchAware
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
 
         // End will be at least one larger than found record.
         ridEnd = ridBegin + 1;
@@ -1368,7 +1342,7 @@ public:
             break;
         case mdtString:
         default:
-            if(REGUTIL::GetConfigDWORD_DontUse_(CLRConfig::INTERNAL_AssertOnBadImageFormat, 0))
+            if(CLRConfig::GetConfigValue(CLRConfig::INTERNAL_AssertOnBadImageFormat))
                 _ASSERTE(!"Unexpected token type in FindCustomAttributeByName");
             hr = COR_E_BADIMAGEFORMAT;
             goto ErrExit;
@@ -1404,7 +1378,9 @@ public:
 
         pSig += CorSigUncompressData(pSig, &data);
 
-        while (pSig < pEnd && CorIsModifierElementType((CorElementType) data))
+        while (pSig < pEnd
+            && (CorIsModifierElementType((CorElementType) data)
+                || data == ELEMENT_TYPE_GENERICINST))
         {
             pSig += CorSigUncompressData(pSig, &data);
         }
@@ -1490,7 +1466,7 @@ public:
             ulCount = getCountEvents();
             break;
         case mdtProperty:
-            ulCount = getCountPropertys();
+            ulCount = getCountProperties();
             break;
         case mdtModuleRef:
             ulCount = getCountModuleRefs();
@@ -1627,12 +1603,12 @@ public:
     // Return RID to Constant table.
     __checkReturn
     HRESULT FindConstantFor(RID rid, mdToken typ, RID *pFoundRid)
-    { return doSearchTable(TBL_Constant, _COLPAIR(Constant,Parent), encodeToken(rid,typ,mdtHasConstant,lengthof(mdtHasConstant)), pFoundRid); }
+    { return doSearchTable(TBL_Constant, _COLPAIR(Constant,Parent), encodeToken(rid,typ,mdtHasConstant, ARRAY_SIZE(mdtHasConstant)), pFoundRid); }
 
     // Return RID to FieldMarshal table.
     __checkReturn
     HRESULT FindFieldMarshalFor(RID rid, mdToken typ, RID *pFoundRid)
-    { return doSearchTable(TBL_FieldMarshal, _COLPAIR(FieldMarshal,Parent), encodeToken(rid,typ,mdtHasFieldMarshal,lengthof(mdtHasFieldMarshal)), pFoundRid); }
+    { return doSearchTable(TBL_FieldMarshal, _COLPAIR(FieldMarshal,Parent), encodeToken(rid,typ,mdtHasFieldMarshal, ARRAY_SIZE(mdtHasFieldMarshal)), pFoundRid); }
 
     // Return RID to ClassLayout table, given the rid to a TypeDef.
     __checkReturn
@@ -1700,7 +1676,7 @@ public:
     // Return RID to Constant table.
     __checkReturn
     HRESULT FindImplMapFor(RID rid, mdToken typ, RID *pFoundRid)
-    { return doSearchTable(TBL_ImplMap, _COLPAIR(ImplMap,MemberForwarded), encodeToken(rid,typ,mdtMemberForwarded,lengthof(mdtMemberForwarded)), pFoundRid); }
+    { return doSearchTable(TBL_ImplMap, _COLPAIR(ImplMap,MemberForwarded), encodeToken(rid,typ,mdtMemberForwarded, ARRAY_SIZE(mdtMemberForwarded)), pFoundRid); }
 
     // Return RID to FieldRVA table.
     __checkReturn
@@ -1740,7 +1716,7 @@ public:
     {
         return SearchTableForMultipleRows(TBL_GenericParam,
                             _COLDEF(GenericParam,Owner),
-                            encodeToken(rid, mdtTypeDef, mdtTypeOrMethodDef, lengthof(mdtTypeOrMethodDef)),
+                            encodeToken(rid, mdtTypeDef, mdtTypeOrMethodDef, ARRAY_SIZE(mdtTypeOrMethodDef)),
                             pEnd,
                             pFoundRid);
     }
@@ -1749,7 +1725,7 @@ public:
     {
         return SearchTableForMultipleRows(TBL_GenericParam,
                             _COLDEF(GenericParam,Owner),
-                            encodeToken(rid, mdtMethodDef, mdtTypeOrMethodDef, lengthof(mdtTypeOrMethodDef)),
+                            encodeToken(rid, mdtMethodDef, mdtTypeOrMethodDef, ARRAY_SIZE(mdtTypeOrMethodDef)),
                             pEnd,
                             pFoundRid);
     }
@@ -1758,7 +1734,7 @@ public:
     {
         return SearchTableForMultipleRows(TBL_MethodSpec,
                             _COLDEF(MethodSpec,Method),
-                            encodeToken(rid, mdtMethodDef, mdtMethodDefOrRef, lengthof(mdtMethodDefOrRef)),
+                            encodeToken(rid, mdtMethodDef, mdtMethodDefOrRef, ARRAY_SIZE(mdtMethodDefOrRef)),
                             pEnd,
                             pFoundRid);
     }
@@ -1767,7 +1743,7 @@ public:
     {
         return SearchTableForMultipleRows(TBL_MethodSpec,
                             _COLDEF(MethodSpec,Method),
-                            encodeToken(rid, mdtMemberRef, mdtMethodDefOrRef, lengthof(mdtMethodDefOrRef)),
+                            encodeToken(rid, mdtMemberRef, mdtMethodDefOrRef, ARRAY_SIZE(mdtMethodDefOrRef)),
                             pEnd,
                             pFoundRid);
     }
@@ -1828,7 +1804,7 @@ public:
     {
         return SearchTableForMultipleRows(TBL_CustomAttribute,
                             _COLDEF(CustomAttribute,Parent),
-                            encodeToken(RidFromToken(tk), TypeFromToken(tk), mdtHasCustomAttribute, lengthof(mdtHasCustomAttribute)),
+                            encodeToken(RidFromToken(tk), TypeFromToken(tk), mdtHasCustomAttribute, ARRAY_SIZE(mdtHasCustomAttribute)),
                             pEnd,
                             pFoundRid);
     }
@@ -1847,7 +1823,7 @@ public:
     {
         return SearchTableForMultipleRows(TBL_DeclSecurity,
                             _COLDEF(DeclSecurity,Parent),
-                            encodeToken(RidFromToken(tk), TypeFromToken(tk), mdtHasDeclSecurity, lengthof(mdtHasDeclSecurity)),
+                            encodeToken(RidFromToken(tk), TypeFromToken(tk), mdtHasDeclSecurity, ARRAY_SIZE(mdtHasDeclSecurity)),
                             pEnd,
                             pFoundRid);
     }
@@ -1898,7 +1874,7 @@ public:
     {
         return SearchTableForMultipleRows(TBL_MethodSemantics,
                             _COLDEF(MethodSemantics,Association),
-                            encodeToken(RidFromToken(tk), TypeFromToken(tk), mdtHasSemantic, lengthof(mdtHasSemantic)),
+                            encodeToken(RidFromToken(tk), TypeFromToken(tk), mdtHasSemantic, ARRAY_SIZE(mdtHasSemantic)),
                             pEnd,
                             pFoundRid);
     }
@@ -2079,7 +2055,7 @@ public:
                 bRet = (rid <= getCountEvents());
                 break;
             case mdtProperty:
-                bRet = (rid <= getCountPropertys());
+                bRet = (rid <= getCountProperties());
                 break;
             case mdtModuleRef:
                 bRet = (rid <= getCountModuleRefs());

@@ -12,25 +12,38 @@ using ILCompiler.Win32Resources;
 using Internal.IL;
 using Internal.JitInterface;
 using Internal.ReadyToRunConstants;
+using Internal.TypeSystem;
 using Internal.TypeSystem.Ecma;
 
 namespace ILCompiler
 {
     public sealed class ReadyToRunCodegenCompilationBuilder : CompilationBuilder
     {
+        private static bool _isJitInitialized = false;
+
         private readonly IEnumerable<string> _inputFiles;
         private readonly string _compositeRootPath;
-        private bool _ibcTuning;
-        private bool _resilient;
         private bool _generateMapFile;
         private bool _generateMapCsvFile;
-        private int _parallelism;
+        private bool _generatePdbFile;
+        private string _pdbPath;
+        private bool _generatePerfMapFile;
+        private string _perfMapPath;
+        private int _perfMapFormatVersion;
+        private bool _generateProfileFile;
+        Func<MethodDesc, string> _printReproInstructions;
         private InstructionSetSupport _instructionSetSupport;
         private ProfileDataManager _profileData;
         private ReadyToRunMethodLayoutAlgorithm _r2rMethodLayoutAlgorithm;
         private ReadyToRunFileLayoutAlgorithm _r2rFileLayoutAlgorithm;
         private int _customPESectionAlignment;
         private bool _verifyTypeAndFieldLayout;
+        private bool _hotColdSplitting;
+        private CompositeImageSettings _compositeImageSettings;
+        private ulong _imageBase;
+        private NodeFactoryOptimizationFlags _nodeFactoryOptimizationFlags = new NodeFactoryOptimizationFlags();
+        private int _genericCycleDetectionDepthCutoff = -1;
+        private int _genericCycleDetectionBreadthCutoff = -1;
 
         private string _jitPath;
         private string _outputFile;
@@ -38,20 +51,18 @@ namespace ILCompiler
         // These need to provide reasonable defaults so that the user can optionally skip
         // calling the Use/Configure methods and still get something reasonable back.
         private KeyValuePair<string, string>[] _ryujitOptions = Array.Empty<KeyValuePair<string, string>>();
-        private ILProvider _ilProvider = new ReadyToRunILProvider();
+        private ILProvider _ilProvider;
 
         public ReadyToRunCodegenCompilationBuilder(
             CompilerTypeSystemContext context,
             ReadyToRunCompilationModuleGroupBase group,
             IEnumerable<string> inputFiles,
             string compositeRootPath)
-            : base(context, group, new CoreRTNameMangler())
+            : base(context, group, new NativeAotNameMangler())
         {
+            _ilProvider = new ReadyToRunILProvider(group);
             _inputFiles = inputFiles;
             _compositeRootPath = compositeRootPath;
-
-            // R2R field layout needs compilation group information
-            ((ReadyToRunCompilerContext)context).SetCompilationGroup(group);
         }
 
         public override CompilationBuilder UseBackendOptions(IEnumerable<string> options)
@@ -74,6 +85,11 @@ namespace ILCompiler
                 builder.Add(new KeyValuePair<string, string>(name, value));
             }
 
+            if (_context.Target.Abi == TargetAbi.NativeAotArmel)
+            {
+                builder.Add(new KeyValuePair<string, string>("JitSoftFP", "1"));
+            }
+
             _ryujitOptions = builder.ToArray();
 
             return this;
@@ -93,18 +109,6 @@ namespace ILCompiler
         public ReadyToRunCodegenCompilationBuilder UseJitPath(string jitPath)
         {
             _jitPath = jitPath;
-            return this;
-        }
-
-        public ReadyToRunCodegenCompilationBuilder UseIbcTuning(bool ibcTuning)
-        {
-            _ibcTuning = ibcTuning;
-            return this;
-        }
-
-        public ReadyToRunCodegenCompilationBuilder UseResilience(bool resilient)
-        {
-            _resilient = resilient;
             return this;
         }
 
@@ -133,9 +137,30 @@ namespace ILCompiler
             return this;
         }
 
-        public ReadyToRunCodegenCompilationBuilder UseParallelism(int parallelism)
+        public ReadyToRunCodegenCompilationBuilder UsePdbFile(bool generatePdbFile, string pdbPath)
         {
-            _parallelism = parallelism;
+            _generatePdbFile = generatePdbFile;
+            _pdbPath = pdbPath;
+            return this;
+        }
+
+        public ReadyToRunCodegenCompilationBuilder UsePerfMapFile(bool generatePerfMapFile, string perfMapPath, int perfMapFormatVersion)
+        {
+            _generatePerfMapFile = generatePerfMapFile;
+            _perfMapPath = perfMapPath;
+            _perfMapFormatVersion = perfMapFormatVersion;
+            return this;
+        }
+
+        public ReadyToRunCodegenCompilationBuilder UseProfileFile(bool generateProfileFile)
+        {
+            _generateProfileFile = generateProfileFile;
+            return this;
+        }
+
+        public ReadyToRunCodegenCompilationBuilder UsePrintReproInstructions(Func<MethodDesc, string> printReproInstructions)
+        {
+            _printReproInstructions = printReproInstructions;
             return this;
         }
 
@@ -163,6 +188,37 @@ namespace ILCompiler
             return this;
         }
 
+        public ReadyToRunCodegenCompilationBuilder UseHotColdSplitting(bool hotColdSplitting)
+        {
+            _hotColdSplitting = hotColdSplitting;
+            return this;
+        }
+
+        public ReadyToRunCodegenCompilationBuilder UseCompositeImageSettings(CompositeImageSettings compositeImageSettings)
+        {
+            _compositeImageSettings = compositeImageSettings;
+            return this;
+        }
+
+        public ReadyToRunCodegenCompilationBuilder UseImageBase(ulong imageBase)
+        {
+            _imageBase = imageBase;
+            return this;
+        }
+
+        public ReadyToRunCodegenCompilationBuilder UseNodeFactoryOptimizationFlags(NodeFactoryOptimizationFlags flags)
+        {
+            _nodeFactoryOptimizationFlags = flags;
+            return this;
+        }
+
+        public ReadyToRunCodegenCompilationBuilder UseGenericCycleDetection(int depthCutoff, int breadthCutoff)
+        {
+            _genericCycleDetectionDepthCutoff = depthCutoff;
+            _genericCycleDetectionBreadthCutoff = breadthCutoff;
+            return this;
+        }
+
         public override ICompilation ToCompilation()
         {
             // TODO: only copy COR headers for single-assembly build and for composite build with embedded MSIL
@@ -170,7 +226,7 @@ namespace ILCompiler
             EcmaModule singleModule = _compilationGroup.IsCompositeBuildMode ? null : inputModules.First();
             CopiedCorHeaderNode corHeaderNode = new CopiedCorHeaderNode(singleModule);
             // TODO: proper support for multiple input files
-            DebugDirectoryNode debugDirectoryNode = new DebugDirectoryNode(singleModule, _outputFile);
+            DebugDirectoryNode debugDirectoryNode = new DebugDirectoryNode(singleModule, _outputFile, _generatePdbFile, _generatePerfMapFile);
 
             // Produce a ResourceData where the IBC PROFILE_DATA entry has been filtered out
             // TODO: proper support for multiple input files
@@ -195,21 +251,40 @@ namespace ILCompiler
             {
                 flags |= ReadyToRunFlags.READYTORUN_FLAG_PlatformNeutralSource;
             }
+            bool automaticTypeValidation = _nodeFactoryOptimizationFlags.TypeValidation == TypeValidationRule.Automatic || _nodeFactoryOptimizationFlags.TypeValidation == TypeValidationRule.AutomaticWithLogging;
+            if (_nodeFactoryOptimizationFlags.TypeValidation == TypeValidationRule.SkipTypeValidation)
+            {
+                flags |= ReadyToRunFlags.READYTORUN_FLAG_SkipTypeValidation;
+            }
             flags |= _compilationGroup.GetReadyToRunFlags();
 
             NodeFactory factory = new NodeFactory(
                 _context,
-                _compilationGroup,
+                (ReadyToRunCompilationModuleGroupBase)_compilationGroup,
+                _profileData,
                 _nameMangler,
                 corHeaderNode,
                 debugDirectoryNode,
                 win32Resources,
-                flags);
+                flags,
+                _nodeFactoryOptimizationFlags,
+                _imageBase,
+                automaticTypeValidation ? singleModule : null,
+                genericCycleDepthCutoff: _genericCycleDetectionDepthCutoff,
+                genericCycleBreadthCutoff: _genericCycleDetectionBreadthCutoff
+                );
 
-            IComparer<DependencyNodeCore<NodeFactory>> comparer = new SortableDependencyNode.ObjectNodeComparer(new CompilerComparer());
+            factory.CompositeImageSettings = _compositeImageSettings;
+
+            IComparer<DependencyNodeCore<NodeFactory>> comparer = new SortableDependencyNode.ObjectNodeComparer(CompilerComparer.Instance);
             DependencyAnalyzerBase<NodeFactory> graph = CreateDependencyGraph(factory, comparer);
 
+            
             List<CorJitFlag> corJitFlags = new List<CorJitFlag> { CorJitFlag.CORJIT_FLAG_DEBUG_INFO };
+            if (_hotColdSplitting)
+            {
+                corJitFlags.Add(CorJitFlag.CORJIT_FLAG_PROCSPLIT);
+            }
 
             switch (_optimizationMode)
             {
@@ -219,21 +294,29 @@ namespace ILCompiler
 
                 case OptimizationMode.PreferSize:
                     corJitFlags.Add(CorJitFlag.CORJIT_FLAG_SIZE_OPT);
+                    corJitFlags.Add(CorJitFlag.CORJIT_FLAG_BBOPT);
                     break;
 
                 case OptimizationMode.PreferSpeed:
                     corJitFlags.Add(CorJitFlag.CORJIT_FLAG_SPEED_OPT);
+                    corJitFlags.Add(CorJitFlag.CORJIT_FLAG_BBOPT);
                     break;
 
                 default:
                     // Not setting a flag results in BLENDED_CODE.
+                    corJitFlags.Add(CorJitFlag.CORJIT_FLAG_BBOPT);
                     break;
             }
 
-            if (_ibcTuning)
-                corJitFlags.Add(CorJitFlag.CORJIT_FLAG_BBINSTR);
+            // Always allow frozen allocators for R2R (NativeAOT is able to preinitialize objects on
+            // frozen segments without JIT's help)
+            corJitFlags.Add(CorJitFlag.CORJIT_FLAG_FROZEN_ALLOC_ALLOWED);
 
-            JitConfigProvider.Initialize(_context.Target, corJitFlags, _ryujitOptions, _jitPath);
+            if (!_isJitInitialized)
+            {
+                JitConfigProvider.Initialize(_context.Target, corJitFlags, _ryujitOptions, _jitPath);
+                _isJitInitialized = true;
+            }
 
             return new ReadyToRunCodegenCompilation(
                 graph,
@@ -245,9 +328,16 @@ namespace ILCompiler
                 _inputFiles,
                 _compositeRootPath,
                 _instructionSetSupport,
-                _resilient,
-                _generateMapFile,
-                _generateMapCsvFile,
+                resilient: _resilient,
+                generateMapFile: _generateMapFile,
+                generateMapCsvFile: _generateMapCsvFile,
+                generatePdbFile: _generatePdbFile,
+                printReproInstructions: _printReproInstructions,
+                pdbPath: _pdbPath,
+                generatePerfMapFile: _generatePerfMapFile,
+                perfMapPath: _perfMapPath,
+                perfMapFormatVersion: _perfMapFormatVersion,
+                generateProfileFile: _generateProfileFile,
                 _parallelism,
                 _profileData,
                 _r2rMethodLayoutAlgorithm,

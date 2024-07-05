@@ -210,7 +210,7 @@ inline UINT_PTR EEToProfInterfaceImpl::LookupClientIDFromCache(FunctionID functi
         MODE_COOPERATIVE;
     } CONTRACTL_END;
 
-    _ASSERTE(functionID != NULL);
+    _ASSERTE(functionID != 0);
 
     SimpleReadLockHolder readLockHolder(m_pFunctionIDHashTableRWLock);
     const FunctionIDAndClientID * entry = m_pFunctionIDHashTable->LookupPtr(functionID);
@@ -222,7 +222,7 @@ inline UINT_PTR EEToProfInterfaceImpl::LookupClientIDFromCache(FunctionID functi
     }
     else
     {
-        return NULL;
+        return 0;
     }
 }
 
@@ -247,7 +247,7 @@ inline BOOL EEToProfInterfaceImpl::RequiresGenericsContextForEnterLeave()
 
     return
         CORProfilerPresent() &&
-        ((g_profControlBlock.dwEventMask & COR_PRF_ENABLE_FRAME_INFO) != 0) &&
+        ((&g_profControlBlock)->globalEventMask.IsEventMaskSet(COR_PRF_ENABLE_FRAME_INFO)) &&
         (
             (m_pEnter2            != NULL) ||
             (m_pLeave2            != NULL) ||

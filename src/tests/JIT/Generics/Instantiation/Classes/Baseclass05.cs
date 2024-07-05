@@ -3,6 +3,7 @@
 //
 
 using System;
+using Xunit;
 
 public struct ValX0 { }
 public struct ValY0 { }
@@ -70,7 +71,7 @@ public class Gen<T, U, V> : GenBase<T, U, V>
         return base.InstVerify(t1, t2, t3);
     }
 }
-public class Test
+public class Test_Baseclass05
 {
     public static int counter = 0;
     public static bool result = true;
@@ -85,7 +86,8 @@ public class Test
 
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         Eval((new Gen<int, double, Guid>(new int(), new double(), new Guid())).InstVerify(typeof(int), typeof(double), typeof(Guid)));
         Eval((new Gen<double, Guid, string>(new double(), new Guid(), "string")).InstVerify(typeof(double), typeof(Guid), typeof(string)));

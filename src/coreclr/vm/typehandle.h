@@ -16,7 +16,6 @@
 
 #include "check.h"
 #include "classloadlevel.h"
-#include "fixuppointer.h"
 
 class TypeDesc;
 class TypeHandle;
@@ -324,6 +323,16 @@ public:
     //
     BOOL IsCanonicalSubtype() const;
 
+#ifndef DACCESS_COMPILE
+    bool IsManagedClassObjectPinned() const;
+
+    // Allocates a RuntimeType object with the given TypeHandle. If the LoaderAllocator
+    // represents a not-unloadable context, it allocates the object on a frozen segment
+    // so the direct reference will be stored to the pDest argument. In case of unloadable
+    // context, an index to the pinned table will be saved.
+    void AllocateManagedClassObject(RUNTIMETYPEHANDLE* pDest);
+#endif
+
     // Similar to IsCanonicalSubtype, but applied to a vector.
     static BOOL IsCanonicalSubtypeInstantiation(Instantiation inst);
 
@@ -360,7 +369,7 @@ public:
 #ifdef _DEBUG
     // Check that this type matches the key given
     // i.e. that all aspects (element type, module/token, rank for arrays, instantiation for generic types) match up
-    CHECK CheckMatchesKey(TypeKey *pKey) const;
+    CHECK CheckMatchesKey(const TypeKey *pKey) const;
 
     // Check that this type is loaded up to the level indicated
     // Also check that it is non-null
@@ -372,6 +381,8 @@ public:
 
     bool IsHFA() const;
     CorInfoHFAElemType GetHFAType() const;
+
+    bool IsFloatHfa() const;
 
 #ifdef FEATURE_64BIT_ALIGNMENT
     bool RequiresAlign8() const;
@@ -421,26 +432,13 @@ public:
     // (First strip off array/ptr qualifiers and generic type arguments)
     PTR_Module GetModule() const;
 
-    // The ngen'ed module where this type lives
-    PTR_Module GetZapModule() const;
-
-    // Does this immediate item live in an NGEN module?
-    BOOL IsZapped() const;
-
     // The module where this type lives for the purposes of loading and prejitting
-    // Note: NGen time result might differ from runtime result for parametrized types (generics, arrays, etc.)
+    // Note: NGen time result might differ from runtime result for parameterized types (generics, arrays, etc.)
     // See code:ClassLoader::ComputeLoaderModule or file:clsload.hpp#LoaderModule for more information
     PTR_Module GetLoaderModule() const;
 
     // The assembly that defined this type (== GetModule()->GetAssembly())
     Assembly * GetAssembly() const;
-
-    // GetDomain on an instantiated type, e.g. C<ty1,ty2> returns the SharedDomain if all the
-    // constituent parts of the type are SharedDomain (i.e. domain-neutral),
-    // and returns an AppDomain if any of the parts are from an AppDomain,
-    // i.e. are domain-bound.  If any of the parts are domain-bound
-    // then they will all belong to the same domain.
-    PTR_BaseDomain GetDomain() const;
 
     PTR_LoaderAllocator GetLoaderAllocator() const;
 
@@ -465,6 +463,9 @@ public:
     // PTR
     BOOL IsPointer() const;
 
+    // String
+    BOOL IsString() const;
+
     // True if this type *is* a formal generic type parameter or any component of it is a formal generic type parameter
     BOOL ContainsGenericVariables(BOOL methodOnly=FALSE) const;
 
@@ -472,20 +473,6 @@ public:
 
     // Is type that has a type parameter (ARRAY, SZARRAY, BYREF, PTR)
     BOOL HasTypeParam() const;
-
-    BOOL IsRestored_NoLogging() const;
-    BOOL IsRestored() const;
-
-    // Does this type have zap-encoded components (generic arguments, etc)?
-    BOOL HasUnrestoredTypeKey() const;
-
-    // True if this type handle is a zap-encoded fixup
-    BOOL IsEncodedFixup() const;
-
-    // Only used at NGEN-time
-    BOOL ComputeNeedsRestore(DataImage *image, TypeHandleList *pVisited) const;
-
-    void DoRestoreTypeKey();
 
     void CheckRestore() const;
     BOOL IsExternallyVisible() const;
@@ -518,7 +505,7 @@ public:
 #endif
 
     OBJECTREF GetManagedClassObject() const;
-    OBJECTREF GetManagedClassObjectFast() const;
+    OBJECTREF GetManagedClassObjectIfExists() const;
 
     static TypeHandle MergeArrayTypeHandlesToCommonParent(
         TypeHandle ta, TypeHandle tb);
@@ -617,6 +604,15 @@ public:
 };
 
 #if CHECK_INVARIANTS
+template <typename Dummy = TypeHandle>
+typename std::enable_if<has_Check<Dummy>::value, CHECK>::type CheckPointerImpl(Dummy th, IsNullOK ok)
+{
+    CHECK(th.Check());
+}
+
+template <typename Dummy = TypeHandle>
+typename std::enable_if<!has_Check<Dummy>::value, CHECK>::type CheckPointerImpl(Dummy th, IsNullOK ok) { CHECK_OK; }
+
 inline CHECK CheckPointer(TypeHandle th, IsNullOK ok = NULL_NOT_OK)
 {
     STATIC_CONTRACT_NOTHROW;
@@ -631,10 +627,7 @@ inline CHECK CheckPointer(TypeHandle th, IsNullOK ok = NULL_NOT_OK)
     }
     else
     {
-        __if_exists(TypeHandle::Check)
-        {
-            CHECK(th.Check());
-        }
+        CheckPointerImpl(th, ok);
 #if 0
         CHECK(CheckInvariant(o));
 #endif
@@ -642,43 +635,17 @@ inline CHECK CheckPointer(TypeHandle th, IsNullOK ok = NULL_NOT_OK)
 
     CHECK_OK;
 }
-
 #endif  // CHECK_INVARIANTS
 
 /*************************************************************************/
-// dac_casts for TypeHandle makes FixupPointer<TypeHandle> work.
-//
-// TypeHandle is wrapper around pointer to MethodTable or TypeDesc. Even though
-// it may feel counterintuitive, it is possible to treat it like a pointer and
-// use the regular FixupPointer to implement TypeHandle indirection cells.
-// The lowest bit of TypeHandle (when wrapped inside FixupPointer) is
-// used to mark optional indirection.
-//
-template<>
-inline TADDR dac_cast(TypeHandle src)
-{
-    SUPPORTS_DAC;
-    return src.AsTAddr();
-}
-
-template<>
-inline TypeHandle dac_cast(TADDR src)
-{
-    SUPPORTS_DAC;
-    return TypeHandle::FromTAddr(src);
-}
-
-/*************************************************************************/
 // Instantiation is representation of generic instantiation.
-// It is simple read-only array of TypeHandles. In NGen, the type handles
-// may be encoded using indirections. That's one reason why it is convenient
-// to have wrapper class that performs the decoding.
+// It is simple read-only array of TypeHandles.
 class Instantiation
 {
 public:
     // Construct empty instantiation
     Instantiation()
-        : m_pArgs(NULL), m_nArgs(0)
+        : m_pArgs((TypeHandle*)NULL), m_nArgs(0)
     {
         LIMITED_METHOD_DAC_CONTRACT;
     }
@@ -691,35 +658,26 @@ public:
         _ASSERTE(m_nArgs == 0 || m_pArgs != NULL);
     }
 
-    // Construct instantiation from array of FixupPointers
-    Instantiation(FixupPointer<TypeHandle> * pArgs, DWORD nArgs)
-        : m_pArgs(pArgs), m_nArgs(nArgs)
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-        _ASSERTE(m_nArgs == 0 || m_pArgs != NULL);
-    }
-
     // Construct instantiation from array of TypeHandles
-    Instantiation(TypeHandle * pArgs, DWORD nArgs)
+    Instantiation(TypeHandle *pArgs, DWORD nArgs)
         : m_nArgs(nArgs)
     {
         LIMITED_METHOD_DAC_CONTRACT;
 
         DACCOP_IGNORE(CastOfMarshalledType, "Dual mode DAC problem, but since the size is the same, the cast is safe");
-        m_pArgs = (FixupPointer<TypeHandle> *)pArgs;
+        m_pArgs = pArgs;
         _ASSERTE(m_nArgs == 0 || m_pArgs != NULL);
     }
 
 #ifdef DACCESS_COMPILE
-    // Construct instantiation from target array of FixupPointers in DAC.
     // This method will create local copy of the instantiation arguments.
-    Instantiation(DPTR(FixupPointer<TypeHandle>) pArgs, DWORD nArgs)
+    Instantiation(PTR_TypeHandle pArgs, DWORD nArgs)
     {
         LIMITED_METHOD_DAC_CONTRACT;
 
         // Create a local copy of the instanitation under DAC
         PVOID pLocalArgs = PTR_READ(dac_cast<TADDR>(pArgs), nArgs * sizeof(TypeHandle));
-        m_pArgs = (FixupPointer<TypeHandle> *)pLocalArgs;
+        m_pArgs = (TypeHandle*)pLocalArgs;
 
         m_nArgs = nArgs;
 
@@ -727,12 +685,20 @@ public:
     }
 #endif
 
+    Instantiation& operator=(const Instantiation& inst)
+    {
+        _ASSERTE(this != &inst);
+        m_pArgs = inst.m_pArgs;
+        m_nArgs = inst.m_nArgs;
+        return *this;
+    }
+
     // Return i-th instantiation argument
     TypeHandle operator[](DWORD iArg) const
     {
         LIMITED_METHOD_DAC_CONTRACT;
         _ASSERTE(iArg < m_nArgs);
-        return m_pArgs[iArg].GetValue();
+        return m_pArgs[iArg];
     }
 
     DWORD GetNumArgs() const
@@ -748,15 +714,25 @@ public:
     }
 
     // Unsafe access to the instantiation. Do not use unless absolutely necessary!!!
-    FixupPointer<TypeHandle> * GetRawArgs() const
+    TypeHandle * GetRawArgs() const
     {
         LIMITED_METHOD_DAC_CONTRACT;
         return m_pArgs;
     }
 
+    bool ContainsAllOneType(TypeHandle th)
+    {
+        for (auto i = GetNumArgs(); i > 0;)
+        {
+            if ((*this)[--i] != th)
+                return false;
+        }
+        return true;
+    }
+
 private:
     // Note that for DAC builds, m_pArgs may be host allocated buffer, not a copy of an object marshalled by DAC.
-    FixupPointer<TypeHandle> * m_pArgs;
+    TypeHandle* m_pArgs;
     DWORD m_nArgs;
 };
 

@@ -4,6 +4,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -100,7 +101,7 @@ namespace System
     }
 
     [Serializable]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
     public class Tuple<T1> : IStructuralEquatable, IStructuralComparable, IComparable, ITupleInternal, ITuple
     {
         private readonly T1 m_Item1; // Do not rename (binary serialization)
@@ -112,17 +113,17 @@ namespace System
             m_Item1 = item1;
         }
 
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             return Equals(obj, EqualityComparer<object>.Default);
         }
 
-        bool IStructuralEquatable.Equals(object? other, IEqualityComparer comparer)
+        bool IStructuralEquatable.Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             return Equals(other, comparer);
         }
 
-        private bool Equals(object? other, IEqualityComparer comparer)
+        private bool Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             if (other == null) return false;
 
@@ -217,7 +218,7 @@ namespace System
     }
 
     [Serializable]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
     public class Tuple<T1, T2> : IStructuralEquatable, IStructuralComparable, IComparable, ITupleInternal, ITuple
     {
         private readonly T1 m_Item1; // Do not rename (binary serialization)
@@ -232,17 +233,17 @@ namespace System
             m_Item2 = item2;
         }
 
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             return Equals(obj, EqualityComparer<object>.Default);
         }
 
-        bool IStructuralEquatable.Equals(object? other, IEqualityComparer comparer)
+        bool IStructuralEquatable.Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             return Equals(other, comparer);
         }
 
-        private bool Equals(object? other, IEqualityComparer comparer)
+        private bool Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             if (other == null) return false;
 
@@ -339,7 +340,7 @@ namespace System
     }
 
     [Serializable]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
     public class Tuple<T1, T2, T3> : IStructuralEquatable, IStructuralComparable, IComparable, ITupleInternal, ITuple
     {
         private readonly T1 m_Item1; // Do not rename (binary serialization)
@@ -357,17 +358,17 @@ namespace System
             m_Item3 = item3;
         }
 
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             return Equals(obj, EqualityComparer<object>.Default);
         }
 
-        bool IStructuralEquatable.Equals(object? other, IEqualityComparer comparer)
+        bool IStructuralEquatable.Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             return Equals(other, comparer);
         }
 
-        private bool Equals(object? other, IEqualityComparer comparer)
+        private bool Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             if (other == null) return false;
 
@@ -471,7 +472,7 @@ namespace System
     }
 
     [Serializable]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
     public class Tuple<T1, T2, T3, T4> : IStructuralEquatable, IStructuralComparable, IComparable, ITupleInternal, ITuple
     {
         private readonly T1 m_Item1; // Do not rename (binary serialization)
@@ -492,17 +493,17 @@ namespace System
             m_Item4 = item4;
         }
 
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             return Equals(obj, EqualityComparer<object>.Default);
         }
 
-        bool IStructuralEquatable.Equals(object? other, IEqualityComparer comparer)
+        bool IStructuralEquatable.Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             return Equals(other, comparer);
         }
 
-        private bool Equals(object? other, IEqualityComparer comparer)
+        private bool Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             if (other == null) return false;
 
@@ -613,7 +614,7 @@ namespace System
     }
 
     [Serializable]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
     public class Tuple<T1, T2, T3, T4, T5> : IStructuralEquatable, IStructuralComparable, IComparable, ITupleInternal, ITuple
     {
         private readonly T1 m_Item1; // Do not rename (binary serialization)
@@ -637,17 +638,17 @@ namespace System
             m_Item5 = item5;
         }
 
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             return Equals(obj, EqualityComparer<object>.Default);
         }
 
-        bool IStructuralEquatable.Equals(object? other, IEqualityComparer comparer)
+        bool IStructuralEquatable.Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             return Equals(other, comparer);
         }
 
-        private bool Equals(object? other, IEqualityComparer comparer)
+        private bool Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             if (other == null) return false;
 
@@ -765,7 +766,7 @@ namespace System
     }
 
     [Serializable]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
     public class Tuple<T1, T2, T3, T4, T5, T6> : IStructuralEquatable, IStructuralComparable, IComparable, ITupleInternal, ITuple
     {
         private readonly T1 m_Item1; // Do not rename (binary serialization)
@@ -792,17 +793,17 @@ namespace System
             m_Item6 = item6;
         }
 
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             return Equals(obj, EqualityComparer<object>.Default);
         }
 
-        bool IStructuralEquatable.Equals(object? other, IEqualityComparer comparer)
+        bool IStructuralEquatable.Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             return Equals(other, comparer);
         }
 
-        private bool Equals(object? other, IEqualityComparer comparer)
+        private bool Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             if (other == null) return false;
 
@@ -927,7 +928,7 @@ namespace System
     }
 
     [Serializable]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
     public class Tuple<T1, T2, T3, T4, T5, T6, T7> : IStructuralEquatable, IStructuralComparable, IComparable, ITupleInternal, ITuple
     {
         private readonly T1 m_Item1; // Do not rename (binary serialization)
@@ -957,17 +958,17 @@ namespace System
             m_Item7 = item7;
         }
 
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             return Equals(obj, EqualityComparer<object>.Default);
         }
 
-        bool IStructuralEquatable.Equals(object? other, IEqualityComparer comparer)
+        bool IStructuralEquatable.Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             return Equals(other, comparer);
         }
 
-        private bool Equals(object? other, IEqualityComparer comparer)
+        private bool Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             if (other == null) return false;
 
@@ -1099,7 +1100,7 @@ namespace System
     }
 
     [Serializable]
-    [System.Runtime.CompilerServices.TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+    [TypeForwardedFrom("mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
     public class Tuple<T1, T2, T3, T4, T5, T6, T7, TRest> : IStructuralEquatable, IStructuralComparable, IComparable, ITupleInternal, ITuple where TRest : notnull
     {
         private readonly T1 m_Item1; // Do not rename (binary serialization)
@@ -1137,17 +1138,17 @@ namespace System
             m_Rest = rest;
         }
 
-        public override bool Equals(object? obj)
+        public override bool Equals([NotNullWhen(true)] object? obj)
         {
             return Equals(obj, EqualityComparer<object>.Default);
         }
 
-        bool IStructuralEquatable.Equals(object? other, IEqualityComparer comparer)
+        bool IStructuralEquatable.Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             return Equals(other, comparer);
         }
 
-        private bool Equals(object? other, IEqualityComparer comparer)
+        private bool Equals([NotNullWhen(true)] object? other, IEqualityComparer comparer)
         {
             if (other == null) return false;
 

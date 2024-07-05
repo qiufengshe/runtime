@@ -25,12 +25,8 @@
 #include "eedbginterface.h"
 #include "debugdebugger.h"
 
-#ifdef FEATURE_PREJIT
-#include "corcompile.h"
-#endif // FEATURE_PREJIT
-
 #include "eeconfig.h"
-#include "pefile.h"
+#include "peassembly.h"
 
 class EEDbgInterfaceImpl : public EEDebugInterface
 {
@@ -224,7 +220,7 @@ public:
 
     void MarkDebuggerUnattached(void);
 
-#ifdef EnC_SUPPORTED
+#ifdef FEATURE_METADATA_UPDATER
 
     // Apply an EnC edit to the specified module
     // This function should never return.
@@ -240,7 +236,7 @@ public:
                                  void *debuggerFuncHandle,
                                  SIZE_T resumeIP,
                                  T_CONTEXT *pContext);
-  #endif // EnC_SUPPORTED
+  #endif // FEATURE_METADATA_UPDATER
 
     bool CrawlFrameIsGcSafe(CrawlFrame *pCF);
 
@@ -305,25 +301,9 @@ public:
                           CorDebugThreadState state);
 
     // This is pretty much copied from VM\COMSynchronizable's
-    // INT32 __stdcall ThreadNative::GetThreadState, so propogate changes
+    // INT32 __stdcall ThreadNative::GetThreadState, so propagate changes
     // to both functions
     CorDebugUserState GetPartialUserState( Thread *pThread );
-
-#ifdef FEATURE_PREJIT
-#ifndef DACCESS_COMPILE
-    virtual void SetNGENDebugFlags(BOOL fAllowOpt)
-    {
-        LIMITED_METHOD_CONTRACT;
-        PEFile::SetNGENDebugFlags(fAllowOpt);
-    }
-
-    virtual void GetNGENDebugFlags(BOOL *fAllowOpt)
-    {
-        LIMITED_METHOD_CONTRACT;
-        PEFile::GetNGENDebugFlags(fAllowOpt);
-    }
-#endif
-#endif // FEATURE_PREJIT
 
 #ifdef DACCESS_COMPILE
     virtual void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);

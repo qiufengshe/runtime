@@ -5,6 +5,7 @@ using System;
 using System.Reflection;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Xunit;
 
 namespace ObjectStackAllocation
 {
@@ -87,7 +88,7 @@ namespace ObjectStackAllocation
         Undefined
     }
 
-    class Tests
+    public class Tests
     {
         static volatile int f1 = 5;
         static volatile int f2 = 7;
@@ -103,7 +104,8 @@ namespace ObjectStackAllocation
 
         static int methodResult = 100;
 
-        public static int Main()
+        [Fact]
+        public static int TestEntryPoint()
         {
             AllocationKind expectedAllocationKind = AllocationKind.Stack;
             if (GCStressEnabled()) {
@@ -150,6 +152,9 @@ namespace ObjectStackAllocation
 
             CallTestAndVerifyAllocation(AllocateClassWithGcFieldAndInt, 5, expectedAllocationKind);
 
+            // Stack allocation of boxed structs is now enabled
+            CallTestAndVerifyAllocation(BoxSimpleStructAndAddFields, 12, expectedAllocationKind);
+
             // The remaining tests currently never allocate on the stack
             if (expectedAllocationKind == AllocationKind.Stack) {
                 expectedAllocationKind = AllocationKind.Heap;
@@ -160,9 +165,6 @@ namespace ObjectStackAllocation
 
             // This test calls CORINFO_HELP_CHKCASTCLASS_SPECIAL
             CallTestAndVerifyAllocation(AllocateSimpleClassAndCast, 7, expectedAllocationKind);
-
-            // Stack allocation of boxed structs is currently disabled
-            CallTestAndVerifyAllocation(BoxSimpleStructAndAddFields, 12, expectedAllocationKind);
 
             return methodResult;
         }
@@ -178,7 +180,7 @@ namespace ObjectStackAllocation
 
         static bool GCStressEnabled()
         {
-            return Environment.GetEnvironmentVariable("COMPlus_GCStress") != null;
+            return Environment.GetEnvironmentVariable("DOTNET_GCStress") != null;
         }
 
         static bool Crossgen2Test()

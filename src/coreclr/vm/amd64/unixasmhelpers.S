@@ -5,30 +5,6 @@
 #include "unixasmmacros.inc"
 #include "asmconstants.h"
 
-
-//////////////////////////////////////////////////////////////////////////
-//
-// PrecodeFixupThunk
-//
-// The call in fixup precode initally points to this function.
-// The pupose of this function is to load the MethodDesc and forward the call the prestub.
-//
-// EXTERN_C VOID __stdcall PrecodeFixupThunk()
-LEAF_ENTRY PrecodeFixupThunk, _TEXT
-
-        pop     rax         // Pop the return address. It points right after the call instruction in the precode.
-
-        // Inline computation done by FixupPrecode::GetMethodDesc()
-        movzx   r10,byte ptr [rax+2]    // m_PrecodeChunkIndex
-        movzx   r11,byte ptr [rax+1]    // m_MethodDescChunkIndex
-        mov     rax,qword ptr [rax+r10*8+3]
-        lea     METHODDESC_REGISTER,[rax+r11*8]
-
-        // Tail call to prestub
-        jmp C_FUNC(ThePreStub)
-
-LEAF_END PrecodeFixupThunk, _TEXT
-
 // EXTERN_C int __fastcall HelperMethodFrameRestoreState(
 //         INDEBUG_COMMA(HelperMethodFrame *pFrame)
 //         MachState *pState
@@ -95,14 +71,16 @@ NESTED_ENTRY NDirectImportThunk, _TEXT, NoHandler
         //
         // Save integer parameter registers.
         // Make sure to preserve r11 as well as it is used to pass the stack argument size from JIT
+        // Make sure to preserve rax as well as it is used for the return buffer for Swift calls
         //
         PUSH_ARGUMENT_REGISTERS
         push_register r11
+        push_register rax
 
         //
-        // Allocate space for XMM parameter registers
+        // Allocate space for XMM parameter registers and alignment
         //
-        alloc_stack     0x80
+        alloc_stack     0x88
 
         SAVE_FLOAT_ARGUMENT_REGISTERS 0
 
@@ -113,33 +91,25 @@ NESTED_ENTRY NDirectImportThunk, _TEXT, NoHandler
         //
         mov             rdi, METHODDESC_REGISTER
         call            C_FUNC(NDirectImportWorker)
+        mov             r10, rax
 
         RESTORE_FLOAT_ARGUMENT_REGISTERS 0
 
         //
-        // epilogue, rax contains the native target address
+        // epilogue, r10 contains the native target address
         //
-        free_stack      0x80
+        free_stack      0x88
 
         //
-        // Restore integer parameter registers and r11
+        // Restore integer parameter registers, r11 and rax
         //
+        pop_register rax
         pop_register r11
         POP_ARGUMENT_REGISTERS
 
-    TAILJMP_RAX
+        jmp r10
+    
 NESTED_END NDirectImportThunk, _TEXT
-
-// EXTERN_C void moveOWord(LPVOID* src, LPVOID* target);
-// <NOTE>
-// MOVDQA is not an atomic operation.  You need to call this function in a crst.
-// </NOTE>
-LEAF_ENTRY moveOWord, _TEXT
-        movdqu          xmm0, xmmword ptr [rdi]
-        movdqu          xmmword ptr [rsi], xmm0
-
-        ret
-LEAF_END moveOWord, _TEXT
 
 //------------------------------------------------
 // JIT_RareDisableHelper
@@ -231,13 +201,7 @@ LEAF_END SinglecastDelegateInvokeStub, _TEXT
 
 #ifdef FEATURE_TIERED_COMPILATION
 
-LEAF_ENTRY OnCallCountThresholdReachedStub, _TEXT
-        // Pop the return address (the stub-identifying token) into a non-argument volatile register that can be trashed
-        pop     rax
-        jmp     C_FUNC(OnCallCountThresholdReachedStub2)
-LEAF_END OnCallCountThresholdReachedStub, _TEXT
-
-NESTED_ENTRY OnCallCountThresholdReachedStub2, _TEXT, NoHandler
+NESTED_ENTRY OnCallCountThresholdReachedStub, _TEXT, NoHandler
         PROLOG_WITH_TRANSITION_BLOCK
 
         lea     rdi, [rsp + __PWTB_TransitionBlock] // TransitionBlock *
@@ -246,6 +210,6 @@ NESTED_ENTRY OnCallCountThresholdReachedStub2, _TEXT, NoHandler
 
         EPILOG_WITH_TRANSITION_BLOCK_TAILCALL
         TAILJMP_RAX
-NESTED_END OnCallCountThresholdReachedStub2, _TEXT
+NESTED_END OnCallCountThresholdReachedStub, _TEXT
 
 #endif // FEATURE_TIERED_COMPILATION

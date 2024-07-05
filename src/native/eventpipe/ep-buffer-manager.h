@@ -99,9 +99,9 @@ struct _EventPipeBufferManager_Internal {
 	// its own data, while at the same time, ensuring that when a thread is destroyed,
 	// we keep the buffers around without having to perform any migration or
 	// book-keeping.
-	ep_rt_thread_session_state_list_t thread_session_state_list;
+	dn_list_t *thread_session_state_list;
 	// A queue of sequence points.
-	ep_rt_sequence_point_list_t sequence_points;
+	dn_list_t *sequence_points;
 	// Event for synchronizing real time reading.
 	ep_rt_wait_event_handle_t rt_wait_event;
 	// Lock to protect access to the per-thread buffer list and total allocation size.
@@ -114,7 +114,7 @@ struct _EventPipeBufferManager_Internal {
 	EventPipeBuffer *current_buffer;
 	EventPipeBufferList *current_buffer_list;
 	// The total allocation size of buffers under management.
-	size_t size_of_all_buffers;
+	volatile size_t size_of_all_buffers;
 	// The maximum allowable size of buffers under management.
 	// Attempted allocations above this threshold result in
 	// dropped events.
@@ -125,6 +125,10 @@ struct _EventPipeBufferManager_Internal {
 	// The total amount of allocations we can do after one sequence
 	// point before triggering the next one
 	size_t sequence_point_alloc_budget;
+	// number of times an event was dropped due to it being too
+	// large to fit in the 64KB size limit
+	volatile int64_t num_oversized_events_dropped;
+
 #ifdef EP_CHECKED_BUILD
 	volatile int64_t num_events_stored;
 	volatile int64_t num_events_dropped;

@@ -22,7 +22,6 @@ set(MDRUNTIMERW_HEADERS
   ../../inc/sstring.inl
   ../compiler/importhelper.h
   ../compiler/regmeta.h
-  ../hotdata/hotdataformat.h
   ../inc/liteweightstgdb.h
   ../inc/mdinternalrw.h
   ../inc/mdlog.h
@@ -52,19 +51,13 @@ add_library_clr(mdruntimerw_dac ${MDRUNTIMERW_SOURCES})
 set_target_properties(mdruntimerw_dac PROPERTIES DAC_COMPONENT TRUE)
 target_precompile_headers(mdruntimerw_dac PRIVATE stdafx.h)
 
-add_library_clr(mdruntimerw_wks_obj OBJECT ${MDRUNTIMERW_SOURCES})
-target_compile_definitions(mdruntimerw_wks_obj PRIVATE FEATURE_METADATA_EMIT_ALL)
-target_precompile_headers(mdruntimerw_wks_obj PRIVATE stdafx.h)
-add_library(mdruntimerw_wks INTERFACE)
-target_sources(mdruntimerw_wks INTERFACE $<TARGET_OBJECTS:mdruntimerw_wks_obj>)
+add_library_clr(mdruntimerw_wks OBJECT ${MDRUNTIMERW_SOURCES})
+target_compile_definitions(mdruntimerw_wks PRIVATE FEATURE_METADATA_EMIT_ALL)
+target_precompile_headers(mdruntimerw_wks PRIVATE stdafx.h)
 
 add_library_clr(mdruntimerw-dbi ${MDRUNTIMERW_SOURCES})
 set_target_properties(mdruntimerw-dbi PROPERTIES DBI_COMPONENT TRUE)
 target_precompile_headers(mdruntimerw-dbi PRIVATE stdafx.h)
-
-add_library_clr(mdruntimerw_crossgen ${MDRUNTIMERW_SOURCES})
-set_target_properties(mdruntimerw_crossgen PROPERTIES CROSSGEN_COMPONENT TRUE)
-target_precompile_headers(mdruntimerw_crossgen PRIVATE stdafx.h)
 
 add_library_clr(mdruntimerw_ppdb ${MDRUNTIMERW_SOURCES})
 target_compile_definitions(mdruntimerw_ppdb PRIVATE FEATURE_METADATA_EMIT_ALL FEATURE_METADATA_EMIT_PORTABLE_PDB)

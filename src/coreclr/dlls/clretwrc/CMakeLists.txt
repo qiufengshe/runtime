@@ -7,8 +7,13 @@ if(CLR_CMAKE_HOST_WIN32)
     string(REPLACE "/LTCG" "" CMAKE_SHARED_LINKER_FLAGS_RELWITHDEBINFO ${CMAKE_SHARED_LINKER_FLAGS_RELWITHDEBINFO})
     string(REPLACE "/LTCG" "" CMAKE_STATIC_LINKER_FLAGS_RELWITHDEBINFO ${CMAKE_STATIC_LINKER_FLAGS_RELWITHDEBINFO})
 
-    # remove /guard:cf from resource-only libraries
-    string(REPLACE "/guard:cf" "" CMAKE_SHARED_LINKER_FLAGS ${CMAKE_SHARED_LINKER_FLAGS})
+    # remove /guard:cf, /guard:ehcont, and /CETCOMPAT from resource-only libraries
+    set_property(DIRECTORY PROPERTY CLR_CONTROL_FLOW_GUARD OFF)
+
+    if (CLR_CMAKE_HOST_ARCH_AMD64)
+        set_property(DIRECTORY PROPERTY CLR_EH_CONTINUATION OFF)
+        string(REPLACE "/CETCOMPAT" "" CMAKE_SHARED_LINKER_FLAGS ${CMAKE_SHARED_LINKER_FLAGS})
+    endif (CLR_CMAKE_HOST_ARCH_AMD64)
 
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /NOENTRY")
 endif(CLR_CMAKE_HOST_WIN32)
@@ -20,6 +25,6 @@ add_library_clr(clretwrc SHARED
 )
 
 # add the install targets
-install_clr(TARGETS clretwrc ADDITIONAL_DESTINATIONS sharedFramework)
+install_clr(TARGETS clretwrc DESTINATIONS . sharedFramework COMPONENT runtime)
 
 add_dependencies(clretwrc eventing_headers)

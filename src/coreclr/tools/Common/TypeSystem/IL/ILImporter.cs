@@ -1,14 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-
 using Internal.TypeSystem;
-using Internal.IL;
 
 namespace Internal.IL
 {
-    internal partial class ILImporter
+    internal sealed partial class ILImporter
     {
         private BasicBlock[] _basicBlocks; // Maps IL offset to basic block
 
@@ -29,22 +26,22 @@ namespace Internal.IL
             return _ilBytes[_currentOffset++];
         }
 
-        private UInt16 ReadILUInt16()
+        private ushort ReadILUInt16()
         {
             if (_currentOffset + 1 >= _ilBytes.Length)
                 ReportMethodEndInsideInstruction();
 
-            UInt16 val = (UInt16)(_ilBytes[_currentOffset] + (_ilBytes[_currentOffset + 1] << 8));
+            ushort val = (ushort)(_ilBytes[_currentOffset] + (_ilBytes[_currentOffset + 1] << 8));
             _currentOffset += 2;
             return val;
         }
 
-        private UInt32 ReadILUInt32()
+        private uint ReadILUInt32()
         {
             if (_currentOffset + 3 >= _ilBytes.Length)
                 ReportMethodEndInsideInstruction();
 
-            UInt32 val = (UInt32)(_ilBytes[_currentOffset] + (_ilBytes[_currentOffset + 1] << 8) + (_ilBytes[_currentOffset + 2] << 16) + (_ilBytes[_currentOffset + 3] << 24));
+            uint val = (uint)(_ilBytes[_currentOffset] + (_ilBytes[_currentOffset + 1] << 8) + (_ilBytes[_currentOffset + 2] << 16) + (_ilBytes[_currentOffset + 3] << 24));
             _currentOffset += 4;
             return val;
         }
@@ -117,8 +114,9 @@ namespace Internal.IL
                 MarkInstructionBoundary();
 
                 ILOpcode opCode = (ILOpcode)ReadILByte();
+                if (opCode == ILOpcode.prefix1)
+                    opCode = (ILOpcode)(0x100 + ReadILByte());
 
-            again:
                 switch (opCode)
                 {
                     case ILOpcode.ldarg_s:
@@ -182,19 +180,13 @@ namespace Internal.IL
                     case ILOpcode.sizeof_:
                         SkipIL(4);
                         break;
-                    case ILOpcode.prefix1:
-                        opCode = (ILOpcode)(0x100 + ReadILByte());
-                        goto again;
                     case ILOpcode.br_s:
                     case ILOpcode.leave_s:
                         {
                             int delta = (sbyte)ReadILByte();
                             int target = _currentOffset + delta;
                             if ((uint)target < (uint)_basicBlocks.Length)
-                            {
                                 CreateBasicBlock(target);
-                                OnLeaveTargetCreated(target);
-                            }
                             else
                                 ReportInvalidBranchTarget(target);
                         }
@@ -227,10 +219,7 @@ namespace Internal.IL
                             int delta = (int)ReadILUInt32();
                             int target = _currentOffset + delta;
                             if ((uint)target < (uint)_basicBlocks.Length)
-                            {
                                 CreateBasicBlock(target);
-                                OnLeaveTargetCreated(target);
-                            }
                             else
                                 ReportInvalidBranchTarget(target);
                         }
@@ -279,8 +268,6 @@ namespace Internal.IL
             }
         }
 
-        partial void OnLeaveTargetCreated(int target);
-
         private void FindEHTargets()
         {
             for (int i = 0; i < _exceptionRegions.Length; i++)
@@ -325,6 +312,8 @@ namespace Internal.IL
             }
         }
 
+        partial void StartImportingInstruction(ILOpcode opcode);
+
         private void ImportBasicBlock(BasicBlock basicBlock)
         {
             _currentBasicBlock = basicBlock;
@@ -335,8 +324,11 @@ namespace Internal.IL
                 StartImportingInstruction();
 
                 ILOpcode opCode = (ILOpcode)ReadILByte();
+                if (opCode == ILOpcode.prefix1)
+                    opCode = (ILOpcode)(0x100 + ReadILByte());
 
-            again:
+                StartImportingInstruction(opCode);
+
                 switch (opCode)
                 {
                     case ILOpcode.nop:
@@ -579,7 +571,7 @@ namespace Internal.IL
                         ImportConvert(WellKnownType.Double, false, false);
                         break;
                     case ILOpcode.conv_u4:
-                        ImportConvert(WellKnownType.UInt32, false, false);
+                        ImportConvert(WellKnownType.UInt32, false, true);
                         break;
                     case ILOpcode.conv_u8:
                         ImportConvert(WellKnownType.UInt64, false, true);
@@ -823,11 +815,8 @@ namespace Internal.IL
                         ImportStoreIndirect(WellKnownType.IntPtr);
                         break;
                     case ILOpcode.conv_u:
-                        ImportConvert(WellKnownType.UIntPtr, false, false);
+                        ImportConvert(WellKnownType.UIntPtr, false, true);
                         break;
-                    case ILOpcode.prefix1:
-                        opCode = (ILOpcode)(0x100 + ReadILByte());
-                        goto again;
                     case ILOpcode.arglist:
                         ImportArgList();
                         break;

@@ -5,16 +5,13 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security;
 using System.Threading;
-
-using Microsoft.Win32.SafeHandles;
-
 using Internal.Win32;
-
 using REG_TZI_FORMAT = Interop.Kernel32.REG_TZI_FORMAT;
-using TIME_ZONE_INFORMATION = Interop.Kernel32.TIME_ZONE_INFORMATION;
 using TIME_DYNAMIC_ZONE_INFORMATION = Interop.Kernel32.TIME_DYNAMIC_ZONE_INFORMATION;
+using TIME_ZONE_INFORMATION = Interop.Kernel32.TIME_ZONE_INFORMATION;
 
 namespace System
 {
@@ -33,7 +30,7 @@ namespace System
         private const string FirstEntryValue = "FirstEntry";
         private const string LastEntryValue = "LastEntry";
 
-        private const int MaxKeyLength = 255;
+        private const string InvariantUtcStandardDisplayName = "Coordinated Universal Time";
 
         private sealed partial class CachedData
         {
@@ -89,6 +86,30 @@ namespace System
             return (AdjustmentRule[])_adjustmentRules.Clone();
         }
 
+        private static string? PopulateDisplayName()
+        {
+            // Keep window's implementation to populate via constructor
+            // This should not be reached
+            Debug.Assert(false);
+            return null;
+        }
+
+        private static string? PopulateStandardDisplayName()
+        {
+            // Keep window's implementation to populate via constructor
+            // This should not be reached
+            Debug.Assert(false);
+            return null;
+        }
+
+        private static string? PopulateDaylightDisplayName()
+        {
+            // Keep window's implementation to populate via constructor
+            // This should not be reached
+            Debug.Assert(false);
+            return null;
+        }
+
         private static void PopulateAllSystemTimeZones(CachedData cachedData)
         {
             Debug.Assert(Monitor.IsEntered(cachedData));
@@ -103,6 +124,12 @@ namespace System
                     }
                 }
             }
+        }
+
+        private static string? GetAlternativeId(string id, out bool idIsIana)
+        {
+            idIsIana = true;
+            return TryConvertIanaIdToWindowsId(id, out string? windowsId) ? windowsId : null;
         }
 
         private TimeZoneInfo(in TIME_ZONE_INFORMATION zone, bool dstDisabled)
@@ -308,58 +335,13 @@ namespace System
 
         /// <summary>
         /// Helper function for retrieving a TimeZoneInfo object by time_zone_name.
-        /// This function wraps the logic necessary to keep the private
-        /// SystemTimeZones cache in working order
         ///
-        /// This function will either return a valid TimeZoneInfo instance or
-        /// it will throw 'InvalidTimeZoneException' / 'TimeZoneNotFoundException'.
+        /// This function may return null.
+        ///
+        /// assumes cachedData lock is taken
         /// </summary>
-        public static TimeZoneInfo FindSystemTimeZoneById(string id)
-        {
-            // Special case for Utc to avoid having TryGetTimeZone creating a new Utc object
-            if (string.Equals(id, UtcId, StringComparison.OrdinalIgnoreCase))
-            {
-                return Utc;
-            }
-
-            if (id == null)
-            {
-                throw new ArgumentNullException(nameof(id));
-            }
-            if (id.Length == 0 || id.Length > MaxKeyLength || id.Contains('\0'))
-            {
-                throw new TimeZoneNotFoundException(SR.Format(SR.TimeZoneNotFound_MissingData, id));
-            }
-
-            TimeZoneInfo? value;
-            Exception? e;
-
-            TimeZoneInfoResult result;
-
-            CachedData cachedData = s_cachedData;
-
-            lock (cachedData)
-            {
-                result = TryGetTimeZone(id, false, out value, out e, cachedData);
-            }
-
-            if (result == TimeZoneInfoResult.Success)
-            {
-                return value!;
-            }
-            else if (result == TimeZoneInfoResult.InvalidTimeZoneException)
-            {
-                throw new InvalidTimeZoneException(SR.Format(SR.InvalidTimeZone_InvalidRegistryData, id), e);
-            }
-            else if (result == TimeZoneInfoResult.SecurityException)
-            {
-                throw new SecurityException(SR.Format(SR.Security_CannotReadRegistryData, id), e);
-            }
-            else
-            {
-                throw new TimeZoneNotFoundException(SR.Format(SR.TimeZoneNotFound_MissingData, id), e);
-            }
-        }
+        private static TimeZoneInfoResult TryGetTimeZone(string id, out TimeZoneInfo? timeZone, out Exception? e, CachedData cachedData)
+            => TryGetTimeZone(id, false, out timeZone, out e, cachedData);
 
         // DateTime.Now fast path that avoids allocating an historically accurate TimeZoneInfo.Local and just creates a 1-year (current year) accurate time zone
         internal static TimeSpan GetDateTimeNowUtcOffsetFromUtc(DateTime time, out bool isAmbiguousLocalDst)
@@ -709,7 +691,7 @@ namespace System
 
                 result = dstDisabled || CheckDaylightSavingTimeNotSupported(timeZone) ||
                     //
-                    // since Daylight Saving Time is not "disabled", do a straight comparision between
+                    // since Daylight Saving Time is not "disabled", do a straight comparison between
                     // the Win32 API data and the registry data ...
                     //
                     (timeZone.DaylightBias == registryTimeZoneInfo.DaylightBias &&
@@ -729,19 +711,16 @@ namespace System
             }
         }
 
+
         /// <summary>
-        /// Helper function for retrieving a localized string resource via MUI.
-        /// The function expects a string in the form: "@resource.dll, -123"
-        ///
-        /// "resource.dll" is a language-neutral portable executable (LNPE) file in
-        /// the %windir%\system32 directory.  The OS is queried to find the best-fit
-        /// localized resource file for this LNPE (ex: %windir%\system32\en-us\resource.dll.mui).
-        /// If a localized resource file exists, we LoadString resource ID "123" and
-        /// return it to our caller.
+        /// Try to find the time zone resources Dll matching the CurrentUICulture or one of its parent cultures.
+        /// We try to check of such resource module e.g. %windir%\system32\[UI Culture Name]\tzres.dll.mui exist.
+        /// If a localized resource file exists, we LoadString resource with the id specified inside resource input
+        /// string and and return it to our caller.
         /// </summary>
-        private static string TryGetLocalizedNameByMuiNativeResource(string resource)
+        private static string GetLocalizedNameByMuiNativeResource(string resource)
         {
-            if (string.IsNullOrEmpty(resource))
+            if (string.IsNullOrEmpty(resource) || (GlobalizationMode.Invariant && GlobalizationMode.PredefinedCulturesOnly))
             {
                 return string.Empty;
             }
@@ -751,58 +730,50 @@ namespace System
             // filePath   = "C:\Windows\System32\tzres.dll"
             // resourceId = -100
             //
-            string[] resources = resource.Split(',');
+            ReadOnlySpan<char> resourceSpan = resource;
+            Span<Range> resources = stackalloc Range[3];
+            resources = resources.Slice(0, resourceSpan.Split(resources, ','));
             if (resources.Length != 2)
             {
                 return string.Empty;
             }
 
-            string filePath;
-
-            // get the path to Windows\System32
-            string system32 = Environment.SystemDirectory;
-
-            // trim the string "@tzres.dll" => "tzres.dll"
-            string tzresDll = resources[0].TrimStart('@');
-
-            try
-            {
-                filePath = Path.Combine(system32, tzresDll);
-            }
-            catch (ArgumentException)
-            {
-                // there were probably illegal characters in the path
-                return string.Empty;
-            }
-
-            if (!int.TryParse(resources[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int resourceId))
+            // Get the resource ID
+            if (!int.TryParse(resourceSpan[resources[1]], NumberStyles.Integer, CultureInfo.InvariantCulture, out int resourceId))
             {
                 return string.Empty;
             }
             resourceId = -resourceId;
 
+            // Use the current UI culture when culture not specified
+            CultureInfo cultureInfo = CultureInfo.CurrentUICulture;
+
+            // get the path to Windows\System32
+            string system32 = Environment.SystemDirectory;
+
+            // trim the string "@tzres.dll" to "tzres.dll" and append the "mui" file extension to it.
+            string tzresDll = $"{resourceSpan[resources[0]].TrimStart('@')}.mui";
+
             try
             {
-                unsafe
+                while (cultureInfo.Name.Length != 0)
                 {
-                    char* fileMuiPath = stackalloc char[Interop.Kernel32.MAX_PATH];
-                    int fileMuiPathLength = Interop.Kernel32.MAX_PATH;
-                    int languageLength = 0;
-                    long enumerator = 0;
+                    string filePath = Path.Join(system32, cultureInfo.Name, tzresDll);
+                    if (File.Exists(filePath))
+                    {
+                        // Finally, get the resource from the resource path
+                        return GetLocalizedNameByNativeResource(filePath, resourceId);
+                    }
 
-                    bool succeeded = Interop.Kernel32.GetFileMUIPath(
-                                            Interop.Kernel32.MUI_PREFERRED_UI_LANGUAGES,
-                                            filePath, null /* language */, ref languageLength,
-                                            fileMuiPath, ref fileMuiPathLength, ref enumerator);
-                    return succeeded ?
-                        TryGetLocalizedNameByNativeResource(new string(fileMuiPath, 0, fileMuiPathLength), resourceId) :
-                        string.Empty;
+                    cultureInfo = cultureInfo.Parent;
                 }
             }
-            catch (EntryPointNotFoundException)
+            catch (ArgumentException)
             {
-                return string.Empty;
+                // there were probably illegal characters in the path
             }
+
+            return string.Empty;
         }
 
         /// <summary>
@@ -812,7 +783,7 @@ namespace System
         /// "resource.dll" is a language-specific resource DLL.
         /// If the localized resource DLL exists, LoadString(resource) is returned.
         /// </summary>
-        private static unsafe string TryGetLocalizedNameByNativeResource(string filePath, int resource)
+        private static unsafe string GetLocalizedNameByNativeResource(string filePath, int resource)
         {
             IntPtr handle = IntPtr.Zero;
             try
@@ -862,17 +833,17 @@ namespace System
             // try to load the strings from the native resource DLL(s)
             if (!string.IsNullOrEmpty(displayNameMuiResource))
             {
-                displayName = TryGetLocalizedNameByMuiNativeResource(displayNameMuiResource);
+                displayName = GetLocalizedNameByMuiNativeResource(displayNameMuiResource);
             }
 
             if (!string.IsNullOrEmpty(standardNameMuiResource))
             {
-                standardName = TryGetLocalizedNameByMuiNativeResource(standardNameMuiResource);
+                standardName = GetLocalizedNameByMuiNativeResource(standardNameMuiResource);
             }
 
             if (!string.IsNullOrEmpty(daylightNameMuiResource))
             {
-                daylightName = TryGetLocalizedNameByMuiNativeResource(daylightNameMuiResource);
+                daylightName = GetLocalizedNameByMuiNativeResource(daylightNameMuiResource);
             }
 
             // fallback to using the standard registry keys
@@ -951,9 +922,9 @@ namespace System
                     value = new TimeZoneInfo(
                         id,
                         new TimeSpan(0, -(defaultTimeZoneInformation.Bias), 0),
-                        displayName,
-                        standardName,
-                        daylightName,
+                        displayName ?? string.Empty,
+                        standardName ?? string.Empty,
+                        daylightName ?? string.Empty,
                         adjustmentRules,
                         disableDaylightSavingTime: false);
 
@@ -974,6 +945,50 @@ namespace System
                     return TimeZoneInfoResult.InvalidTimeZoneException;
                 }
             }
+        }
+
+        // Helper function to get the standard display name for the UTC static time zone instance
+        private static string GetUtcStandardDisplayName()
+        {
+            // Don't bother looking up the name for invariant or English cultures
+            CultureInfo uiCulture = CultureInfo.CurrentUICulture;
+            if (uiCulture.Name.Length == 0 || uiCulture.TwoLetterISOLanguageName == "en")
+                return InvariantUtcStandardDisplayName;
+
+            // Try to get a localized version of "Coordinated Universal Time" from the globalization data
+            string? standardDisplayName = null;
+            using (RegistryKey? key = Registry.LocalMachine.OpenSubKey(TimeZonesRegistryHive + "\\" + UtcId, writable: false))
+            {
+                if (key != null)
+                {
+                    // read the MUI_ registry key
+                    string? standardNameMuiResource = key.GetValue(MuiStandardValue, string.Empty) as string;
+
+                    // try to load the string from the native resource DLL(s)
+                    if (!string.IsNullOrEmpty(standardNameMuiResource))
+                    {
+                        standardDisplayName = GetLocalizedNameByMuiNativeResource(standardNameMuiResource);
+                    }
+
+                    // fallback to using the standard registry key
+                    if (string.IsNullOrEmpty(standardDisplayName))
+                    {
+                        standardDisplayName = key.GetValue(StandardValue, string.Empty) as string;
+                    }
+                }
+            }
+
+            // Final safety check.  Don't allow null or abbreviations
+            if (standardDisplayName == null || standardDisplayName == "GMT" || standardDisplayName == "UTC")
+                standardDisplayName = InvariantUtcStandardDisplayName;
+
+            return standardDisplayName;
+        }
+
+        // Helper function to get the full display name for the UTC static time zone instance
+        private static string GetUtcFullDisplayName(string _ /*timeZoneId*/, string standardDisplayName)
+        {
+            return $"(UTC) {standardDisplayName}";
         }
     }
 }

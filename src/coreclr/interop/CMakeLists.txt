@@ -19,21 +19,15 @@ set(INTEROP_HEADERS
     ${INTEROP_COMMON_HEADERS}
 )
 
-if (WIN32)
+if (FEATURE_COMWRAPPERS)
     list(APPEND INTEROP_SOURCES
         ${INTEROP_HEADERS}
         comwrappers.cpp
         comwrappers.hpp
         trackerobjectmanager.cpp
         referencetrackertypes.hpp)
-endif(WIN32)
+endif(FEATURE_COMWRAPPERS)
 
 convert_to_absolute_path(INTEROP_SOURCES ${INTEROP_SOURCES})
 
-add_library_clr(interop_obj
-    OBJECT
-    ${INTEROP_SOURCES}
-)
-
-add_library(interop INTERFACE)
-target_sources(interop INTERFACE $<TARGET_OBJECTS:interop_obj>)
+add_library_clr(interop OBJECT ${INTEROP_SOURCES})

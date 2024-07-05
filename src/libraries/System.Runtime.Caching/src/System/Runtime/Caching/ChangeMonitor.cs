@@ -2,10 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Runtime.Caching.Resources;
-using System.Diagnostics.CodeAnalysis;
-using System.Threading;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.Caching.Resources;
+using System.Threading;
 
 // Every member of this class is thread-safe.
 //
@@ -221,7 +221,7 @@ namespace System.Runtime.Caching
         // be called immediately (on the same thread??).
         public void NotifyOnChanged(OnChangedCallback onChangedCallback)
         {
-            if (onChangedCallback == null)
+            if (onChangedCallback is null)
             {
                 throw new ArgumentNullException(nameof(onChangedCallback));
             }

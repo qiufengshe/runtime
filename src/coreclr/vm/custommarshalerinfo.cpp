@@ -25,7 +25,7 @@ CustomMarshalerInfo::CustomMarshalerInfo(LoaderAllocator *pLoaderAllocator, Type
 : m_NativeSize(0)
 , m_hndManagedType(hndManagedType)
 , m_pLoaderAllocator(pLoaderAllocator)
-, m_hndCustomMarshaler(NULL)
+, m_hndCustomMarshaler{}
 , m_pMarshalNativeToManagedMD(NULL)
 , m_pMarshalManagedToNativeMD(NULL)
 , m_pCleanUpNativeDataMD(NULL)
@@ -58,7 +58,6 @@ CustomMarshalerInfo::CustomMarshalerInfo(LoaderAllocator *pLoaderAllocator, Type
     if (m_bDataIsByValue)
         COMPlusThrow(kNotSupportedException, W("NotSupported_ValueClassCM"));
 
-#ifndef CROSSGEN_COMPILE
     // Run the <clinit> on the marshaler since it might not have run yet.
     hndCustomMarshalerType.GetMethodTable()->EnsureInstanceActive();
     hndCustomMarshalerType.GetMethodTable()->CheckRunClassInitThrowing();
@@ -66,14 +65,6 @@ CustomMarshalerInfo::CustomMarshalerInfo(LoaderAllocator *pLoaderAllocator, Type
     // Create a COM+ string that will contain the string cookie.
     STRINGREF CookieStringObj = StringObject::NewString(strCookie, cCookieStrBytes);
     GCPROTECT_BEGIN(CookieStringObj);
-#endif
-
-    // Load the method desc's for all the methods in the ICustomMarshaler interface.
-    m_pMarshalNativeToManagedMD = GetCustomMarshalerMD(CustomMarshalerMethods_MarshalNativeToManaged, hndCustomMarshalerType);
-    m_pMarshalManagedToNativeMD = GetCustomMarshalerMD(CustomMarshalerMethods_MarshalManagedToNative, hndCustomMarshalerType);
-    m_pCleanUpNativeDataMD = GetCustomMarshalerMD(CustomMarshalerMethods_CleanUpNativeData, hndCustomMarshalerType);
-    m_pCleanUpManagedDataMD = GetCustomMarshalerMD(CustomMarshalerMethods_CleanUpManagedData, hndCustomMarshalerType);
-
     // Load the method desc for the static method to retrieve the instance.
     MethodDesc *pGetCustomMarshalerMD = GetCustomMarshalerMD(CustomMarshalerMethods_GetInstance, hndCustomMarshalerType);
 
@@ -92,7 +83,6 @@ CustomMarshalerInfo::CustomMarshalerInfo(LoaderAllocator *pLoaderAllocator, Type
         _ASSERTE(!pGetCustomMarshalerMD->RequiresInstMethodTableArg());
     }
 
-#ifndef CROSSGEN_COMPILE
     MethodDescCallSite getCustomMarshaler(pGetCustomMarshalerMD, (OBJECTREF*)&CookieStringObj);
 
     pGetCustomMarshalerMD->EnsureActive();
@@ -103,7 +93,9 @@ CustomMarshalerInfo::CustomMarshalerInfo(LoaderAllocator *pLoaderAllocator, Type
     };
 
     // Call the GetCustomMarshaler method to retrieve the custom marshaler to use.
-    OBJECTREF CustomMarshalerObj = getCustomMarshaler.Call_RetOBJECTREF(GetCustomMarshalerArgs);
+    OBJECTREF CustomMarshalerObj = NULL;
+    GCPROTECT_BEGIN(CustomMarshalerObj);
+    CustomMarshalerObj = getCustomMarshaler.Call_RetOBJECTREF(GetCustomMarshalerArgs);
     if (!CustomMarshalerObj)
     {
         DefineFullyQualifiedNameForClassW()
@@ -111,7 +103,16 @@ CustomMarshalerInfo::CustomMarshalerInfo(LoaderAllocator *pLoaderAllocator, Type
                      IDS_EE_NOCUSTOMMARSHALER,
                      GetFullyQualifiedNameForClassW(hndCustomMarshalerType.GetMethodTable()));
     }
+    // Load the method desc's for all the methods in the ICustomMarshaler interface based on the type of the marshaler object.
+    TypeHandle customMarshalerObjType = CustomMarshalerObj->GetMethodTable();
+
+    m_pMarshalNativeToManagedMD = GetCustomMarshalerMD(CustomMarshalerMethods_MarshalNativeToManaged, customMarshalerObjType);
+    m_pMarshalManagedToNativeMD = GetCustomMarshalerMD(CustomMarshalerMethods_MarshalManagedToNative, customMarshalerObjType);
+    m_pCleanUpNativeDataMD = GetCustomMarshalerMD(CustomMarshalerMethods_CleanUpNativeData, customMarshalerObjType);
+    m_pCleanUpManagedDataMD = GetCustomMarshalerMD(CustomMarshalerMethods_CleanUpManagedData, customMarshalerObjType);
+
     m_hndCustomMarshaler = pLoaderAllocator->AllocateHandle(CustomMarshalerObj);
+    GCPROTECT_END();
 
     // Retrieve the size of the native data.
     if (m_bDataIsByValue)
@@ -125,14 +126,12 @@ CustomMarshalerInfo::CustomMarshalerInfo(LoaderAllocator *pLoaderAllocator, Type
     }
 
     GCPROTECT_END();
-#endif
 }
 
 
 CustomMarshalerInfo::~CustomMarshalerInfo()
 {
     WRAPPER_NO_CONTRACT;
-#ifndef CROSSGEN_COMPILE
     if (m_pLoaderAllocator->IsAlive() && m_hndCustomMarshaler)
     {
         // Only free the LOADERHANDLE if the LoaderAllocator is still alive.
@@ -140,8 +139,7 @@ CustomMarshalerInfo::~CustomMarshalerInfo()
         // been collected already.
         m_pLoaderAllocator->FreeHandle(m_hndCustomMarshaler);
     }
-    m_hndCustomMarshaler = NULL;
-#endif
+    m_hndCustomMarshaler = 0;
 }
 
 
@@ -168,7 +166,6 @@ void CustomMarshalerInfo::operator delete(void *pMem)
     LIMITED_METHOD_CONTRACT;
 }
 
-#ifndef CROSSGEN_COMPILE
 OBJECTREF CustomMarshalerInfo::InvokeMarshalNativeToManagedMeth(void *pNative)
 {
     CONTRACTL
@@ -290,7 +287,6 @@ void CustomMarshalerInfo::InvokeCleanUpManagedMeth(OBJECTREF MngObj)
     GCPROTECT_END ();
 }
 
-#endif // CROSSGEN_COMPILE
 MethodDesc *CustomMarshalerInfo::GetCustomMarshalerMD(EnumCustomMarshalerMethods Method, TypeHandle hndCustomMarshalertype)
 {
     CONTRACTL
@@ -360,7 +356,6 @@ MethodDesc *CustomMarshalerInfo::GetCustomMarshalerMD(EnumCustomMarshalerMethods
     return pMD;
 }
 
-#ifndef CROSSGEN_COMPILE
 
 //==========================================================================
 // Implementation of the custom marshaler hashtable helper.
@@ -644,13 +639,20 @@ CustomMarshalerInfo *SharedCustomMarshalerHelper::GetCustomMarshalerInfo()
     CONTRACTL_END;
 
     // Retrieve the marshalling data for the current app domain.
-    EEMarshalingData *pMarshalingData = GetThread()->GetDomain()->GetLoaderAllocator()->GetMarshalingData();
+    EEMarshalingData *pMarshalingData = AppDomain::GetCurrentDomain()->GetLoaderAllocator()->GetMarshalingData();
 
     // Retrieve the custom marshaling information for the current shared custom
     // marshaling helper.
     return pMarshalingData->GetCustomMarshalerInfo(this);
 }
 
+extern "C" void QCALLTYPE CustomMarshaler_GetMarshalerObject(CustomMarshalerHelper* pCMHelper, QCall::ObjectHandleOnStack retObject)
+{
+    QCALL_CONTRACT;
+    BEGIN_QCALL;
+    GCX_COOP();
 
-#endif // CROSSGEN_COMPILE
+    retObject.Set(pCMHelper->GetCustomMarshalerInfo()->GetCustomMarshaler());
 
+    END_QCALL;
+}

@@ -345,7 +345,7 @@ namespace System.Linq.Tests
             var iterator = NumberRangeGuaranteedNotCollectionType(0, 3).SelectMany(i => new int[0]);
             // Don't insist on this behaviour, but check it's correct if it happens
             var en = iterator as IEnumerator<int>;
-            Assert.False(en != null && en.MoveNext());
+            Assert.False(en is not null && en.MoveNext());
         }
 
         [Fact]
@@ -353,7 +353,7 @@ namespace System.Linq.Tests
         {
             var iterator = NumberRangeGuaranteedNotCollectionType(0, 3).SelectMany((e, i) => new int[0]);
             var en = iterator as IEnumerator<int>;
-            Assert.False(en != null && en.MoveNext());
+            Assert.False(en is not null && en.MoveNext());
         }
 
         [Fact]
@@ -361,7 +361,7 @@ namespace System.Linq.Tests
         {
             var iterator = NumberRangeGuaranteedNotCollectionType(0, 3).SelectMany(i => new int[0], (e, i) => e);
             var en = iterator as IEnumerator<int>;
-            Assert.False(en != null && en.MoveNext());
+            Assert.False(en is not null && en.MoveNext());
         }
 
         [Fact]
@@ -369,7 +369,7 @@ namespace System.Linq.Tests
         {
             var iterator = NumberRangeGuaranteedNotCollectionType(0, 3).SelectMany((e, i) => new int[0], (e, i) => e);
             var en = iterator as IEnumerator<int>;
-            Assert.False(en != null && en.MoveNext());
+            Assert.False(en is not null && en.MoveNext());
         }
 
         [Theory]
@@ -464,8 +464,7 @@ namespace System.Linq.Tests
             return lengths.SelectMany(l => lengths, (l1, l2) => new object[] { l1, l2 });
         }
 
-        [Theory]
-        [SkipOnTargetFramework(~TargetFrameworkMonikers.Netcoreapp, ".NET Core optimizes SelectMany and throws an OverflowException. On the .NET Framework this takes a long time. See https://github.com/dotnet/corefx/pull/13942.")]
+        [ConditionalTheory(typeof(PlatformDetection), nameof(PlatformDetection.IsSpeedOptimized))]
         [InlineData(new[] { int.MaxValue, 1 })]
         [InlineData(new[] { 2, int.MaxValue - 1 })]
         [InlineData(new[] { 123, 456, int.MaxValue - 100000, 123456 })]
@@ -509,19 +508,19 @@ namespace System.Linq.Tests
                 Assert.Equal(Enumerable.Repeat(0, timesCalledMap.Length - index - 1), timesCalledMap.Skip(index + 1));
             }
 
-            Array.Clear(timesCalledMap, 0, timesCalledMap.Length);
+            Array.Clear(timesCalledMap);
 
             // ToArray
             iterator.ToArray();
             Assert.Equal(Enumerable.Repeat(1, timesCalledMap.Length), timesCalledMap);
 
-            Array.Clear(timesCalledMap, 0, timesCalledMap.Length);
+            Array.Clear(timesCalledMap);
 
             // ToList
             iterator.ToList();
             Assert.Equal(Enumerable.Repeat(1, timesCalledMap.Length), timesCalledMap);
 
-            Array.Clear(timesCalledMap, 0, timesCalledMap.Length);
+            Array.Clear(timesCalledMap);
 
             // ToHashSet
             iterator.ToHashSet();

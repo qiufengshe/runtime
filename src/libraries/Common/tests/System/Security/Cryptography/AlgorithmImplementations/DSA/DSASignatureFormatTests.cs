@@ -8,7 +8,7 @@ using Xunit;
 
 namespace System.Security.Cryptography.Dsa.Tests
 {
-    [SkipOnMono("Not supported on Browser", TestPlatforms.Browser)]
+    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.MacCatalyst, "Not supported on Browser/iOS/tvOS/MacCatalyst")]
     public abstract class DSASignatureFormatTests : DsaFamilySignatureFormatTests
     {
         protected override bool SupportsSha2 => DSAFactory.SupportsFips186_3;
@@ -354,7 +354,7 @@ namespace System.Security.Cryptography.Dsa.Tests
                 Assert.Equal(0, written);
             }
 
-            Assert.True(false, $"TryCreateSignature eventually succeeds with a {expectedSize}/{maxSize}-byte destination");
+            Assert.Fail($"TryCreateSignature eventually succeeds with a {expectedSize}/{maxSize}-byte destination");
         }
 
         [Fact]
@@ -382,7 +382,7 @@ namespace System.Security.Cryptography.Dsa.Tests
                 Assert.Equal(0, written);
             }
 
-            Assert.True(false, $"TrySignData eventually succeeds with a {expectedSize}/{maxSize}-byte destination");
+            Assert.Fail($"TrySignData eventually succeeds with a {expectedSize}/{maxSize}-byte destination");
         }
     }
 }

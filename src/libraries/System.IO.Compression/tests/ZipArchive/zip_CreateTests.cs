@@ -1,14 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Xunit;
-using Microsoft.DotNet.XUnitExtensions;
 
 namespace System.IO.Compression.Tests
 {
-    public class zip_CreateTests : ZipFileTestBase
+    public partial class zip_CreateTests : ZipFileTestBase
     {
         [Fact]
         public static void CreateModeInvalidOperations()
@@ -144,6 +142,78 @@ namespace System.IO.Compression.Tests
             }
         }
 
+        // This test checks to ensure that setting the compression level of an archive entry sets the general-purpose
+        // bit flags correctly. It verifies that these have been set by reading from the MemoryStream manually, and by
+        // reopening the generated file to confirm that the compression levels match.
+        [Theory]
+        // Special-case NoCompression: in this case, the CompressionMethod becomes Stored and the bits are unset.
+        [InlineData(CompressionLevel.NoCompression, 0)]
+        [InlineData(CompressionLevel.Optimal, 0)]
+        [InlineData(CompressionLevel.SmallestSize, 2)]
+        [InlineData(CompressionLevel.Fastest, 6)]
+        public static void CreateArchiveEntriesWithBitFlags(CompressionLevel compressionLevel, ushort expectedGeneralBitFlags)
+        {
+            var testfilename = "testfile";
+            var testFileContent = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
+            var utf8WithoutBom = new Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+            byte[] zipFileContent;
+
+            using (var testStream = new MemoryStream())
+            {
+
+                using (var zip = new ZipArchive(testStream, ZipArchiveMode.Create))
+                {
+                    ZipArchiveEntry newEntry = zip.CreateEntry(testfilename, compressionLevel);
+                    using (var writer = new StreamWriter(newEntry.Open(), utf8WithoutBom))
+                    {
+                        writer.Write(testFileContent);
+                        writer.Flush();
+                    }
+
+                    ZipArchiveEntry secondNewEntry = zip.CreateEntry(testFileContent + "_post", CompressionLevel.NoCompression);
+                }
+
+                zipFileContent = testStream.ToArray();
+            }
+
+            // expected bit flags are at position 6 in the file header
+            var generalBitFlags = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(zipFileContent.AsSpan(6));
+
+            Assert.Equal(expectedGeneralBitFlags, generalBitFlags);
+
+            using (var reReadStream = new MemoryStream(zipFileContent))
+            {
+                using (var reReadZip = new ZipArchive(reReadStream, ZipArchiveMode.Read))
+                {
+                    var firstArchive = reReadZip.Entries[0];
+                    var secondArchive = reReadZip.Entries[1];
+                    var compressionLevelFieldInfo = typeof(ZipArchiveEntry).GetField("_compressionLevel", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var generalBitFlagsFieldInfo = typeof(ZipArchiveEntry).GetField("_generalPurposeBitFlag", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+                    var reReadCompressionLevel = (CompressionLevel)compressionLevelFieldInfo.GetValue(firstArchive);
+                    var reReadGeneralBitFlags = (ushort)generalBitFlagsFieldInfo.GetValue(firstArchive);
+
+                    Assert.Equal(compressionLevel, reReadCompressionLevel);
+                    Assert.Equal(expectedGeneralBitFlags, reReadGeneralBitFlags);
+
+                    reReadCompressionLevel = (CompressionLevel)compressionLevelFieldInfo.GetValue(secondArchive);
+                    Assert.Equal(CompressionLevel.NoCompression, reReadCompressionLevel);
+
+                    using (var strm = firstArchive.Open())
+                    {
+                        var readBuffer = new byte[firstArchive.Length];
+
+                        strm.Read(readBuffer);
+
+                        var readText = Text.Encoding.UTF8.GetString(readBuffer);
+
+                        Assert.Equal(readText, testFileContent);
+                    }
+                }
+            }
+        }
+
         [Fact]
         public static void CreateNormal_VerifyDataDescriptor()
         {
@@ -178,16 +248,49 @@ namespace System.IO.Compression.Tests
             AssertDataDescriptor(memoryStream, false);
         }
 
+        [Theory]
+        [InlineData(UnicodeFileName, UnicodeFileName, true)]
+        [InlineData(UnicodeFileName, AsciiFileName, true)]
+        [InlineData(AsciiFileName, UnicodeFileName, true)]
+        [InlineData(AsciiFileName, AsciiFileName, false)]
+        public static void CreateNormal_VerifyUnicodeFileNameAndComment(string fileName, string entryComment, bool isUnicodeFlagExpected)
+        {
+            using var ms = new MemoryStream();
+            using var archive = new ZipArchive(ms, ZipArchiveMode.Create);
+
+            CreateEntry(archive, fileName, fileContents: "xxx", entryComment);
+
+            AssertUnicodeFileNameAndComment(ms, isUnicodeFlagExpected);
+        }
+
+        [Fact]
+        public void Create_VerifyDuplicateEntriesAreAllowed()
+        {
+            using var ms = new MemoryStream();
+            using (var archive = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                string entryName = "foo";
+                AddEntry(archive, entryName, contents: "xxx", DateTimeOffset.Now);
+                AddEntry(archive, entryName, contents: "yyy", DateTimeOffset.Now);
+            }
+
+            using (var archive = new ZipArchive(ms, ZipArchiveMode.Update))
+            {
+                Assert.Equal(2, archive.Entries.Count);
+            }
+        }
+
         private static string ReadStringFromSpan(Span<byte> input)
         {
             return Text.Encoding.UTF8.GetString(input.ToArray());
         }
 
-        private static void CreateEntry(ZipArchive archive, string fileName, string fileContents)
+        private static void CreateEntry(ZipArchive archive, string fileName, string fileContents, string entryComment = null)
         {
             ZipArchiveEntry entry = archive.CreateEntry(fileName);
             using StreamWriter writer = new StreamWriter(entry.Open());
             writer.Write(fileContents);
+            entry.Comment = entryComment;
         }
 
         private static void AssertDataDescriptor(MemoryStream memoryStream, bool hasDataDescriptor)
@@ -195,6 +298,13 @@ namespace System.IO.Compression.Tests
             byte[] fileBytes = memoryStream.ToArray();
             Assert.Equal(hasDataDescriptor ? 8 : 0, fileBytes[6]);
             Assert.Equal(0, fileBytes[7]);
+        }
+
+        private static void AssertUnicodeFileNameAndComment(MemoryStream memoryStream, bool isUnicodeFlagExpected)
+        {
+            byte[] fileBytes = memoryStream.ToArray();
+            Assert.Equal(0, fileBytes[6]);
+            Assert.Equal(isUnicodeFlagExpected ? 8 : 0, fileBytes[7]);
         }
     }
 }

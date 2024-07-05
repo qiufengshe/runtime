@@ -29,7 +29,6 @@ namespace Microsoft.AspNetCore.Hosting.FunctionalTests
         }
 
         [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/34090")]
         [PlatformSpecific(TestPlatforms.Linux)]
         public async Task ShutdownTestRun()
         {
@@ -37,7 +36,6 @@ namespace Microsoft.AspNetCore.Hosting.FunctionalTests
         }
 
         [Fact]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/34090")]
         [PlatformSpecific(TestPlatforms.Linux)]
         public async Task ShutdownTestWaitForShutdown()
         {
@@ -58,12 +56,13 @@ namespace Microsoft.AspNetCore.Hosting.FunctionalTests
             var applicationPath = string.Empty; // disabled for now
 #pragma warning restore 0618
 
+            Version version = Environment.Version;
             var deploymentParameters = new DeploymentParameters(
                 applicationPath,
                 RuntimeFlavor.CoreClr,
                 RuntimeArchitecture.x64)
             {
-                TargetFramework = Tfm.NetCoreApp50,
+                TargetFramework = $"net{version.Major}.{version.Minor}",
                 ApplicationType = ApplicationType.Portable,
                 PublishApplicationBeforeDeployment = true,
                 StatusMessagesEnabled = false
@@ -96,11 +95,11 @@ namespace Microsoft.AspNetCore.Hosting.FunctionalTests
                     }
                 };
 
-                await started.Task.TimeoutAfter(TimeSpan.FromSeconds(60));
+                await started.Task.WaitAsync(TimeSpan.FromSeconds(60));
 
                 SendShutdownSignal(deployer.HostProcess);
 
-                await completed.Task.TimeoutAfter(TimeSpan.FromSeconds(60));
+                await completed.Task.WaitAsync(TimeSpan.FromSeconds(60));
 
                 WaitForExitOrKill(deployer.HostProcess);
 

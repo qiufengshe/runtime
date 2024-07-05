@@ -3,26 +3,47 @@
 
 #include <mono/utils/mono-publib.h>
 #include <mono/utils/mono-logger.h>
+#include <mono/metadata/appdomain.h>
 #include <mono/metadata/assembly.h>
+#include <mono/metadata/class.h>
 #include <mono/metadata/mono-debug.h>
 #include <mono/metadata/mono-gc.h>
 #include <mono/metadata/exception.h>
+#include <mono/metadata/object.h>
 #include <mono/jit/jit.h>
 #include <mono/jit/mono-private-unstable.h>
 
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <string.h>
 #include <jni.h>
 #include <android/log.h>
 #include <sys/system_properties.h>
+#include <sys/mman.h>
 #include <assert.h>
 #include <unistd.h>
 
+/********* exported symbols *********/
+
+/* JNI exports */
+
+void
+Java_net_dot_MonoRunner_setEnv (JNIEnv* env, jobject thiz, jstring j_key, jstring j_value);
+
+int
+Java_net_dot_MonoRunner_initRuntime (JNIEnv* env, jobject thiz, jstring j_files_dir, jstring j_cache_dir, jstring j_testresults_dir, jstring j_entryPointLibName, jobjectArray j_args, long current_local_time);
+
+// called from C#
+void
+invoke_external_native_api (void (*callback)(void));
+
+/********* implementation *********/
+
 static char *bundle_path;
 static char *executable;
-static bool force_interpreter;
 
 #define LOG_INFO(fmt, ...) __android_log_print(ANDROID_LOG_DEBUG, "DOTNET", fmt, ##__VA_ARGS__)
 #define LOG_ERROR(fmt, ...) __android_log_print(ANDROID_LOG_ERROR, "DOTNET", fmt, ##__VA_ARGS__)
@@ -38,6 +59,8 @@ static bool force_interpreter;
 #else
 #error Unknown architecture
 #endif
+
+#define RUNTIMECONFIG_BIN_FILE "runtimeconfig.bin"
 
 static MonoAssembly*
 mono_droid_load_assembly (const char *name, const char *culture)
@@ -80,7 +103,47 @@ mono_droid_assembly_preload_hook (MonoAssemblyName *aname, char **assemblies_pat
     return mono_droid_load_assembly (name, culture);
 }
 
-char *
+static unsigned char *
+load_aot_data (MonoAssembly *assembly, int size, void *user_data, void **out_handle)
+{
+    *out_handle = NULL;
+
+    char path [1024];
+    int res;
+
+    MonoAssemblyName *assembly_name = mono_assembly_get_name (assembly);
+    const char *aname = mono_assembly_name_get_name (assembly_name);
+
+    LOG_INFO ("Looking for aot data for assembly '%s'.", aname);
+    res = snprintf (path, sizeof (path) - 1, "%s/%s.aotdata", bundle_path, aname);
+    assert (res > 0);
+
+    int fd = open (path, O_RDONLY);
+    if (fd < 0) {
+        LOG_INFO ("Could not load the aot data for %s from %s: %s\n", aname, path, strerror (errno));
+        return NULL;
+    }
+
+    void *ptr = mmap (NULL, size, PROT_READ, MAP_FILE | MAP_PRIVATE, fd, 0);
+    if (ptr == MAP_FAILED) {
+        LOG_INFO ("Could not map the aot file for %s: %s\n", aname, strerror (errno));
+        close (fd);
+        return NULL;
+    }
+
+    close (fd);
+    LOG_INFO ("Loaded aot data for %s.\n", aname);
+    *out_handle = ptr;
+    return (unsigned char *) ptr;
+}
+
+static void
+free_aot_data (MonoAssembly *assembly, int size, void *user_data, void *handle)
+{
+    munmap (handle, size);
+}
+
+static char *
 strdup_printf (const char *msg, ...)
 {
     va_list args;
@@ -121,14 +184,14 @@ mono_droid_fetch_exception_property_string (MonoObject *obj, const char *name, b
     return str ? mono_string_to_utf8 (str) : NULL;
 }
 
-void
+static void
 unhandled_exception_handler (MonoObject *exc, void *user_data)
 {
     MonoClass *type = mono_object_get_class (exc);
     char *type_name = strdup_printf ("%s.%s", mono_class_get_namespace (type), mono_class_get_name (type));
     char *trace = mono_droid_fetch_exception_property_string (exc, "get_StackTrace", true);
     char *message = mono_droid_fetch_exception_property_string (exc, "get_Message", true);
-    
+
     LOG_ERROR("UnhandledException: %s %s %s", type_name, message, trace);
 
     free (trace);
@@ -137,7 +200,7 @@ unhandled_exception_handler (MonoObject *exc, void *user_data)
     exit (1);
 }
 
-void
+static void
 log_callback (const char *log_domain, const char *log_level, const char *message, mono_bool fatal, void *user_data)
 {
     LOG_INFO ("(%s %s) %s", log_domain, log_level, message);
@@ -147,59 +210,113 @@ log_callback (const char *log_domain, const char *log_level, const char *message
     }
 }
 
-int
-mono_droid_runtime_init (void)
+#if defined(FORCE_AOT) && defined(STATIC_AOT)
+void register_aot_modules (void);
+#endif
+
+static void
+cleanup_runtime_config (MonovmRuntimeConfigArguments *args, void *user_data)
 {
+    free (args);
+    free (user_data);
+}
+
+static int
+mono_droid_runtime_init (const char* executable, int managed_argc, char* managed_argv[], int local_date_time_offset)
+{
+    // NOTE: these options can be set via command line args for adb or xharness, see AndroidSampleApp.csproj
+
     // uncomment for debug output:
     //
     //setenv ("XUNIT_VERBOSE", "true", true);
     //setenv ("MONO_LOG_LEVEL", "debug", true);
     //setenv ("MONO_LOG_MASK", "all", true);
-    // NOTE: these options can be set via command line args for adb or xharness, see AndroidSampleApp.csproj
+
+    // build using DiagnosticPorts property in AndroidAppBuilder
+    // or set DOTNET_DiagnosticPorts env via adb, xharness when undefined.
+    // NOTE, using DOTNET_DiagnosticPorts requires app build using AndroidAppBuilder and RuntimeComponents to include 'diagnostics_tracing' component
+#ifdef DIAGNOSTIC_PORTS
+    setenv ("DOTNET_DiagnosticPorts", DIAGNOSTIC_PORTS, true);
+#endif
 
     bool wait_for_debugger = false;
     chdir (bundle_path);
 
     // TODO: set TRUSTED_PLATFORM_ASSEMBLIES, APP_PATHS and NATIVE_DLL_SEARCH_DIRECTORIES
 
-    const char* appctx_keys[2];
+    const char* appctx_keys[3];
     appctx_keys[0] = "RUNTIME_IDENTIFIER";
     appctx_keys[1] = "APP_CONTEXT_BASE_DIRECTORY";
+    appctx_keys[2] = "System.TimeZoneInfo.LocalDateTimeOffset";
 
-    const char* appctx_values[2];
+    const char* appctx_values[3];
     appctx_values[0] = ANDROID_RUNTIME_IDENTIFIER;
     appctx_values[1] = bundle_path;
-    
-    monovm_initialize(2, appctx_keys, appctx_values);
+    char local_date_time_offset_buffer[32];
+    snprintf (local_date_time_offset_buffer, sizeof(local_date_time_offset_buffer), "%d", local_date_time_offset);
+    appctx_values[2] = strdup (local_date_time_offset_buffer);
+
+    char *file_name = RUNTIMECONFIG_BIN_FILE;
+    int str_len = strlen (bundle_path) + strlen (file_name) + 1; // +1 is for the "/"
+    char *file_path = (char *)malloc (sizeof (char) * (str_len +1)); // +1 is for the terminating null character
+    int num_char = snprintf (file_path, (str_len + 1), "%s/%s", bundle_path, file_name);
+    struct stat buffer;
+
+    LOG_INFO ("file_path: %s\n", file_path);
+    assert (num_char > 0 && num_char == str_len);
+
+    if (stat (file_path, &buffer) == 0) {
+        MonovmRuntimeConfigArguments *arg = (MonovmRuntimeConfigArguments *)malloc (sizeof (MonovmRuntimeConfigArguments));
+        arg->kind = 0;
+        arg->runtimeconfig.name.path = file_path;
+        monovm_runtimeconfig_initialize (arg, cleanup_runtime_config, file_path);
+    } else {
+        free (file_path);
+    }
+
+    monovm_initialize(3, appctx_keys, appctx_values);
 
     mono_debug_init (MONO_DEBUG_FORMAT_MONO);
     mono_install_assembly_preload_hook (mono_droid_assembly_preload_hook, NULL);
+    mono_install_load_aot_data_hook (load_aot_data, free_aot_data, NULL);
     mono_install_unhandled_exception_hook (unhandled_exception_handler, NULL);
     mono_trace_set_log_handler (log_callback, NULL);
     mono_set_signal_chaining (true);
     mono_set_crash_chaining (true);
 
     if (wait_for_debugger) {
-        char* options[] = { "--debugger-agent=transport=dt_socket,server=y,address=0.0.0.0:55555" };
+        char* options[] = { "--debugger-agent=transport=dt_socket,server=y,address=0.0.0.0:55556" };
         mono_jit_parse_options (1, options);
     }
 
-    if (force_interpreter) {
-        LOG_INFO("Interp Enabled");
-        mono_jit_set_aot_mode(MONO_AOT_MODE_INTERP_ONLY);
-    }
+#if FORCE_INTERPRETER
+    LOG_INFO("Interp Enabled");
+    mono_jit_set_aot_mode(MONO_AOT_MODE_INTERP_ONLY);
+#elif FORCE_AOT
+    LOG_INFO("AOT Enabled");
+#if STATIC_AOT
+    register_aot_modules();
+#endif // STATIC_AOT
 
-    mono_jit_init_version ("dotnet.android", "mobile");
+#if FULL_AOT
+    mono_jit_set_aot_mode(MONO_AOT_MODE_FULL);
+#else
+    mono_jit_set_aot_mode(MONO_AOT_MODE_NORMAL);
+#endif // FULL_AOT
+#endif // FORCE_INTERPRETER
+
+    MonoDomain *domain = mono_jit_init_version ("dotnet.android", "mobile");
+    assert (domain);
 
     MonoAssembly *assembly = mono_droid_load_assembly (executable, NULL);
     assert (assembly);
+
     LOG_INFO ("Executable: %s", executable);
-
-    char *managed_argv [1];
-    managed_argv[0] = bundle_path;
-
-    int res = mono_jit_exec (mono_domain_get (), assembly, 1, managed_argv);
+    int res = mono_jit_exec (domain, assembly, managed_argc, managed_argv);
     LOG_INFO ("Exit code: %d.", res);
+
+    mono_jit_cleanup (domain);
+
     return res;
 }
 
@@ -224,24 +341,51 @@ Java_net_dot_MonoRunner_setEnv (JNIEnv* env, jobject thiz, jstring j_key, jstrin
 }
 
 int
-Java_net_dot_MonoRunner_initRuntime (JNIEnv* env, jobject thiz, jstring j_files_dir, jstring j_cache_dir, jstring j_docs_dir, jstring j_entryPointLibName, jboolean j_forceInterpreter)
+Java_net_dot_MonoRunner_initRuntime (JNIEnv* env, jobject thiz, jstring j_files_dir, jstring j_cache_dir, jstring j_testresults_dir, jstring j_entryPointLibName, jobjectArray j_args, long current_local_time)
 {
     char file_dir[2048];
     char cache_dir[2048];
-    char docs_dir[2048];
+    char testresults_dir[2048];
     char entryPointLibName[2048];
     strncpy_str (env, file_dir, j_files_dir, sizeof(file_dir));
     strncpy_str (env, cache_dir, j_cache_dir, sizeof(cache_dir));
-    strncpy_str (env, docs_dir, j_docs_dir, sizeof(docs_dir));
+    strncpy_str (env, testresults_dir, j_testresults_dir, sizeof(testresults_dir));
     strncpy_str (env, entryPointLibName, j_entryPointLibName, sizeof(entryPointLibName));
 
     bundle_path = file_dir;
     executable = entryPointLibName;
-    force_interpreter = (bool)j_forceInterpreter;
 
     setenv ("HOME", bundle_path, true);
     setenv ("TMPDIR", cache_dir, true);
-    setenv ("DOCSDIR", docs_dir, true);
+    setenv ("TEST_RESULTS_DIR", testresults_dir, true);
 
-    return mono_droid_runtime_init ();
+    int args_len = (*env)->GetArrayLength(env, j_args);
+    int managed_argc = args_len + 1;
+    char** managed_argv = (char**)malloc(managed_argc * sizeof(char*));
+
+    managed_argv[0] = bundle_path;
+    for (int i = 0; i < args_len; ++i)
+    {
+        jstring j_arg = (*env)->GetObjectArrayElement(env, j_args, i);
+        managed_argv[i + 1] = (char*)((*env)->GetStringUTFChars(env, j_arg, NULL));
+    }
+
+    int res = mono_droid_runtime_init (executable, managed_argc, managed_argv, current_local_time);
+
+    for (int i = 0; i < args_len; ++i)
+    {
+        jstring j_arg = (*env)->GetObjectArrayElement(env, j_args, i);
+        (*env)->ReleaseStringUTFChars(env, j_arg, managed_argv[i + 1]);
+    }
+
+    free(managed_argv);
+    return res;
+}
+
+// called from C#
+void
+invoke_external_native_api (void (*callback)(void))
+{
+    if (callback)
+        callback();
 }

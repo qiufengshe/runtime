@@ -3,7 +3,7 @@
 
 using System.Collections;
 using System.Diagnostics;
-using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace System
@@ -17,13 +17,30 @@ namespace System
         /// </summary>
         internal static bool IsSingleProcessor => ProcessorCount == 1;
 
+        private static volatile sbyte s_privilegedProcess;
+
+        /// <summary>
+        /// Gets whether the current process is authorized to perform security-relevant functions.
+        /// </summary>
+        public static bool IsPrivilegedProcess
+        {
+            get
+            {
+                sbyte privilegedProcess = s_privilegedProcess;
+                if (privilegedProcess == 0)
+                {
+                    s_privilegedProcess = privilegedProcess = IsPrivilegedProcessCore() ? (sbyte)1 : (sbyte)-1;
+                }
+                return privilegedProcess > 0;
+            }
+        }
+
         // Unconditionally return false since .NET Core does not support object finalization during shutdown.
         public static bool HasShutdownStarted => false;
 
         public static string? GetEnvironmentVariable(string variable)
         {
-            if (variable == null)
-                throw new ArgumentNullException(nameof(variable));
+            ArgumentNullException.ThrowIfNull(variable);
 
             return GetEnvironmentVariableCore(variable);
         }
@@ -33,8 +50,7 @@ namespace System
             if (target == EnvironmentVariableTarget.Process)
                 return GetEnvironmentVariable(variable);
 
-            if (variable == null)
-                throw new ArgumentNullException(nameof(variable));
+            ArgumentNullException.ThrowIfNull(variable);
 
             bool fromMachine = ValidateAndConvertRegistryTarget(target);
             return GetEnvironmentVariableFromRegistry(variable, fromMachine);
@@ -51,7 +67,7 @@ namespace System
 
         public static void SetEnvironmentVariable(string variable, string? value)
         {
-            ValidateVariableAndValue(variable, ref value);
+            ValidateVariable(variable);
             SetEnvironmentVariableCore(variable, value);
         }
 
@@ -63,11 +79,24 @@ namespace System
                 return;
             }
 
-            ValidateVariableAndValue(variable, ref value);
+            ValidateVariable(variable);
 
             bool fromMachine = ValidateAndConvertRegistryTarget(target);
             SetEnvironmentVariableFromRegistry(variable, value, fromMachine: fromMachine);
         }
+
+#if !MONO
+        internal static string[]? s_commandLineArgs;
+
+        public static string[] GetCommandLineArgs()
+        {
+            // s_commandLineArgs is expected to be initialize with application command line arguments
+            // during startup. GetCommandLineArgsNative fallback is used for hosted libraries.
+            return s_commandLineArgs != null ?
+                (string[])s_commandLineArgs.Clone() :
+                GetCommandLineArgsNative();
+        }
+#endif
 
         public static string CommandLine => PasteArguments.Paste(GetCommandLineArgs(), pasteFirstArgumentUsingArgV0Rules: true);
 
@@ -76,20 +105,14 @@ namespace System
             get => CurrentDirectoryCore;
             set
             {
-                if (value == null)
-                    throw new ArgumentNullException(nameof(value));
-
-                if (value.Length == 0)
-                    throw new ArgumentException(SR.Argument_PathEmpty, nameof(value));
-
+                ArgumentException.ThrowIfNullOrEmpty(value);
                 CurrentDirectoryCore = value;
             }
         }
 
         public static string ExpandEnvironmentVariables(string name)
         {
-            if (name == null)
-                throw new ArgumentNullException(nameof(name));
+            ArgumentNullException.ThrowIfNull(name);
 
             if (name.Length == 0)
                 return name;
@@ -97,21 +120,14 @@ namespace System
             return ExpandEnvironmentVariablesCore(name);
         }
 
-        private static string[]? s_commandLineArgs;
-
-        internal static void SetCommandLineArgs(string[] cmdLineArgs) // invoked from VM
-        {
-            s_commandLineArgs = cmdLineArgs;
-        }
-
         public static string GetFolderPath(SpecialFolder folder) => GetFolderPath(folder, SpecialFolderOption.None);
 
         public static string GetFolderPath(SpecialFolder folder, SpecialFolderOption option)
         {
-            if (!Enum.IsDefined(typeof(SpecialFolder), folder))
+            if (!Enum.IsDefined(folder))
                 throw new ArgumentOutOfRangeException(nameof(folder), folder, SR.Format(SR.Arg_EnumIllegalVal, folder));
 
-            if (option != SpecialFolderOption.None && !Enum.IsDefined(typeof(SpecialFolderOption), option))
+            if (option != SpecialFolderOption.None && !Enum.IsDefined(option))
                 throw new ArgumentOutOfRangeException(nameof(option), option, SR.Format(SR.Arg_EnumIllegalVal, option));
 
             return GetFolderPathCore(folder, option);
@@ -127,8 +143,7 @@ namespace System
                 int processId = s_processId;
                 if (processId == 0)
                 {
-                    Interlocked.CompareExchange(ref s_processId, GetProcessId(), 0);
-                    processId = s_processId;
+                    s_processId = processId = GetProcessId();
                     // Assume that process Id zero is invalid for user processes. It holds for all mainstream operating systems.
                     Debug.Assert(processId != 0);
                 }
@@ -185,21 +200,24 @@ namespace System
             }
         }
 
-        public static Version Version
+        public static string StackTrace
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)] // Prevent inlining from affecting where the stacktrace starts
+            get => new StackTrace(true).ToString(Diagnostics.StackTrace.TraceFormat.Normal);
+        }
+
+        private static volatile int s_systemPageSize;
+
+        public static int SystemPageSize
         {
             get
             {
-                string? versionString = typeof(object).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-
-                ReadOnlySpan<char> versionSpan = versionString.AsSpan();
-
-                // Strip optional suffixes
-                int separatorIndex = versionSpan.IndexOfAny('-', '+', ' ');
-                if (separatorIndex != -1)
-                    versionSpan = versionSpan.Slice(0, separatorIndex);
-
-                // Return zeros rather then failing if the version string fails to parse
-                return Version.TryParse(versionSpan, out Version? version) ? version : new Version();
+                int systemPageSize = s_systemPageSize;
+                if (systemPageSize == 0)
+                {
+                    s_systemPageSize = systemPageSize = GetSystemPageSize();
+                }
+                return systemPageSize;
             }
         }
 
@@ -216,25 +234,15 @@ namespace System
             throw new ArgumentOutOfRangeException(nameof(target), target, SR.Format(SR.Arg_EnumIllegalVal, target));
         }
 
-        private static void ValidateVariableAndValue(string variable, ref string? value)
+        private static void ValidateVariable(string variable)
         {
-            if (variable == null)
-                throw new ArgumentNullException(nameof(variable));
-
-            if (variable.Length == 0)
-                throw new ArgumentException(SR.Argument_StringZeroLength, nameof(variable));
+            ArgumentException.ThrowIfNullOrEmpty(variable);
 
             if (variable[0] == '\0')
                 throw new ArgumentException(SR.Argument_StringFirstCharIsZero, nameof(variable));
 
             if (variable.Contains('='))
                 throw new ArgumentException(SR.Argument_IllegalEnvVarName, nameof(variable));
-
-            if (string.IsNullOrEmpty(value) || value[0] == '\0')
-            {
-                // Explicitly null out value if it's empty
-                value = null;
-            }
         }
     }
 }

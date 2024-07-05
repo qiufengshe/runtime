@@ -3,8 +3,6 @@
 
 /*++
 
-
-
 Module Name:
 
     wchar.c
@@ -13,10 +11,7 @@ Abstract:
 
     Implementation of wide char string functions.
 
-
-
 --*/
-
 
 #include "pal/palinternal.h"
 #include "pal/cruntime.h"
@@ -25,12 +20,10 @@ Abstract:
 #include "pal/thread.hpp"
 #include "pal/threadsusp.hpp"
 
-
 #if HAVE_CONFIG_H
 #include "config.h"
 #endif
 
-#include <wctype.h>
 #include <errno.h>
 #include <algorithm>
 
@@ -61,10 +54,10 @@ _wtoi(
               GetLastError());
         return -1;
     }
-    tempStr = (char *) PAL_malloc(len);
+    tempStr = (char *) malloc(len);
     if (!tempStr)
     {
-        ERROR("PAL_malloc failed\n");
+        ERROR("malloc failed\n");
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return -1;
     }
@@ -73,12 +66,12 @@ _wtoi(
     {
         ASSERT("WideCharToMultiByte failed.  Error is %d\n",
               GetLastError());
-        PAL_free(tempStr);
+        free(tempStr);
         return -1;
     }
     ret = atoi(tempStr);
 
-    PAL_free(tempStr);
+    free(tempStr);
     LOGEXIT("_wtoi returns int %d\n", ret);
     PERF_EXIT(_wtoi);
     return ret;
@@ -110,9 +103,9 @@ count                   Number of characters to compare
 
 Remarks
 
-The _strnicmp function lexicographically compares, at most, the first
+The _wcsnicmp function lexicographically compares, at most, the first
 count characters of string1 and string2. The comparison is performed
-without regard to case; _strnicmp is a case-insensitive version of
+without regard to case; _wcsnicmp is a case-insensitive version of
 strncmp. The comparison ends if a terminating null character is
 reached in either string before count characters are compared. If the
 strings are equal when a terminating null character is reached in
@@ -267,10 +260,10 @@ PAL_wcstoul(
         res = 0;
         goto PAL_wcstoulExit;
     }
-    s_nptr = (char *)PAL_malloc(size);
+    s_nptr = (char *)malloc(size);
     if (!s_nptr)
     {
-        ERROR("PAL_malloc failed\n");
+        ERROR("malloc failed\n");
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         res = 0;
         goto PAL_wcstoulExit;
@@ -316,7 +309,7 @@ PAL_wcstoul(
     }
 
 PAL_wcstoulExit:
-    PAL_free(s_nptr);
+    free(s_nptr);
     LOGEXIT("wcstoul returning unsigned long %lu\n", res);
     PERF_EXIT(wcstoul);
 
@@ -357,10 +350,10 @@ PAL__wcstoui64(
         res = 0;
         goto PAL__wcstoui64Exit;
     }
-    s_nptr = (char *)PAL_malloc(size);
+    s_nptr = (char *)malloc(size);
     if (!s_nptr)
     {
-        ERROR("PAL_malloc failed\n");
+        ERROR("malloc failed\n");
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         res = 0;
         goto PAL__wcstoui64Exit;
@@ -387,7 +380,7 @@ PAL__wcstoui64(
     }
 
 PAL__wcstoui64Exit:
-    PAL_free(s_nptr);
+    free(s_nptr);
     LOGEXIT("_wcstoui64 returning unsigned long long %llu\n", res);
     PERF_EXIT(_wcstoui64);
 
@@ -902,7 +895,7 @@ PAL_wcstod( const wchar_16 * nptr, wchar_16 **endptr )
     if ( lpEndOfExpression != lpStartOfExpression )
     {
         Length = lpEndOfExpression - lpStartOfExpression;
-        lpStringRep = (LPSTR)PAL_malloc( Length + 1);
+        lpStringRep = (LPSTR)malloc( Length + 1);
 
         if ( lpStringRep )
         {
@@ -945,7 +938,7 @@ PAL_wcstod( const wchar_16 * nptr, wchar_16 **endptr )
         *endptr = lpEndOfExpression;
     }
 
-    PAL_free( lpStringRep );
+    free( lpStringRep );
     LOGEXIT( "wcstod returning %f.\n", RetVal );
     PERF_EXIT(wcstod);
     return RetVal;
@@ -953,43 +946,48 @@ PAL_wcstod( const wchar_16 * nptr, wchar_16 **endptr )
 
 /*++
 Function:
-   PAL_wcscspn
+  _wfopen
 
-Finds the number of consecutive characters from the start of the string
-that are not in the set.
-
-Return value:
-
-The number of characters from the start of the string that are not in
-the set.
-
-Parameters:
-string          String
-strCharSet      Set of delimiter characters
+see MSDN doc.
 
 --*/
-size_t
+extern "C"
+FILE *
 __cdecl
-PAL_wcscspn(const wchar_16 *string, const wchar_16 *strCharSet)
+_wfopen(
+    const wchar_16 *fileName,
+    const wchar_16 *mode)
 {
-    const wchar_16 *temp;
-    size_t count = 0;
+    CHAR mbFileName[ _MAX_PATH ];
+    CHAR mbMode[ 10 ];
+    FILE * filePtr = NULL;
 
-    PERF_ENTRY(wcscspn);
+    PERF_ENTRY(_wfopen);
+    ENTRY("_wfopen(fileName:%p (%S), mode:%p (%S))\n", fileName, fileName, mode, mode);
 
-    while(*string != 0)
+    _ASSERTE(fileName != NULL);
+    _ASSERTE(mode != NULL);
+
+    /* Convert the parameters to ASCII and defer to PAL_fopen */
+    if ( WideCharToMultiByte( CP_ACP, 0, fileName, -1, mbFileName,
+                              sizeof mbFileName, NULL, NULL ) != 0 )
     {
-        for(temp = strCharSet; *temp != 0; temp++)
+        if ( WideCharToMultiByte( CP_ACP, 0, mode, -1, mbMode,
+                                  sizeof mbMode, NULL, NULL ) != 0 )
         {
-            if (*string == *temp)
-            {
-                PERF_EXIT(wcscspn);
-                return count;
-            }
+            filePtr = fopen(mbFileName, mbMode);
         }
-        count++;
-        string++;
+        else
+        {
+            ERROR( "An error occurred while converting mode to ANSI.\n" );
+        }
     }
-    PERF_EXIT(wcscspn);
-    return count;
+    else
+    {
+        ERROR( "An error occurred while converting"
+               " fileName to ANSI string.\n" );
+    }
+    LOGEXIT("_wfopen returning FILE* %p\n", filePtr);
+    PERF_EXIT(_wfopen);
+    return filePtr;
 }

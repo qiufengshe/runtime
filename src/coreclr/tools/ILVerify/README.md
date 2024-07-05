@@ -2,7 +2,7 @@
 
 ## Intention of this project:
 
-The goal is to create a standalone, cross platform, open-source tool that is capable of verifying MSIL code based on [ECMA-335](https://www.ecma-international.org/publications/standards/Ecma-335.htm).
+The goal is to create a standalone, cross platform, open-source tool that is capable of verifying MSIL code based on [ECMA-335](https://www.ecma-international.org/publications-and-standards/standards/ecma-335).
 
 The main users of this tool are people working on software that emits MSIL code. These are typically compiler and profiler writers.
 
@@ -17,7 +17,7 @@ dotnet tool install --global dotnet-ilverify
 Example of use:
 
 ```
-C:\test>dotnet ilverify hello.dll -r "c:\Program Files\dotnet\shared\Microsoft.NETCore.App\2.1.12\*.dll"
+C:\test>ilverify hello.dll -r "c:\Program Files\dotnet\shared\Microsoft.NETCore.App\2.1.12\*.dll"
 All Classes and Methods in C:\test\hello.dll Verified.
 ```
 
@@ -46,7 +46,7 @@ The test project itself is under [src/tests/ilverify](../../../tests/ilverify)
 
 ### Building and Running Tests
 
-General instructions to build this library can be found [here](https://github.com/dotnet/runtime/blob/master/docs/workflow/testing/coreclr/testing.md).
+General instructions to build this library can be found [here](https://github.com/dotnet/runtime/blob/main/docs/workflow/testing/coreclr/testing.md).
 
 As the test project is marked with priority=1, simply building the test projects from the root of the project is not enough. For the initial build of priority=1 in release mode, run the following:
 
@@ -65,7 +65,7 @@ dotnet.(cmd/sh) msbuild ./src/tests/ilverify/ILVerification.Tests.csproj /p:Conf
 In order to run the tests, execute:
 
 ```sh
-artifacts/tests/coreclr/(Windows/Linux).x64.Release/ilverify/ILVerification.Tests.(cmd/sh) -coreroot=artifacts/tests/coreclr/(Windows/Linux).x64.Release/Tests/Core_Root
+artifacts/tests/coreclr/(windows/linux).x64.Release/ilverify/ILVerification.Tests.(cmd/sh) -coreroot=artifacts/tests/coreclr/(windows/linux).x64.Release/Tests/Core_Root
 ```
 
 
@@ -92,7 +92,7 @@ E.g.: ```SimpleAdd_Valid```
 The method name must contain 2 '`_`' characters.
  1. part: a friendly name
  2. part: must be the word 'Invalid' (Case sensitive)
- 3. part: the expected [VerifierErrors](../ILVerification/src/VerifierError.cs) as string separated by '.'. We assert on these errors; the test fails if ILVerify does not report these errors.
+ 3. part: the expected [VerifierErrors](../ILVerification/VerifierError.cs) as string separated by '.'. We assert on these errors; the test fails if ILVerify does not report these errors.
 
  E.g.: ```SimpleAdd_Invalid_ExpectedNumericType```
 
@@ -116,10 +116,10 @@ Additionally the method signature of the special test method must be equal to th
 The methods are automatically fed into appropriate XUnit theories based on the naming convention. Methods not following this naming conventions are ignored by the test scaffolding system.
 
 ## How to contribute
-All ILVerify issues are labeled with [area-ILVerification](https://github.com/search?utf8=%E2%9C%93&q=label%3Aarea-ILVerification&type=). You can also look and fix TODOs in the source code.
+All ILVerify issues are labeled with [area-Tools-ILVerification](https://github.com/search?utf8=%E2%9C%93&q=label%3Aarea-Tools-ILVerification&type=). You can also look and fix TODOs in the source code.
 
 Useful sources:
  - [PEVerify source code](https://github.com/lewischeng-ms/sscli/blob/master/clr/src/jit64/newverify.cpp)
- - [RyuJIT source code](https://github.com/dotnet/runtime/tree/master/src/coreclr/jit), specifically: [exception handling specific part](https://github.com/dotnet/runtime/blob/master/src/coreclr/jit/jiteh.cpp), [importer.cpp](https://github.com/dotnet/runtime/blob/master/src/coreclr/jit/importer.cpp) (look for `Compiler::ver`, `Verify`, `VerifyOrReturn`, and `VerifyOrReturnSpeculative`), [_typeinfo.h](https://github.com/dotnet/runtime/blob/master/src/coreclr/jit/_typeinfo.h), [typeinfo.cpp](https://github.com/dotnet/runtime/blob/master/src/coreclr/jit/typeinfo.cpp)
- - [ECMA-335 standard](https://www.ecma-international.org/publications/standards/Ecma-335.htm)
+ - [RyuJIT source code](https://github.com/dotnet/runtime/tree/main/src/coreclr/jit), specifically: [exception handling specific part](https://github.com/dotnet/runtime/blob/main/src/coreclr/jit/jiteh.cpp), [importer.cpp](https://github.com/dotnet/runtime/blob/main/src/coreclr/jit/importer.cpp) (look for `Compiler::ver`, `Verify`, `VerifyOrReturn`, and `VerifyOrReturnSpeculative`), [_typeinfo.h](https://github.com/dotnet/runtime/blob/main/src/coreclr/jit/_typeinfo.h), [typeinfo.cpp](https://github.com/dotnet/runtime/blob/main/src/coreclr/jit/typeinfo.cpp)
+ - [ECMA-335 standard](https://www.ecma-international.org/publications-and-standards/standards/ecma-335)
  - [Expert .NET 2.0 IL Assembler book](http://www.apress.com/us/book/9781590596463) by Serge Lidin

@@ -14,15 +14,15 @@
 class CycleTimer
 {
    // This returns the value of the *non-thread-virtualized* cycle counter.
-    static unsigned __int64 GetCycleCount64();
+    static uint64_t GetCycleCount64();
 
 
     // This wraps GetCycleCount64 in the signature of QueryThreadCycleTime -- but note
     // that it ignores the "thrd" argument.
-    static BOOL WINAPI DefaultQueryThreadCycleTime(__in HANDLE thrd, __out PULONG64 cyclesPtr);
+    static BOOL WINAPI DefaultQueryThreadCycleTime(_In_ HANDLE thrd, _Out_ PULONG64 cyclesPtr);
 
     // The function pointer type for QueryThreadCycleTime.
-    typedef BOOL (WINAPI *QueryThreadCycleTimeSig)(__in HANDLE, __out PULONG64);
+    typedef BOOL (WINAPI *QueryThreadCycleTimeSig)(_In_ HANDLE, _Out_ PULONG64);
 
     // Returns a function pointer for QueryThreadCycleTime, or else BadFPtr.
     static QueryThreadCycleTimeSig GetQueryThreadCycleTime();
@@ -39,16 +39,16 @@ class CycleTimer
 
     // Does a large number of queries, and returns the average of their overhead, so other measurements
     // can adjust for this.
-    static unsigned __int64 QueryOverhead();
+    static uint64_t QueryOverhead();
 
     // There's no "native" atomic add for 64 bit, so we have this convenience function.
-    static void InterlockedAddU64(unsigned __int64* loc, unsigned __int64 amount);
+    static void InterlockedAddU64(uint64_t* loc, uint64_t amount);
 
     // Attempts to query the cycle counter of the current thread.  If successful, returns "true" and sets
     // *cycles to the cycle counter value.  Otherwise, returns false.  Note that the value returned is (currently)
     // virtualized to the current thread only on Windows; on non-windows x86/x64 platforms, directly reads
     // the cycle counter and returns that value.
-    static bool GetThreadCyclesS(unsigned __int64* cycles);
+    static bool GetThreadCyclesS(uint64_t* cycles);
 };
 
 #endif // _CYCLETIMER_H_

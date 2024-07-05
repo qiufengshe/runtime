@@ -5,7 +5,7 @@
 #endif // KNOWN_EVENT
 
 #ifndef DYNAMIC_EVENT
- #define DYNAMIC_EVENT(name, level, keyword, ...)
+ #define DYNAMIC_EVENT(name, level, keyword, version, ...)
 #endif // DYNAMIC_EVENT
 
 KNOWN_EVENT(GCStart_V2, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GC)
@@ -19,11 +19,13 @@ KNOWN_EVENT(GCTerminateConcurrentThread_V1, GCEventProvider_Default, GCEventLeve
 KNOWN_EVENT(GCTriggered, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GC)
 KNOWN_EVENT(GCMarkWithType, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GC)
 KNOWN_EVENT(GCJoin_V2, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
-KNOWN_EVENT(GCGlobalHeapHistory_V3, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GC)
+KNOWN_EVENT(GCGlobalHeapHistory_V4, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GC)
 KNOWN_EVENT(GCAllocationTick_V1, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
-KNOWN_EVENT(GCAllocationTick_V3, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
+KNOWN_EVENT(GCAllocationTick_V4, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
 KNOWN_EVENT(PinObjectAtGCTime, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
 KNOWN_EVENT(GCPerHeapHistory_V3, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GC)
+KNOWN_EVENT(GCLOHCompact, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GC)
+KNOWN_EVENT(GCFitBucketInfo, GCEventProvider_Default, GCEventLevel_Verbose, GCEventKeyword_GC)
 
 KNOWN_EVENT(SetGCHandle, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GCHandle)
 KNOWN_EVENT(DestroyGCHandle, GCEventProvider_Default, GCEventLevel_Information, GCEventKeyword_GCHandle)
@@ -45,6 +47,11 @@ KNOWN_EVENT(GCFullNotify_V1, GCEventProvider_Private, GCEventLevel_Information, 
 KNOWN_EVENT(PrvSetGCHandle, GCEventProvider_Private, GCEventLevel_Information, GCEventKeyword_GCHandlePrivate)
 KNOWN_EVENT(PrvDestroyGCHandle, GCEventProvider_Private, GCEventLevel_Information, GCEventKeyword_GCHandlePrivate)
 KNOWN_EVENT(PinPlugAtGCTime, GCEventProvider_Private, GCEventLevel_Verbose, GCEventKeyword_GCPrivate)
+
+DYNAMIC_EVENT(CommittedUsage, GCEventLevel_Information, GCEventKeyword_GC, 1)
+DYNAMIC_EVENT(SizeAdaptationTuning, GCEventLevel_Information, GCEventKeyword_GC, 1)
+DYNAMIC_EVENT(SizeAdaptationFullGCTuning, GCEventLevel_Information, GCEventKeyword_GC, 1)
+DYNAMIC_EVENT(SizeAdaptationSample, GCEventLevel_Information, GCEventKeyword_GC, 1)
 
 #undef KNOWN_EVENT
 #undef DYNAMIC_EVENT

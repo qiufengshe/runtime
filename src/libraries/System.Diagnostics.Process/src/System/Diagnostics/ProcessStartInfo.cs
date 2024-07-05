@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
 namespace System.Diagnostics
@@ -15,7 +16,7 @@ namespace System.Diagnostics
     ///     used in conjunction with the <see cref='System.Diagnostics.Process'/>
     ///     component.
     /// </devdoc>
-    [DebuggerDisplay("FileName={FileName}, Arguments={BuildArguments()}, WorkingDirectory={WorkingDirectory}")]
+    [DebuggerDisplay("FileName = {FileName}, Arguments = {BuildArguments()}, WorkingDirectory = {WorkingDirectory}")]
     public sealed partial class ProcessStartInfo
     {
         private string? _fileName;
@@ -54,9 +55,23 @@ namespace System.Diagnostics
             _arguments = arguments;
         }
 
+        /// <summary>
+        /// Specifies the name of the application that is to be started, as well as a set
+        /// of command line arguments to pass to the application.
+        /// </summary>
+        public ProcessStartInfo(string fileName, IEnumerable<string> arguments)
+        {
+            ArgumentNullException.ThrowIfNull(fileName);
+            ArgumentNullException.ThrowIfNull(arguments);
+
+            _fileName = fileName;
+            _argumentList = new Collection<string>(new List<string>(arguments));
+        }
+
         /// <devdoc>
         ///     Specifies the set of command line arguments to use when starting the application.
         /// </devdoc>
+        [AllowNull]
         public string Arguments
         {
             get => _arguments ?? string.Empty;
@@ -115,6 +130,7 @@ namespace System.Diagnostics
         /// </devdoc>
         [Editor("System.Diagnostics.Design.StartFileNameEditor, System.Design, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a",
                 "System.Drawing.Design.UITypeEditor, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a")]
+        [AllowNull]
         public string FileName
         {
             get => _fileName ?? string.Empty;
@@ -127,6 +143,7 @@ namespace System.Diagnostics
         /// </devdoc>
         [Editor("System.Diagnostics.Design.WorkingDirectoryEditor, System.Design, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a",
                 "System.Drawing.Design.UITypeEditor, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a")]
+        [AllowNull]
         public string WorkingDirectory
         {
             get => _directory ?? string.Empty;
@@ -136,6 +153,7 @@ namespace System.Diagnostics
         public bool ErrorDialog { get; set; }
         public IntPtr ErrorDialogParentHandle { get; set; }
 
+        [AllowNull]
         public string UserName
         {
             get => _userName ?? string.Empty;
@@ -143,6 +161,7 @@ namespace System.Diagnostics
         }
 
         [DefaultValue("")]
+        [AllowNull]
         public string Verb
         {
             get => _verb ?? string.Empty;
@@ -155,7 +174,7 @@ namespace System.Diagnostics
             get => _windowStyle;
             set
             {
-                if (!Enum.IsDefined(typeof(ProcessWindowStyle), value))
+                if (!Enum.IsDefined(value))
                 {
                     throw new InvalidEnumArgumentException(nameof(value), (int)value, typeof(ProcessWindowStyle));
                 }

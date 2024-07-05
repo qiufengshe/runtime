@@ -2,12 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
-using Microsoft.Xunit.Performance;
 using System;
 using System.Runtime.CompilerServices;
 using Xunit;
-
-[assembly: OptimizeForBenchmarks]
 
 namespace Benchstone.BenchI
 {
@@ -91,27 +88,10 @@ public static class BenchE
         return (s_position == 91);
     }
 
-    [Benchmark]
-    public static void Test()
-    {
-        foreach (var iteration in Benchmark.Iterations)
-        {
-            using (iteration.StartMeasurement())
-            {
-                Bench();
-            }
-        }
-    }
-
-    private static bool TestBase()
+    [Fact]
+    public static int TestEntryPoint()
     {
         bool result = Bench();
-        return result;
-    }
-
-    public static int Main()
-    {
-        bool result = TestBase();
         return (result ? 100 : -1);
     }
 }

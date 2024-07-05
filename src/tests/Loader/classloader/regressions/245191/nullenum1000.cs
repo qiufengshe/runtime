@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Xunit;
 
 public enum T0 { }
 public enum T1 { }
@@ -1010,8 +1011,9 @@ public enum T997 { }
 public enum T998 { }
 public enum T999 { }
 
-public class Test {
-  public static int Main() 
+public class Test_nullenum1000 {
+  [Fact]
+  public static int TestEntryPoint() 
   {
   	try
   	{

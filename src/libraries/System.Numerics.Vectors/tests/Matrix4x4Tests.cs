@@ -7,7 +7,7 @@ using Xunit;
 
 namespace System.Numerics.Tests
 {
-    public class Matrix4x4Tests
+    public sealed class Matrix4x4Tests
     {
         static Matrix4x4 GenerateIncrementalMatrixNumber(float value = 0.0f)
         {
@@ -39,6 +39,87 @@ namespace System.Numerics.Tests
                 Matrix4x4.CreateRotationZ(MathHelper.ToRadians(30.0f));
             m.Translation = new Vector3(111.0f, 222.0f, 333.0f);
             return m;
+        }
+
+        [Theory]
+        [InlineData(0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f)]
+        [InlineData(1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f)]
+        [InlineData(3.1434343f, 1.1234123f, 0.1234123f, -0.1234123f, 3.1434343f, 1.1234123f, 3.1434343f, 1.1234123f, 0.1234123f, -0.1234123f, 3.1434343f, 1.1234123f, 3.1434343f, 1.1234123f, 0.1234123f, -0.1234123f)]
+        [InlineData(1.0000001f, 0.0000001f, 2.0000001f, 0.0000002f, 1.0000001f, 0.0000001f, 1.0000001f, 0.0000001f, 2.0000001f, 0.0000002f, 1.0000001f, 0.0000001f, 1.0000001f, 0.0000001f, 2.0000001f, 0.0000002f)]
+        public void Matrix4x4IndexerGetTest(float m11, float m12, float m13, float m14, float m21, float m22, float m23, float m24, float m31, float m32, float m33, float m34, float m41, float m42, float m43, float m44)
+        {
+            var matrix = new Matrix4x4(m11, m12, m13, m14, m21, m22, m23, m24, m31, m32, m33, m34, m41, m42, m43, m44);
+
+            Assert.Equal(m11, matrix[0, 0]);
+            Assert.Equal(m12, matrix[0, 1]);
+            Assert.Equal(m13, matrix[0, 2]);
+            Assert.Equal(m14, matrix[0, 3]);
+
+            Assert.Equal(m21, matrix[1, 0]);
+            Assert.Equal(m22, matrix[1, 1]);
+            Assert.Equal(m23, matrix[1, 2]);
+            Assert.Equal(m24, matrix[1, 3]);
+
+            Assert.Equal(m31, matrix[2, 0]);
+            Assert.Equal(m32, matrix[2, 1]);
+            Assert.Equal(m33, matrix[2, 2]);
+            Assert.Equal(m34, matrix[2, 3]);
+
+            Assert.Equal(m41, matrix[3, 0]);
+            Assert.Equal(m42, matrix[3, 1]);
+            Assert.Equal(m43, matrix[3, 2]);
+            Assert.Equal(m44, matrix[3, 3]);
+        }
+
+        [Theory]
+        [InlineData(0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f)]
+        [InlineData(1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f)]
+        [InlineData(3.1434343f, 1.1234123f, 0.1234123f, -0.1234123f, 3.1434343f, 1.1234123f, 3.1434343f, 1.1234123f, 0.1234123f, -0.1234123f, 3.1434343f, 1.1234123f, 3.1434343f, 1.1234123f, 0.1234123f, -0.1234123f)]
+        [InlineData(1.0000001f, 0.0000001f, 2.0000001f, 0.0000002f, 1.0000001f, 0.0000001f, 1.0000001f, 0.0000001f, 2.0000001f, 0.0000002f, 1.0000001f, 0.0000001f, 1.0000001f, 0.0000001f, 2.0000001f, 0.0000002f)]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/80876", TestPlatforms.iOS | TestPlatforms.tvOS)]
+        public void Matrix4x4IndexerSetTest(float m11, float m12, float m13, float m14, float m21, float m22, float m23, float m24, float m31, float m32, float m33, float m34, float m41, float m42, float m43, float m44)
+        {
+            var matrix = new Matrix4x4(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+
+            matrix[0, 0] = m11;
+            matrix[0, 1] = m12;
+            matrix[0, 2] = m13;
+            matrix[0, 3] = m14;
+
+            matrix[1, 0] = m21;
+            matrix[1, 1] = m22;
+            matrix[1, 2] = m23;
+            matrix[1, 3] = m24;
+
+            matrix[2, 0] = m31;
+            matrix[2, 1] = m32;
+            matrix[2, 2] = m33;
+            matrix[2, 3] = m34;
+
+            matrix[3, 0] = m41;
+            matrix[3, 1] = m42;
+            matrix[3, 2] = m43;
+            matrix[3, 3] = m44;
+
+            Assert.Equal(m11, matrix[0, 0]);
+            Assert.Equal(m12, matrix[0, 1]);
+            Assert.Equal(m13, matrix[0, 2]);
+            Assert.Equal(m14, matrix[0, 3]);
+
+            Assert.Equal(m21, matrix[1, 0]);
+            Assert.Equal(m22, matrix[1, 1]);
+            Assert.Equal(m23, matrix[1, 2]);
+            Assert.Equal(m24, matrix[1, 3]);
+
+            Assert.Equal(m31, matrix[2, 0]);
+            Assert.Equal(m32, matrix[2, 1]);
+            Assert.Equal(m33, matrix[2, 2]);
+            Assert.Equal(m34, matrix[2, 3]);
+
+            Assert.Equal(m41, matrix[3, 0]);
+            Assert.Equal(m42, matrix[3, 1]);
+            Assert.Equal(m43, matrix[3, 2]);
+            Assert.Equal(m44, matrix[3, 3]);
         }
 
         // A test for Identity
@@ -778,7 +859,6 @@ namespace System.Numerics.Tests
             Assert.True(MathHelper.Equal(rotateAroundCenter, rotateAroundCenterExpected));
         }
 
-        // A test for CrateLookAt (Vector3f, Vector3f, Vector3f)
         [Fact]
         public void Matrix4x4CreateLookAtTest()
         {
@@ -787,25 +867,157 @@ namespace System.Numerics.Tests
             Vector3 cameraUpVector = new Vector3(0.0f, 1.0f, 0.0f);
 
             Matrix4x4 expected = new Matrix4x4();
-            expected.M11 = 0.979457f;
-            expected.M12 = -0.0928267762f;
-            expected.M13 = 0.179017f;
+            expected.M11 = +0.979457f;
+            expected.M12 = -0.0928268f;
+            expected.M13 = +0.179017f;
 
-            expected.M21 = 0.0f;
-            expected.M22 = 0.8877481f;
-            expected.M23 = 0.460329473f;
+            expected.M21 = +0.0f;
+            expected.M22 = +0.887748f;
+            expected.M23 = +0.460329f;
 
-            expected.M31 = -0.201652914f;
-            expected.M32 = -0.450872928f;
-            expected.M33 = 0.8695112f;
+            expected.M31 = -0.201653f;
+            expected.M32 = -0.450873f;
+            expected.M33 = +0.869511f;
 
-            expected.M41 = -3.74498272f;
-            expected.M42 = -3.30050683f;
-            expected.M43 = -37.0820961f;
-            expected.M44 = 1.0f;
+            expected.M41 = -3.74498f;
+            expected.M42 = -3.30051f;
+            expected.M43 = -37.0821f;
+            expected.M44 = +1.0f;
 
             Matrix4x4 actual = Matrix4x4.CreateLookAt(cameraPosition, cameraTarget, cameraUpVector);
-            Assert.True(MathHelper.Equal(expected, actual), "Matrix4x4.CreateLookAt did not return the expected value.");
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreateLookAt)} did not return the expected value.");
+        }
+
+        [Fact]
+        public void Matrix4x4CreateLookAtLeftHandedTest()
+        {
+            Vector3 cameraPosition = new Vector3(10.0f, 20.0f, 30.0f);
+            Vector3 cameraTarget = new Vector3(3.0f, 2.0f, -4.0f);
+            Vector3 cameraUpVector = new Vector3(0.0f, 1.0f, 0.0f);
+
+            Matrix4x4 expected = new Matrix4x4();
+            expected.M11 = -0.979457f;
+            expected.M12 = -0.0928268f;
+            expected.M13 = -0.179017f;
+
+            expected.M21 = +0.0f;
+            expected.M22 = +0.887748f;
+            expected.M23 = -0.460329f;
+
+            expected.M31 = +0.201653f;
+            expected.M32 = -0.450873f;
+            expected.M33 = -0.869511f;
+
+            expected.M41 = +3.74498f;
+            expected.M42 = -3.30051f;
+            expected.M43 = +37.0821f;
+            expected.M44 = +1.0f;
+
+            Matrix4x4 actual = Matrix4x4.CreateLookAtLeftHanded(cameraPosition, cameraTarget, cameraUpVector);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreateLookAtLeftHanded)} did not return the expected value.");
+        }
+
+        [Fact]
+        public void Matrix4x4CreateLookToTest()
+        {
+            Vector3 cameraPosition = new Vector3(10.0f, 20.0f, 30.0f);
+            Vector3 cameraDirection = new Vector3(-7.0f, -18.0f, -34.0f);
+            Vector3 cameraUpVector = new Vector3(0.0f, 1.0f, 0.0f);
+
+            Matrix4x4 expected = new Matrix4x4();
+            expected.M11 = +0.979457f;
+            expected.M12 = -0.0928268f;
+            expected.M13 = +0.179017f;
+
+            expected.M21 = +0.0f;
+            expected.M22 = +0.887748f;
+            expected.M23 = +0.460329f;
+
+            expected.M31 = -0.201653f;
+            expected.M32 = -0.450873f;
+            expected.M33 = +0.869511f;
+
+            expected.M41 = -3.74498f;
+            expected.M42 = -3.30051f;
+            expected.M43 = -37.0821f;
+            expected.M44 = +1.0f;
+
+            Matrix4x4 actual = Matrix4x4.CreateLookTo(cameraPosition, cameraDirection, cameraUpVector);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreateLookTo)} did not return the expected value.");
+        }
+
+        [Fact]
+        public void Matrix4x4CreateLookToLeftHandedTest()
+        {
+            Vector3 cameraPosition = new Vector3(10.0f, 20.0f, 30.0f);
+            Vector3 cameraDirection = new Vector3(-7.0f, -18.0f, -34.0f);
+            Vector3 cameraUpVector = new Vector3(0.0f, 1.0f, 0.0f);
+
+            Matrix4x4 expected = new Matrix4x4();
+            expected.M11 = -0.979457f;
+            expected.M12 = -0.0928268f;
+            expected.M13 = -0.179017f;
+
+            expected.M21 = +0.0f;
+            expected.M22 = +0.887748f;
+            expected.M23 = -0.460329f;
+
+            expected.M31 = +0.201653f;
+            expected.M32 = -0.450873f;
+            expected.M33 = -0.869511f;
+
+            expected.M41 = +3.74498f;
+            expected.M42 = -3.30051f;
+            expected.M43 = +37.0821f;
+            expected.M44 = +1.0f;
+
+            Matrix4x4 actual = Matrix4x4.CreateLookToLeftHanded(cameraPosition, cameraDirection, cameraUpVector);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreateLookToLeftHanded)} did not return the expected value.");
+        }
+
+        [Fact]
+        public void Matrix4x4CreateViewportTest()
+        {
+            float x = 10.0f;
+            float y = 20.0f;
+            float width = 80.0f;
+            float height = 160.0f;
+            float minDepth = 1.5f;
+            float maxDepth = 1000.0f;
+
+            Matrix4x4 expected = new Matrix4x4();
+            expected.M11 = +40.0f;
+
+            expected.M22 = -80.0f;
+
+            expected.M33 = -998.5f;
+
+            expected.M41 = +50.0f;
+            expected.M42 = +100.0f;
+            expected.M43 = +1.5f;
+            expected.M44 = +1.0f;
+
+            Matrix4x4 actual = Matrix4x4.CreateViewport(x, y, width, height, minDepth, maxDepth);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreateViewport)} did not return the expected value.");
+        }
+
+        [Fact]
+        public void Matrix4x4CreateViewportLeftHandedTest()
+        {
+            float x = 10.0f, y = 20.0f;
+            float width = 3.0f, height = 4.0f;
+            float minDepth = 100.0f, maxDepth = 200.0f;
+
+            Matrix4x4 expected = Matrix4x4.Identity;
+            expected.M11 = width * 0.5f;
+            expected.M22 = -height * 0.5f;
+            expected.M33 = maxDepth - minDepth;
+            expected.M41 = x + expected.M11;
+            expected.M42 = y - expected.M22;
+            expected.M43 = minDepth;
+
+            Matrix4x4 actual = Matrix4x4.CreateViewportLeftHanded(x, y, width, height, minDepth, maxDepth);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreateViewportLeftHanded)} did not return the expected value.");
         }
 
         // A test for CreateWorld (Vector3f, Vector3f, Vector3f)
@@ -845,7 +1057,6 @@ namespace System.Numerics.Tests
             Assert.True(Vector3.Dot(Vector3.Normalize(objectForwardDirection), new Vector3(-actual.M31, -actual.M32, -actual.M33)) > 0.999f);
         }
 
-        // A test for CreateOrtho (float, float, float, float)
         [Fact]
         public void Matrix4x4CreateOrthoTest()
         {
@@ -855,18 +1066,42 @@ namespace System.Numerics.Tests
             float zFarPlane = 1000.0f;
 
             Matrix4x4 expected = new Matrix4x4();
-            expected.M11 = 0.02f;
-            expected.M22 = 0.01f;
-            expected.M33 = -0.00100150227f;
-            expected.M43 = -0.00150225335f;
-            expected.M44 = 1.0f;
+            expected.M11 = +0.02f;
+
+            expected.M22 = +0.01f;
+
+            expected.M33 = -0.0010015f;
+
+            expected.M43 = -0.00150225f;
+            expected.M44 = +1.0f;
 
             Matrix4x4 actual;
             actual = Matrix4x4.CreateOrthographic(width, height, zNearPlane, zFarPlane);
-            Assert.True(MathHelper.Equal(expected, actual), "Matrix4x4.CreateOrtho did not return the expected value.");
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreateOrthographic)} did not return the expected value.");
         }
 
-        // A test for CreateOrthoOffCenter (float, float, float, float, float, float)
+        [Fact]
+        public void Matrix4x4CreateOrthoLeftHandedTest()
+        {
+            float width = 100.0f;
+            float height = 200.0f;
+            float zNearPlane = 1.5f;
+            float zFarPlane = 1000.0f;
+
+            Matrix4x4 expected = new Matrix4x4();
+            expected.M11 = +0.02f;
+
+            expected.M22 = +0.01f;
+
+            expected.M33 = +0.0010015f;
+
+            expected.M43 = -0.00150225f;
+            expected.M44 = +1.0f;
+
+            Matrix4x4 actual = Matrix4x4.CreateOrthographicLeftHanded(width, height, zNearPlane, zFarPlane);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreateOrthographicLeftHanded)} did not return the expected value.");
+        }
+
         [Fact]
         public void Matrix4x4CreateOrthoOffCenterTest()
         {
@@ -878,20 +1113,47 @@ namespace System.Numerics.Tests
             float zFarPlane = 1000.0f;
 
             Matrix4x4 expected = new Matrix4x4();
-            expected.M11 = 0.025f;
-            expected.M22 = 0.0125f;
-            expected.M33 = -0.00100150227f;
+            expected.M11 = +0.025f;
+
+            expected.M22 = +0.0125f;
+
+            expected.M33 = -0.0010015f;
+
             expected.M41 = -1.25f;
             expected.M42 = -1.25f;
-            expected.M43 = -0.00150225335f;
-            expected.M44 = 1.0f;
+            expected.M43 = -0.00150225f;
+            expected.M44 = +1.0f;
 
-            Matrix4x4 actual;
-            actual = Matrix4x4.CreateOrthographicOffCenter(left, right, bottom, top, zNearPlane, zFarPlane);
-            Assert.True(MathHelper.Equal(expected, actual), "Matrix4x4.CreateOrthoOffCenter did not return the expected value.");
+            Matrix4x4 actual = Matrix4x4.CreateOrthographicOffCenter(left, right, bottom, top, zNearPlane, zFarPlane);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreateOrthographicOffCenter)} did not return the expected value.");
         }
 
-        // A test for CreatePerspective (float, float, float, float)
+        [Fact]
+        public void Matrix4x4CreateOrthoOffCenterLeftHandedTest()
+        {
+            float left = 10.0f;
+            float right = 90.0f;
+            float bottom = 20.0f;
+            float top = 180.0f;
+            float zNearPlane = 1.5f;
+            float zFarPlane = 1000.0f;
+
+            Matrix4x4 expected = new Matrix4x4();
+            expected.M11 = +0.025f;
+
+            expected.M22 = +0.0125f;
+
+            expected.M33 = +0.0010015f;
+
+            expected.M41 = -1.25f;
+            expected.M42 = -1.25f;
+            expected.M43 = -0.00150225f;
+            expected.M44 = +1.0f;
+
+            Matrix4x4 actual = Matrix4x4.CreateOrthographicOffCenterLeftHanded(left, right, bottom, top, zNearPlane, zFarPlane);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreateOrthographicOffCenterLeftHanded)} did not return the expected value.");
+        }
+
         [Fact]
         public void Matrix4x4CreatePerspectiveTest()
         {
@@ -901,15 +1163,39 @@ namespace System.Numerics.Tests
             float zFarPlane = 1000.0f;
 
             Matrix4x4 expected = new Matrix4x4();
-            expected.M11 = 0.03f;
-            expected.M22 = 0.015f;
-            expected.M33 = -1.00150228f;
-            expected.M34 = -1.0f;
-            expected.M43 = -1.50225341f;
+            expected.M11 = +0.03f;
 
-            Matrix4x4 actual;
-            actual = Matrix4x4.CreatePerspective(width, height, zNearPlane, zFarPlane);
-            Assert.True(MathHelper.Equal(expected, actual), "Matrix4x4.CreatePerspective did not return the expected value.");
+            expected.M22 = +0.015f;
+
+            expected.M33 = -1.0015f;
+            expected.M34 = -1.0f;
+
+            expected.M43 = -1.50225f;
+
+            Matrix4x4 actual = Matrix4x4.CreatePerspective(width, height, zNearPlane, zFarPlane);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreatePerspective)} did not return the expected value.");
+        }
+
+        [Fact]
+        public void Matrix4x4CreatePerspectiveLeftHandedTest()
+        {
+            float width = 100.0f;
+            float height = 200.0f;
+            float zNearPlane = 1.5f;
+            float zFarPlane = 1000.0f;
+
+            Matrix4x4 expected = new Matrix4x4();
+            expected.M11 = +0.03f;
+
+            expected.M22 = +0.015f;
+
+            expected.M33 = +1.0015f;
+            expected.M34 = +1.0f;
+
+            expected.M43 = -1.50225f;
+
+            Matrix4x4 actual = Matrix4x4.CreatePerspectiveLeftHanded(width, height, zNearPlane, zFarPlane);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreatePerspectiveLeftHanded)} did not return the expected value.");
         }
 
         // A test for CreatePerspective (float, float, float, float)
@@ -961,7 +1247,6 @@ namespace System.Numerics.Tests
             });
         }
 
-        // A test for CreatePerspectiveFieldOfView (float, float, float, float)
         [Fact]
         public void Matrix4x4CreatePerspectiveFieldOfViewTest()
         {
@@ -971,15 +1256,39 @@ namespace System.Numerics.Tests
             float zFarPlane = 1000.0f;
 
             Matrix4x4 expected = new Matrix4x4();
-            expected.M11 = 2.09927845f;
-            expected.M22 = 3.73205066f;
-            expected.M33 = -1.00150228f;
-            expected.M34 = -1.0f;
-            expected.M43 = -1.50225341f;
-            Matrix4x4 actual;
+            expected.M11 = +2.09928f;
 
-            actual = Matrix4x4.CreatePerspectiveFieldOfView(fieldOfView, aspectRatio, zNearPlane, zFarPlane);
-            Assert.True(MathHelper.Equal(expected, actual), "Matrix4x4.CreatePerspectiveFieldOfView did not return the expected value.");
+            expected.M22 = +3.73205f;
+
+            expected.M33 = -1.0015f;
+            expected.M34 = -1.0f;
+
+            expected.M43 = -1.50225f;
+
+            Matrix4x4 actual = Matrix4x4.CreatePerspectiveFieldOfView(fieldOfView, aspectRatio, zNearPlane, zFarPlane);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreatePerspectiveFieldOfView)} did not return the expected value.");
+        }
+
+        [Fact]
+        public void Matrix4x4CreatePerspectiveFieldOfViewLeftHandedTest()
+        {
+            float fieldOfView = MathHelper.ToRadians(30.0f);
+            float aspectRatio = 1280.0f / 720.0f;
+            float zNearPlane = 1.5f;
+            float zFarPlane = 1000.0f;
+
+            Matrix4x4 expected = new Matrix4x4();
+            expected.M11 = +2.09928f;
+
+            expected.M22 = +3.73205f;
+
+            expected.M33 = +1.0015f;
+            expected.M34 = +1.0f;
+
+            expected.M43 = -1.50225f;
+
+            Matrix4x4 actual = Matrix4x4.CreatePerspectiveFieldOfViewLeftHanded(fieldOfView, aspectRatio, zNearPlane, zFarPlane);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreatePerspectiveFieldOfViewLeftHanded)} did not return the expected value.");
         }
 
         // A test for CreatePerspectiveFieldOfView (float, float, float, float)
@@ -1037,7 +1346,6 @@ namespace System.Numerics.Tests
             });
         }
 
-        // A test for CreatePerspectiveOffCenter (float, float, float, float, float, float)
         [Fact]
         public void Matrix4x4CreatePerspectiveOffCenterTest()
         {
@@ -1049,17 +1357,46 @@ namespace System.Numerics.Tests
             float zFarPlane = 1000.0f;
 
             Matrix4x4 expected = new Matrix4x4();
-            expected.M11 = 0.0375f;
-            expected.M22 = 0.01875f;
-            expected.M31 = 1.25f;
-            expected.M32 = 1.25f;
-            expected.M33 = -1.00150228f;
-            expected.M34 = -1.0f;
-            expected.M43 = -1.50225341f;
+            expected.M11 = +0.0375f;
 
-            Matrix4x4 actual;
-            actual = Matrix4x4.CreatePerspectiveOffCenter(left, right, bottom, top, zNearPlane, zFarPlane);
-            Assert.True(MathHelper.Equal(expected, actual), "Matrix4x4.CreatePerspectiveOffCenter did not return the expected value.");
+            expected.M22 = +0.01875f;
+
+            expected.M31 = +1.25f;
+            expected.M32 = +1.25f;
+            expected.M33 = -1.0015f;
+            expected.M34 = -1.0f;
+
+            expected.M43 = -1.50225f;
+
+            Matrix4x4 actual = Matrix4x4.CreatePerspectiveOffCenter(left, right, bottom, top, zNearPlane, zFarPlane);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreatePerspectiveOffCenter)} did not return the expected value.");
+        }
+
+        [Fact]
+        public void Matrix4x4CreatePerspectiveOffCenterLeftHandedTest()
+        {
+            float left = 10.0f;
+            float right = 90.0f;
+            float bottom = 20.0f;
+            float top = 180.0f;
+            float zNearPlane = 1.5f;
+            float zFarPlane = 1000.0f;
+
+            Matrix4x4 expected = new Matrix4x4();
+            expected.M11 = +0.0375f;
+
+            expected.M22 = +0.01875f;
+
+            expected.M31 = -1.25f;
+            expected.M32 = -1.25f;
+            expected.M33 = +1.0015f;
+            expected.M34 = +1.0f;
+
+            expected.M43 = -1.50225f;
+
+
+            Matrix4x4 actual = Matrix4x4.CreatePerspectiveOffCenterLeftHanded(left, right, bottom, top, zNearPlane, zFarPlane);
+            Assert.True(MathHelper.Equal(expected, actual), $"{nameof(Matrix4x4)}.{nameof(Matrix4x4.CreatePerspectiveOffCenterLeftHanded)} did not return the expected value.");
         }
 
         // A test for CreatePerspectiveOffCenter (float, float, float, float, float, float)
@@ -1610,29 +1947,13 @@ namespace System.Numerics.Tests
         {
             Matrix4x4 target = GenerateIncrementalMatrixNumber();
 
-            HashCode hash = default;
+            int expected = HashCode.Combine(
+                new Vector4(target.M11, target.M12, target.M13, target.M14),
+                new Vector4(target.M21, target.M22, target.M23, target.M24),
+                new Vector4(target.M31, target.M32, target.M33, target.M34),
+                new Vector4(target.M41, target.M42, target.M43, target.M44)
+            );
 
-            hash.Add(target.M11);
-            hash.Add(target.M12);
-            hash.Add(target.M13);
-            hash.Add(target.M14);
-
-            hash.Add(target.M21);
-            hash.Add(target.M22);
-            hash.Add(target.M23);
-            hash.Add(target.M24);
-
-            hash.Add(target.M31);
-            hash.Add(target.M32);
-            hash.Add(target.M33);
-            hash.Add(target.M34);
-
-            hash.Add(target.M41);
-            hash.Add(target.M42);
-            hash.Add(target.M43);
-            hash.Add(target.M44);
-
-            int expected = hash.ToHashCode();
             int actual = target.GetHashCode();
 
             Assert.Equal(expected, actual);
@@ -2410,7 +2731,7 @@ namespace System.Numerics.Tests
 
         // A test for Matrix4x4 comparison involving NaN values
         [Fact]
-        public void Matrix4x4EqualsNanTest()
+        public void Matrix4x4EqualsNaNTest()
         {
             Matrix4x4 a = new Matrix4x4(float.NaN, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
             Matrix4x4 b = new Matrix4x4(0, float.NaN, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
@@ -2497,23 +2818,22 @@ namespace System.Numerics.Tests
             Assert.False(o.IsIdentity);
             Assert.False(p.IsIdentity);
 
-            // Counterintuitive result - IEEE rules for NaN comparison are weird!
-            Assert.False(a.Equals(a));
-            Assert.False(b.Equals(b));
-            Assert.False(c.Equals(c));
-            Assert.False(d.Equals(d));
-            Assert.False(e.Equals(e));
-            Assert.False(f.Equals(f));
-            Assert.False(g.Equals(g));
-            Assert.False(h.Equals(h));
-            Assert.False(i.Equals(i));
-            Assert.False(j.Equals(j));
-            Assert.False(k.Equals(k));
-            Assert.False(l.Equals(l));
-            Assert.False(m.Equals(m));
-            Assert.False(n.Equals(n));
-            Assert.False(o.Equals(o));
-            Assert.False(p.Equals(p));
+            Assert.True(a.Equals(a));
+            Assert.True(b.Equals(b));
+            Assert.True(c.Equals(c));
+            Assert.True(d.Equals(d));
+            Assert.True(e.Equals(e));
+            Assert.True(f.Equals(f));
+            Assert.True(g.Equals(g));
+            Assert.True(h.Equals(h));
+            Assert.True(i.Equals(i));
+            Assert.True(j.Equals(j));
+            Assert.True(k.Equals(k));
+            Assert.True(l.Equals(l));
+            Assert.True(m.Equals(m));
+            Assert.True(n.Equals(n));
+            Assert.True(o.Equals(o));
+            Assert.True(p.Equals(p));
         }
 
         // A test to make sure these types are blittable directly into GPU buffer memory layouts

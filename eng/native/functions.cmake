@@ -1,11 +1,76 @@
 function(clr_unknown_arch)
     if (WIN32)
-        message(FATAL_ERROR "Only AMD64, ARM64, ARM and I386 are supported. Found: ${CMAKE_SYSTEM_PROCESSOR}")
+        message(FATAL_ERROR "Only AMD64, ARM64, ARM and I386 hosts are supported. Found: ${CMAKE_SYSTEM_PROCESSOR}")
     elseif(CLR_CROSS_COMPONENTS_BUILD)
-        message(FATAL_ERROR "Only AMD64, I386 host are supported for linux cross-architecture component. Found: ${CMAKE_SYSTEM_PROCESSOR}")
+        message(FATAL_ERROR "Only AMD64, ARM64 and I386 hosts are supported for linux cross-architecture component. Found: ${CMAKE_SYSTEM_PROCESSOR}")
     else()
-        message(FATAL_ERROR "Only AMD64, ARM64 and ARM are supported. Found: ${CMAKE_SYSTEM_PROCESSOR}")
+        message(FATAL_ERROR "'${CMAKE_SYSTEM_PROCESSOR}' is an unsupported architecture.")
     endif()
+endfunction()
+
+# C to MASM include file translator
+# This is replacement for the deprecated h2inc tool that used to be part of VS.
+function(h2inc filename output)
+    file(STRINGS ${filename} lines)
+    get_filename_component(path "${filename}" DIRECTORY)
+    file(RELATIVE_PATH relative_filename "${CLR_REPO_ROOT_DIR}" "${filename}")
+
+    file(WRITE "${output}" "// File start: ${relative_filename}\n")
+
+    # Use of NEWLINE_CONSUME is needed for lines with trailing backslash
+    file(STRINGS ${filename} contents NEWLINE_CONSUME)
+    string(REGEX REPLACE "\\\\\n" "\\\\\\\\ \n" contents "${contents}")
+    string(REGEX REPLACE "\n" ";" lines "${contents}")
+
+    foreach(line IN LISTS lines)
+        string(REGEX REPLACE "\\\\\\\\ " "\\\\" line "${line}")
+
+        if(line MATCHES "^ *# pragma")
+            # Ignore pragmas
+            continue()
+        endif()
+
+        if(line MATCHES "^ *# *include *\"(.*)\"")
+            # Expand includes.
+            h2inc("${path}/${CMAKE_MATCH_1}" "${output}")
+            continue()
+        endif()
+
+        if(line MATCHES "^ *#define +([0-9A-Za-z_()]+) *(.*)")
+            # Augment #defines with their MASM equivalent
+            set(name "${CMAKE_MATCH_1}")
+            set(value "${CMAKE_MATCH_2}")
+
+            # Note that we do not handle multiline constants
+
+            # Strip comments from value
+            string(REGEX REPLACE "//.*" "" value "${value}")
+            string(REGEX REPLACE "/\\*.*\\*/" "" value "${value}")
+
+            # Strip whitespaces from value
+            string(REPLACE " +$" "" value "${value}")
+
+            # ignore #defines with arguments
+            if(NOT "${name}" MATCHES "\\(")
+                set(HEX_NUMBER_PATTERN "0x([0-9A-Fa-f]+)")
+                set(DECIMAL_NUMBER_PATTERN "(-?[0-9]+)")
+
+                if("${value}" MATCHES "${HEX_NUMBER_PATTERN}")
+                    string(REGEX REPLACE "${HEX_NUMBER_PATTERN}" "0\\1h" value "${value}")    # Convert hex constants
+                    file(APPEND "${output}" "${name} EQU ${value}\n")
+                elseif("${value}" MATCHES "${DECIMAL_NUMBER_PATTERN}" AND (NOT "${value}" MATCHES "[G-Zg-z]+" OR "${value}" MATCHES "\\("))
+                    string(REGEX REPLACE "${DECIMAL_NUMBER_PATTERN}" "\\1t" value "${value}") # Convert dec constants
+                    file(APPEND "${output}" "${name} EQU ${value}\n")
+                else()
+                    file(APPEND "${output}" "${name} TEXTEQU <${value}>\n")
+                endif()
+            endif()
+        endif()
+
+        file(APPEND "${output}" "${line}\n")
+    endforeach()
+
+    file(APPEND "${output}" "// File end: ${relative_filename}\n")
 endfunction()
 
 # Build a list of compiler definitions by putting -D in front of each define.
@@ -24,9 +89,11 @@ function(get_compile_definitions DefinitionName)
     set(LastGeneratorExpression "")
     foreach(DEFINITION IN LISTS COMPILE_DEFINITIONS_LIST)
       # If there is a definition that uses the $<TARGET_PROPERTY:prop> generator expression
+      # or the $<COMPILE_LANGUAGE:lang> generator expression,
       # we need to remove it since that generator expression is only valid on binary targets.
       # Assume that the value is 0.
       string(REGEX REPLACE "\\$<TARGET_PROPERTY:[^,>]+>" "0" DEFINITION "${DEFINITION}")
+      string(REGEX REPLACE "\\$<COMPILE_LANGUAGE:[^>]+(,[^>]+)*>" "0" DEFINITION "${DEFINITION}")
 
       if (${DEFINITION} MATCHES "^\\$<(.+):([^>]+)(>?)$")
         if("${CMAKE_MATCH_3}" STREQUAL "")
@@ -75,9 +142,22 @@ function(get_include_directories_asm IncludeDirectories)
     set(${IncludeDirectories} ${INC_DIRECTORIES} PARENT_SCOPE)
 endfunction(get_include_directories_asm)
 
+# Adds prefix to paths list
+function(addprefix var prefix list)
+  set(f)
+  foreach(i ${list})
+    set(f ${f} ${prefix}/${i})
+  endforeach()
+  set(${var} ${f} PARENT_SCOPE)
+endfunction()
+
 # Finds and returns unwind libs
 function(find_unwind_libs UnwindLibs)
     if(CLR_CMAKE_HOST_ARCH_ARM)
+      find_library(UNWIND_ARCH NAMES unwind-arm)
+    endif()
+
+    if(CLR_CMAKE_HOST_ARCH_ARMV6)
       find_library(UNWIND_ARCH NAMES unwind-arm)
     endif()
 
@@ -85,8 +165,24 @@ function(find_unwind_libs UnwindLibs)
       find_library(UNWIND_ARCH NAMES unwind-aarch64)
     endif()
 
+    if(CLR_CMAKE_HOST_ARCH_LOONGARCH64)
+      find_library(UNWIND_ARCH NAMES unwind-loongarch64)
+    endif()
+
+    if(CLR_CMAKE_HOST_ARCH_RISCV64)
+      find_library(UNWIND_ARCH NAMES unwind-riscv64)
+    endif()
+
     if(CLR_CMAKE_HOST_ARCH_AMD64)
       find_library(UNWIND_ARCH NAMES unwind-x86_64)
+    endif()
+
+    if(CLR_CMAKE_HOST_ARCH_S390X)
+      find_library(UNWIND_ARCH NAMES unwind-s390x)
+    endif()
+
+    if(CLR_CMAKE_HOST_ARCH_POWERPC64)
+      find_library(UNWIND_ARCH NAMES unwind-ppc64le)
     endif()
 
     if(NOT UNWIND_ARCH STREQUAL UNWIND_ARCH-NOTFOUND)
@@ -114,7 +210,8 @@ endfunction(find_unwind_libs)
 function(convert_to_absolute_path RetSources)
     set(Sources ${ARGN})
     foreach(Source IN LISTS Sources)
-        list(APPEND AbsolutePathSources ${CMAKE_CURRENT_SOURCE_DIR}/${Source})
+      get_filename_component(AbsolutePathSource ${Source} ABSOLUTE BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+      list(APPEND AbsolutePathSources ${AbsolutePathSource})
     endforeach()
     set(${RetSources} ${AbsolutePathSources} PARENT_SCOPE)
 endfunction(convert_to_absolute_path)
@@ -123,6 +220,12 @@ endfunction(convert_to_absolute_path)
 function(preprocess_file inputFilename outputFilename)
   get_compile_definitions(PREPROCESS_DEFINITIONS)
   get_include_directories(PREPROCESS_INCLUDE_DIRECTORIES)
+  get_source_file_property(SOURCE_FILE_DEFINITIONS ${inputFilename} COMPILE_DEFINITIONS)
+  
+  foreach(DEFINITION IN LISTS SOURCE_FILE_DEFINITIONS)
+    list(APPEND PREPROCESS_DEFINITIONS -D${DEFINITION})
+  endforeach()
+
   if (MSVC)
     add_custom_command(
         OUTPUT ${outputFilename}
@@ -131,9 +234,12 @@ function(preprocess_file inputFilename outputFilename)
         COMMENT "Preprocessing ${inputFilename}. Outputting to ${outputFilename}"
     )
   else()
+    if (CMAKE_CXX_COMPILER_TARGET AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      set(_LOCAL_CROSS_TARGET "--target=${CMAKE_CXX_COMPILER_TARGET}")
+    endif()
     add_custom_command(
         OUTPUT ${outputFilename}
-        COMMAND ${CMAKE_CXX_COMPILER} -E -P ${PREPROCESS_DEFINITIONS} ${PREPROCESS_INCLUDE_DIRECTORIES} -o ${outputFilename} -x c ${inputFilename}
+        COMMAND ${CMAKE_CXX_COMPILER} ${_LOCAL_CROSS_TARGET} -E -P ${PREPROCESS_DEFINITIONS} ${PREPROCESS_INCLUDE_DIRECTORIES} -o ${outputFilename} -x c ${inputFilename}
         DEPENDS ${inputFilename}
         COMMENT "Preprocessing ${inputFilename}. Outputting to ${outputFilename}"
     )
@@ -157,7 +263,7 @@ function(preprocess_files PreprocessedFilesList)
 endfunction()
 
 function(set_exports_linker_option exports_filename)
-    if(LD_GNU OR LD_SOLARIS)
+    if(LD_GNU OR LD_SOLARIS OR LD_LLVM)
         # Add linker exports file option
         if(LD_SOLARIS)
             set(EXPORTS_LINKER_OPTION -Wl,-M,${exports_filename} PARENT_SCOPE)
@@ -206,12 +312,33 @@ function(compile_asm)
   set(${COMPILE_ASM_OUTPUT_OBJECTS} ${ASSEMBLED_OBJECTS} PARENT_SCOPE)
 endfunction()
 
+# add_component(componentName [targetName] [EXCLUDE_FROM_ALL])
+function(add_component componentName)
+  if (${ARGC} GREATER 2 OR ${ARGC} EQUAL 2)
+    set(componentTargetName "${ARGV1}")
+  else()
+    set(componentTargetName "${componentName}")
+  endif()
+  if (${ARGC} EQUAL 3 AND "${ARG2}" STREQUAL "EXCLUDE_FROM_ALL")
+    set(exclude_from_all_flag "EXCLUDE_FROM_ALL")
+  endif()
+  get_property(definedComponents GLOBAL PROPERTY CLR_CMAKE_COMPONENTS)
+  list (FIND definedComponents "${componentName}" componentIndex)
+  if (${componentIndex} EQUAL -1)
+    list (APPEND definedComponents "${componentName}")
+    add_custom_target("${componentTargetName}"
+      COMMAND "${CMAKE_COMMAND}" "-DCMAKE_INSTALL_COMPONENT=${componentName}" "-DBUILD_TYPE=$<CONFIG>" -P "${CMAKE_BINARY_DIR}/cmake_install.cmake"
+      ${exclude_from_all_flag})
+    set_property(GLOBAL PROPERTY CLR_CMAKE_COMPONENTS ${definedComponents})
+  endif()
+endfunction()
+
 function(generate_exports_file)
   set(INPUT_LIST ${ARGN})
   list(GET INPUT_LIST -1 outputFilename)
   list(REMOVE_AT INPUT_LIST -1)
 
-  if(CLR_CMAKE_TARGET_OSX OR CLR_CMAKE_TARGET_IOS OR CLR_CMAKE_TARGET_TVOS)
+  if(CLR_CMAKE_TARGET_APPLE)
     set(SCRIPT_NAME generateexportedsymbols.sh)
   else()
     set(SCRIPT_NAME generateversionscript.sh)
@@ -248,12 +375,33 @@ function(generate_exports_file_prefix inputFilename outputFilename prefix)
                               PROPERTIES GENERATED TRUE)
 endfunction()
 
+function (get_symbol_file_name targetName outputSymbolFilename)
+  if (CLR_CMAKE_HOST_UNIX)
+    if (CLR_CMAKE_TARGET_APPLE)
+      if (CLR_CMAKE_APPLE_DSYM)
+        set(strip_destination_file $<TARGET_FILE:${targetName}>.dSYM)
+      else ()
+        set(strip_destination_file $<TARGET_FILE:${targetName}>.dwarf)
+      endif ()
+    else ()
+      set(strip_destination_file $<TARGET_FILE:${targetName}>.dbg)
+    endif ()
+
+    set(${outputSymbolFilename} ${strip_destination_file} PARENT_SCOPE)
+  elseif(CLR_CMAKE_HOST_WIN32)
+    # We can't use the $<TARGET_PDB_FILE> generator expression here since
+    # the generator expression isn't supported on resource DLLs.
+    set(${outputSymbolFilename} $<TARGET_FILE_DIR:${targetName}>/$<TARGET_FILE_PREFIX:${targetName}>$<TARGET_FILE_BASE_NAME:${targetName}>.pdb PARENT_SCOPE)
+  endif()
+endfunction()
+
 function(strip_symbols targetName outputFilename)
+  get_symbol_file_name(${targetName} strip_destination_file)
+  set(${outputFilename} ${strip_destination_file} PARENT_SCOPE)
   if (CLR_CMAKE_HOST_UNIX)
     set(strip_source_file $<TARGET_FILE:${targetName}>)
 
-    if (CLR_CMAKE_TARGET_OSX OR CLR_CMAKE_TARGET_IOS OR CLR_CMAKE_TARGET_TVOS)
-      set(strip_destination_file ${strip_source_file}.dwarf)
+    if (CLR_CMAKE_TARGET_APPLE)
 
       # Ensure that dsymutil and strip are present
       find_program(DSYMUTIL dsymutil)
@@ -266,121 +414,164 @@ function(strip_symbols targetName outputFilename)
         message(FATAL_ERROR "strip not found")
       endif()
 
-      string(TOLOWER "${CMAKE_BUILD_TYPE}" LOWERCASE_CMAKE_BUILD_TYPE)
-      if (LOWERCASE_CMAKE_BUILD_TYPE STREQUAL release)
-        set(strip_command ${STRIP} -no_code_signature_warning -S ${strip_source_file} && codesign -f -s - ${strip_source_file})
-      else ()
-        set(strip_command)
+      set(strip_command ${STRIP} -no_code_signature_warning -S ${strip_source_file})
+
+      if (CLR_CMAKE_TARGET_OSX)
+        # codesign release build
+        string(TOLOWER "${CMAKE_BUILD_TYPE}" LOWERCASE_CMAKE_BUILD_TYPE)
+        if (LOWERCASE_CMAKE_BUILD_TYPE STREQUAL release)
+          set(strip_command ${strip_command} && codesign -f -s - ${strip_source_file})
+        endif ()
+      endif ()
+
+      execute_process(
+        COMMAND ${DSYMUTIL} --help
+        OUTPUT_VARIABLE DSYMUTIL_HELP_OUTPUT
+      )
+
+      if (NOT CLR_CMAKE_APPLE_DSYM)
+        set(DSYMUTIL_OPTS "--flat")
+      endif ()
+      if ("${DSYMUTIL_HELP_OUTPUT}" MATCHES "--minimize")
+        list(APPEND DSYMUTIL_OPTS "--minimize")
       endif ()
 
       add_custom_command(
         TARGET ${targetName}
         POST_BUILD
         VERBATIM
-        COMMAND ${DSYMUTIL} --flat --minimize ${strip_source_file}
+        COMMAND sh -c "echo Stripping symbols from $(basename '${strip_source_file}') into $(basename '${strip_destination_file}')"
+        COMMAND ${DSYMUTIL} ${DSYMUTIL_OPTS} ${strip_source_file}
         COMMAND ${strip_command}
-        COMMENT "Stripping symbols from ${strip_source_file} into file ${strip_destination_file}"
         )
-    else (CLR_CMAKE_TARGET_OSX OR CLR_CMAKE_TARGET_IOS OR CLR_CMAKE_TARGET_TVOS)
-      set(strip_destination_file ${strip_source_file}.dbg)
+    else (CLR_CMAKE_TARGET_APPLE)
 
       add_custom_command(
         TARGET ${targetName}
         POST_BUILD
         VERBATIM
+        COMMAND sh -c "echo Stripping symbols from $(basename '${strip_source_file}') into $(basename '${strip_destination_file}')"
         COMMAND ${CMAKE_OBJCOPY} --only-keep-debug ${strip_source_file} ${strip_destination_file}
-        COMMAND ${CMAKE_OBJCOPY} --strip-unneeded ${strip_source_file}
+        COMMAND ${CMAKE_OBJCOPY} --strip-debug --strip-unneeded ${strip_source_file}
         COMMAND ${CMAKE_OBJCOPY} --add-gnu-debuglink=${strip_destination_file} ${strip_source_file}
-        COMMENT "Stripping symbols from ${strip_source_file} into file ${strip_destination_file}"
         )
-    endif (CLR_CMAKE_TARGET_OSX OR CLR_CMAKE_TARGET_IOS OR CLR_CMAKE_TARGET_TVOS)
-
-    set(${outputFilename} ${strip_destination_file} PARENT_SCOPE)
-  else(CLR_CMAKE_HOST_UNIX)
-    get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
-    if(is_multi_config)
-      # We can't use the $<TARGET_PDB_FILE> generator expression here since
-      # the generator expression isn't supported on resource DLLs.
-      set(${outputFilename} ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/${targetName}.pdb PARENT_SCOPE)
-    else()
-      # We can't use the $<TARGET_PDB_FILE> generator expression here since
-      # the generator expression isn't supported on resource DLLs.
-      set(${outputFilename} ${CMAKE_CURRENT_BINARY_DIR}/${targetName}.pdb PARENT_SCOPE)
-    endif()
+    endif (CLR_CMAKE_TARGET_APPLE)
   endif(CLR_CMAKE_HOST_UNIX)
 endfunction()
 
 function(install_with_stripped_symbols targetName kind destination)
+    get_property(target_is_framework TARGET ${targetName} PROPERTY "FRAMEWORK")
     if(NOT CLR_CMAKE_KEEP_NATIVE_SYMBOLS)
       strip_symbols(${targetName} symbol_file)
-      install_symbols(${symbol_file} ${destination})
+      if (NOT "${symbol_file}" STREQUAL "" AND NOT target_is_framework)
+        install_symbol_file(${symbol_file} ${destination} ${ARGN})
+      endif()
     endif()
 
-    if ((CLR_CMAKE_TARGET_OSX OR CLR_CMAKE_TARGET_IOS OR CLR_CMAKE_TARGET_TVOS) AND ("${kind}" STREQUAL "TARGETS"))
-      # We want to avoid the kind=TARGET install behaviors which corrupt code signatures on osx-arm64
-      set(kind PROGRAMS)
-    endif()
-
-    if ("${kind}" STREQUAL "TARGETS")
-      set(install_source ${targetName})
-    elseif("${kind}" STREQUAL "PROGRAMS")
-      set(install_source $<TARGET_FILE:${targetName}>)
+    if (target_is_framework)
+      install(TARGETS ${targetName} FRAMEWORK DESTINATION ${destination} ${ARGN})
     else()
-      message(FATAL_ERROR "The `kind` argument has to be either TARGETS or PROGRAMS, ${kind} was provided instead")
+      if (CLR_CMAKE_TARGET_APPLE AND ("${kind}" STREQUAL "TARGETS"))
+        # We want to avoid the kind=TARGET install behaviors which corrupt code signatures on osx-arm64
+        set(kind PROGRAMS)
+      endif()
+
+      if ("${kind}" STREQUAL "TARGETS")
+        set(install_source ${targetName})
+      elseif("${kind}" STREQUAL "PROGRAMS")
+        set(install_source $<TARGET_FILE:${targetName}>)
+      else()
+        message(FATAL_ERROR "The `kind` argument has to be either TARGETS or PROGRAMS, ${kind} was provided instead")
+      endif()
+      install(${kind} ${install_source} DESTINATION ${destination} ${ARGN})
     endif()
-    install(${kind} ${install_source} DESTINATION ${destination})
 endfunction()
 
-function(install_symbols symbol_file destination_path)
+function(install_symbol_file symbol_file destination_path)
   if(CLR_CMAKE_TARGET_WIN32)
-    install(FILES ${symbol_file} DESTINATION ${destination_path}/PDB)
+      install(FILES ${symbol_file} DESTINATION ${destination_path}/PDB ${ARGN})
   else()
-    install(FILES ${symbol_file} DESTINATION ${destination_path})
+      install(FILES ${symbol_file} DESTINATION ${destination_path} ${ARGN})
   endif()
 endfunction()
 
-# install_clr(TARGETS TARGETS targetName [targetName2 ...] [ADDITIONAL_DESTINATIONS destination])
+function(install_static_library targetName destination component)
+  if (NOT "${component}" STREQUAL "${targetName}")
+    get_property(definedComponents GLOBAL PROPERTY CLR_CMAKE_COMPONENTS)
+    list(FIND definedComponents "${component}" componentIdx)
+    if (${componentIdx} EQUAL -1)
+      message(FATAL_ERROR "The ${component} component is not defined. Add a call to `add_component(${component})` to define the component in the build.")
+    endif()
+    add_dependencies(${component} ${targetName})
+  endif()
+  install (TARGETS ${targetName} DESTINATION ${destination} COMPONENT ${component})
+  if (WIN32)
+    set_target_properties(${targetName} PROPERTIES
+        COMPILE_PDB_NAME "${targetName}"
+        COMPILE_PDB_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
+    )
+    install (FILES "$<TARGET_FILE_DIR:${targetName}>/${targetName}.pdb" DESTINATION ${destination} COMPONENT ${component})
+  endif()
+endfunction()
+
+# install_clr(TARGETS targetName [targetName2 ...] [DESTINATIONS destination [destination2 ...]] [COMPONENT componentName])
 function(install_clr)
-  set(multiValueArgs TARGETS ADDITIONAL_DESTINATIONS)
-  cmake_parse_arguments(INSTALL_CLR "" "" "${multiValueArgs}" ${ARGV})
+  set(multiValueArgs TARGETS DESTINATIONS)
+  set(singleValueArgs COMPONENT)
+  set(options "")
+  cmake_parse_arguments(INSTALL_CLR "${options}" "${singleValueArgs}" "${multiValueArgs}" ${ARGV})
 
   if ("${INSTALL_CLR_TARGETS}" STREQUAL "")
     message(FATAL_ERROR "At least one target must be passed to install_clr(TARGETS )")
   endif()
 
-  set(destinations ".")
+  if ("${INSTALL_CLR_DESTINATIONS}" STREQUAL "")
+    message(FATAL_ERROR "At least one destination must be passed to install_clr.")
+  endif()
 
-  if (NOT "${INSTALL_CLR_ADDITIONAL_DESTINATIONS}" STREQUAL "")
-    list(APPEND destinations ${INSTALL_CLR_ADDITIONAL_DESTINATIONS})
+  set(destinations "")
+
+  if (NOT "${INSTALL_CLR_DESTINATIONS}" STREQUAL "")
+    list(APPEND destinations ${INSTALL_CLR_DESTINATIONS})
+  endif()
+
+  if ("${INSTALL_CLR_COMPONENT}" STREQUAL "")
+    set(INSTALL_CLR_COMPONENT ${CMAKE_INSTALL_DEFAULT_COMPONENT_NAME})
   endif()
 
   foreach(targetName ${INSTALL_CLR_TARGETS})
-    list(FIND CLR_CROSS_COMPONENTS_LIST ${targetName} INDEX)
-    if (NOT DEFINED CLR_CROSS_COMPONENTS_LIST OR NOT ${INDEX} EQUAL -1)
-        if (NOT CLR_CMAKE_KEEP_NATIVE_SYMBOLS)
-          strip_symbols(${targetName} symbol_file)
-        endif()
-
-        foreach(destination ${destinations})
-          # We don't need to install the export libraries for our DLLs
-          # since they won't be directly linked against.
-          install(PROGRAMS $<TARGET_FILE:${targetName}> DESTINATION ${destination})
-          if (NOT CLR_CMAKE_KEEP_NATIVE_SYMBOLS)
-            install_symbols(${symbol_file} ${destination})
-          endif()
-
-          if(CLR_CMAKE_PGO_INSTRUMENT)
-            if(WIN32)
-              get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
-              if(is_multi_config)
-                  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/${targetName}.pgd DESTINATION ${destination}/PGD OPTIONAL)
-              else()
-                  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${targetName}.pgd DESTINATION ${destination}/PGD OPTIONAL)
-              endif()
-            endif()
-          endif()
-        endforeach()
+    if (NOT "${INSTALL_CLR_COMPONENT}" STREQUAL "${targetName}")
+      get_property(definedComponents GLOBAL PROPERTY CLR_CMAKE_COMPONENTS)
+      list(FIND definedComponents "${INSTALL_CLR_COMPONENT}" componentIdx)
+      if (${componentIdx} EQUAL -1)
+        message(FATAL_ERROR "The ${INSTALL_CLR_COMPONENT} component is not defined. Add a call to `add_component(${INSTALL_CLR_COMPONENT})` to define the component in the build.")
+      endif()
+      add_dependencies(${INSTALL_CLR_COMPONENT} ${targetName})
     endif()
+    get_target_property(targetType ${targetName} TYPE)
+    if (NOT CLR_CMAKE_KEEP_NATIVE_SYMBOLS AND NOT "${targetType}" STREQUAL "STATIC_LIBRARY")
+      get_symbol_file_name(${targetName} symbolFile)
+    endif()
+
+    foreach(destination ${destinations})
+      # We don't need to install the export libraries for our DLLs
+      # since they won't be directly linked against.
+      install(PROGRAMS $<TARGET_FILE:${targetName}> DESTINATION ${destination} COMPONENT ${INSTALL_CLR_COMPONENT})
+      if (NOT "${symbolFile}" STREQUAL "")
+        install_symbol_file(${symbolFile} ${destination} COMPONENT ${INSTALL_CLR_COMPONENT})
+      endif()
+
+      if(CLR_CMAKE_PGO_INSTRUMENT)
+        if(WIN32)
+          get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+          if(is_multi_config)
+              install(FILES ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/${targetName}.pgd DESTINATION ${destination}/PGD OPTIONAL COMPONENT ${INSTALL_CLR_COMPONENT})
+          else()
+              install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${targetName}.pgd DESTINATION ${destination}/PGD OPTIONAL COMPONENT ${INSTALL_CLR_COMPONENT})
+          endif()
+        endif()
+      endif()
+    endforeach()
   endforeach()
 endfunction()
 
@@ -392,99 +583,25 @@ endfunction()
 # - creating executable pages from anonymous memory,
 # - making read-only-after-relocations (RELRO) data pages writable again.
 function(disable_pax_mprotect targetName)
-  # Try to locate the paxctl tool. Failure to find it is not fatal,
-  # but the generated executables won't work on a system where PAX is set
-  # to prevent applications to create executable memory mappings.
-  find_program(PAXCTL paxctl)
+  # Disabling PAX hardening only makes sense in systems that use Elf image formats. Particularly, looking
+  # for paxctl in macOS is problematic as it collides with popular software for that OS that performs completely
+  # unrelated functionality. Only look for it when we'll generate Elf images.
+  if (CLR_CMAKE_HOST_LINUX OR CLR_CMAKE_HOST_FREEBSD OR CLR_CMAKE_HOST_NETBSD OR CLR_CMAKE_HOST_SUNOS)
+    # Try to locate the paxctl tool. Failure to find it is not fatal,
+    # but the generated executables won't work on a system where PAX is set
+    # to prevent applications to create executable memory mappings.
+    find_program(PAXCTL paxctl)
 
-  if (NOT PAXCTL STREQUAL "PAXCTL-NOTFOUND")
-    add_custom_command(
-      TARGET ${targetName}
-      POST_BUILD
-      VERBATIM
-      COMMAND ${PAXCTL} -c -m $<TARGET_FILE:${targetName}>
-    )
-  endif()
-endfunction()
-
-if (CMAKE_VERSION VERSION_LESS "3.12")
-  # Polyfill add_compile_definitions when it is unavailable
-  function(add_compile_definitions)
-    get_directory_property(DIR_COMPILE_DEFINITIONS COMPILE_DEFINITIONS)
-    list(APPEND DIR_COMPILE_DEFINITIONS ${ARGV})
-    set_directory_properties(PROPERTIES COMPILE_DEFINITIONS "${DIR_COMPILE_DEFINITIONS}")
-  endfunction()
-endif()
-
-if (CMAKE_VERSION VERSION_LESS "3.16")
-  # Provide a no-op polyfill for precompiled headers on old CMake versions
-  function(target_precompile_headers)
-  endfunction()
-endif()
-
-function(_add_executable)
-    if(NOT WIN32)
-      add_executable(${ARGV} ${VERSION_FILE_PATH})
-      disable_pax_mprotect(${ARGV})
-    else()
-      add_executable(${ARGV})
-    endif(NOT WIN32)
-    list(FIND CLR_CROSS_COMPONENTS_LIST ${ARGV0} INDEX)
-    if (DEFINED CLR_CROSS_COMPONENTS_LIST AND ${INDEX} EQUAL -1)
-     set_target_properties(${ARGV0} PROPERTIES EXCLUDE_FROM_ALL 1)
+    if (NOT PAXCTL STREQUAL "PAXCTL-NOTFOUND")
+        add_custom_command(
+        TARGET ${targetName}
+        POST_BUILD
+        VERBATIM
+        COMMAND ${PAXCTL} -c -m $<TARGET_FILE:${targetName}>
+        )
     endif()
+  endif(CLR_CMAKE_HOST_LINUX OR CLR_CMAKE_HOST_FREEBSD OR CLR_CMAKE_HOST_NETBSD OR CLR_CMAKE_HOST_SUNOS)
 endfunction()
-
-function(_add_library)
-    if(NOT WIN32 AND "${ARGV1}" STREQUAL "SHARED")
-      add_library(${ARGV} ${VERSION_FILE_PATH})
-    else()
-      add_library(${ARGV})
-    endif(NOT WIN32 AND "${ARGV1}" STREQUAL "SHARED")
-    list(FIND CLR_CROSS_COMPONENTS_LIST ${ARGV0} INDEX)
-    if (DEFINED CLR_CROSS_COMPONENTS_LIST AND ${INDEX} EQUAL -1)
-     set_target_properties(${ARGV0} PROPERTIES EXCLUDE_FROM_ALL 1)
-    endif()
-endfunction()
-
-function(_install)
-    if(NOT DEFINED CLR_CROSS_COMPONENTS_BUILD)
-      install(${ARGV})
-    endif()
-endfunction()
-
-function(add_library_clr)
-    _add_library(${ARGV})
-endfunction()
-
-function(add_executable_clr)
-    _add_executable(${ARGV})
-endfunction()
-
-function(generate_module_index Target ModuleIndexFile)
-    if(CLR_CMAKE_HOST_WIN32)
-        set(scriptExt ".cmd")
-    else()
-        set(scriptExt ".sh")
-    endif()
-
-    add_custom_command(
-        OUTPUT ${ModuleIndexFile}
-        COMMAND ${CLR_ENG_NATIVE_DIR}/genmoduleindex${scriptExt} $<TARGET_FILE:${Target}> ${ModuleIndexFile}
-        DEPENDS ${Target}
-        COMMENT "Generating ${Target} module index file -> ${ModuleIndexFile}"
-    )
-
-    set_source_files_properties(
-        ${ModuleIndexFile}
-        PROPERTIES GENERATED TRUE
-    )
-
-    add_custom_target(
-        ${Target}_module_index_header
-        DEPENDS ${ModuleIndexFile}
-    )
-endfunction(generate_module_index)
 
 # add_linker_flag(Flag [Config1 Config2 ...])
 function(add_linker_flag Flag)
@@ -497,4 +614,66 @@ function(add_linker_flag Flag)
       set("CMAKE_SHARED_LINKER_FLAGS_${Config}" "${CMAKE_SHARED_LINKER_FLAGS_${Config}} ${Flag}" PARENT_SCOPE)
     endforeach()
   endif()
+endfunction()
+
+function(link_natvis_sources_for_target targetName linkKind)
+    if (NOT CLR_CMAKE_HOST_WIN32)
+        return()
+    endif()
+    foreach(source ${ARGN})
+        if (NOT IS_ABSOLUTE "${source}")
+            convert_to_absolute_path(source ${source})
+        endif()
+        get_filename_component(extension "${source}" EXT)
+        if ("${extension}" STREQUAL ".natvis")
+            # Since natvis embedding is only supported on Windows
+            # we can use target_link_options since our minimum version is high enough
+            target_link_options(${targetName} "${linkKind}" "-NATVIS:${source}")
+        endif()
+    endforeach()
+endfunction()
+
+# Add sanitizer runtime support code to the target.
+function(add_sanitizer_runtime_support targetName)
+  # Add sanitizer support functions.
+  if (CLR_CMAKE_ENABLE_ASAN)
+    target_sources(${targetName} PRIVATE "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:${CLR_SRC_NATIVE_DIR}/minipal/asansupport.cpp>")
+  endif()
+endfunction()
+
+function(add_executable_clr targetName)
+  if(NOT WIN32)
+    add_executable(${ARGV} ${VERSION_FILE_PATH})
+    disable_pax_mprotect(${ARGV})
+  else()
+    add_executable(${ARGV})
+  endif(NOT WIN32)
+  add_sanitizer_runtime_support(${targetName})
+  if(NOT CLR_CMAKE_KEEP_NATIVE_SYMBOLS)
+    strip_symbols(${ARGV0} symbolFile)
+  endif()
+endfunction()
+
+function(add_library_clr targetName kind)
+  if(NOT WIN32 AND "${kind}" STREQUAL "SHARED")
+    add_library(${ARGV} ${VERSION_FILE_PATH})
+  else()
+    add_library(${ARGV})
+  endif()
+  if("${kind}" STREQUAL "SHARED" AND NOT CLR_CMAKE_KEEP_NATIVE_SYMBOLS)
+    strip_symbols(${ARGV0} symbolFile)
+  endif()
+endfunction()
+
+# Adhoc sign targetName with the entitlements in entitlementsFile.
+function(adhoc_sign_with_entitlements targetName entitlementsFile)
+    # Add a dependency from a source file for the target on the entitlements file to ensure that the target is rebuilt if only the entitlements file changes.
+    get_target_property(sources ${targetName} SOURCES)
+    list(GET sources 0 firstSource)
+    set_source_files_properties(${firstSource} PROPERTIES OBJECT_DEPENDS ${entitlementsFile})
+
+    add_custom_command(
+        TARGET ${targetName}
+        POST_BUILD
+        COMMAND codesign -s - -f --entitlements ${entitlementsFile} $<TARGET_FILE:${targetName}>)
 endfunction()

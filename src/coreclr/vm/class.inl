@@ -10,7 +10,7 @@
 inline PTR_MethodDescChunk EEClass::GetChunks()
 {
     LIMITED_METHOD_DAC_CONTRACT;
-    return m_pChunks.GetValueMaybeNull(PTR_HOST_MEMBER_TADDR(EEClass, this, m_pChunks));
+    return m_pChunks;
 }
 
 //*******************************************************************************
@@ -20,7 +20,7 @@ inline void EEClassOptionalFields::Init()
 {
     LIMITED_METHOD_CONTRACT;
     m_pDictLayout = NULL;
-    m_pVarianceInfo.SetValueMaybeNull(NULL);
+    m_pVarianceInfo = NULL;
 #ifdef FEATURE_COMINTEROP
     m_pSparseVTableMap = NULL;
     m_pCoClassForIntf = TypeHandle();
@@ -28,7 +28,6 @@ inline void EEClassOptionalFields::Init()
     m_pClassFactory = NULL;
 #endif // FEATURE_COMINTEROP_UNMANAGED_ACTIVATION
 #endif // FEATURE_COMINTEROP
-    m_cbModuleDynamicID = MODULE_NON_DYNAMIC_STATICS;
 #if defined(UNIX_AMD64_ABI)
     m_numberEightBytes = 0;
 #endif // UNIX_AMD64_ABI

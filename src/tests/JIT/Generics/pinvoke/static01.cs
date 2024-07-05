@@ -3,6 +3,7 @@
 
 using System;
 using System.Runtime.InteropServices;
+using Xunit;
 
 internal class Win32Interop
 {
@@ -25,7 +26,7 @@ public class Gen<T>
     }
 }
 
-public class Test
+public class Test_static01
 {
     public static uint counter = 0;
     public static bool result = true;
@@ -39,7 +40,8 @@ public class Test
         }
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         Eval(Gen<int>.PInvokeTest() == 6);
         Eval(Gen<double>.PInvokeTest() == 6);

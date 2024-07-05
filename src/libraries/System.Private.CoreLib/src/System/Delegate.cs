@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -10,12 +11,10 @@ namespace System
 {
     public abstract partial class Delegate : ICloneable, ISerializable
     {
-        private protected const DynamicallyAccessedMemberTypes AllMethods = DynamicallyAccessedMemberTypes.PublicMethods | DynamicallyAccessedMemberTypes.NonPublicMethods;
-
         public virtual object Clone() => MemberwiseClone();
 
-        [return: NotNullIfNotNull("a")]
-        [return: NotNullIfNotNull("b")]
+        [return: NotNullIfNotNull(nameof(a))]
+        [return: NotNullIfNotNull(nameof(b))]
         public static Delegate? Combine(Delegate? a, Delegate? b)
         {
             if (a is null)
@@ -24,14 +23,30 @@ namespace System
             return a.CombineImpl(b);
         }
 
-        public static Delegate? Combine(params Delegate?[]? delegates)
-        {
-            if (delegates == null || delegates.Length == 0)
-                return null;
+        public static Delegate? Combine(params Delegate?[]? delegates) =>
+            Combine((ReadOnlySpan<Delegate?>)delegates);
 
-            Delegate? d = delegates[0];
-            for (int i = 1; i < delegates.Length; i++)
-                d = Combine(d, delegates[i]);
+        /// <summary>
+        /// Concatenates the invocation lists of an span of delegates.
+        /// </summary>
+        /// <param name="delegates">The span of delegates to combine.</param>
+        /// <returns>
+        /// A new delegate with an invocation list that concatenates the invocation lists of the delegates in the <paramref name="delegates"/> span.
+        /// Returns <see langword="null" /> if <paramref name="delegates"/> is <see langword="null" />,
+        /// if <paramref name="delegates"/> contains zero elements, or if every entry in <paramref name="delegates"/> is <see langword="null" />.
+        /// </returns>
+        public static Delegate? Combine(params ReadOnlySpan<Delegate?> delegates)
+        {
+            Delegate? d = null;
+
+            if (!delegates.IsEmpty)
+            {
+                d = delegates[0];
+                for (int i = 1; i < delegates.Length; i++)
+                {
+                    d = Combine(d, delegates[i]);
+                }
+            }
 
             return d;
         }
@@ -49,22 +64,87 @@ namespace System
         public static Delegate CreateDelegate(Type type, object target, string method, bool ignoreCase) => CreateDelegate(type, target, method, ignoreCase, throwOnBindFailure: true)!;
 
         // V1 api: Creates open delegates to static methods only, relaxed signature checking disallowed.
-        public static Delegate CreateDelegate(Type type, [DynamicallyAccessedMembers(AllMethods)] Type target, string method) => CreateDelegate(type, target, method, ignoreCase: false, throwOnBindFailure: true)!;
-        public static Delegate CreateDelegate(Type type, [DynamicallyAccessedMembers(AllMethods)] Type target, string method, bool ignoreCase) => CreateDelegate(type, target, method, ignoreCase, throwOnBindFailure: true)!;
+        public static Delegate CreateDelegate(Type type, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)] Type target, string method) => CreateDelegate(type, target, method, ignoreCase: false, throwOnBindFailure: true)!;
+        public static Delegate CreateDelegate(Type type, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)] Type target, string method, bool ignoreCase) => CreateDelegate(type, target, method, ignoreCase, throwOnBindFailure: true)!;
 
-#if !CORERT
+#if !NATIVEAOT
         protected virtual Delegate CombineImpl(Delegate? d) => throw new MulticastNotSupportedException(SR.Multicast_Combine);
 
         protected virtual Delegate? RemoveImpl(Delegate d) => d.Equals(this) ? null : this;
 
         public virtual Delegate[] GetInvocationList() => new Delegate[] { this };
 
+        /// <summary>
+        /// Gets a value that indicates whether the <see cref="Delegate"/> has a single invocation target.
+        /// </summary>
+        /// <value>true if the <see cref="Delegate"/> has a single invocation target.</value>
+        public bool HasSingleTarget => Unsafe.As<MulticastDelegate>(this).HasSingleTarget;
+#endif
+
+        /// <summary>
+        /// Gets an enumerator for the invocation targets of this delegate.
+        /// </summary>
+        /// <remarks>
+        /// This returns a <see cref="InvocationListEnumerator{TDelegate}"/>" /> that follows the IEnumerable pattern and
+        /// thus can be used in a C# 'foreach' statements to retrieve the invocation targets of this delegate without allocations.
+        /// The order of the delegates returned by the enumerator is the same order in which the current delegate invokes the methods that those delegates represent.
+        /// The method returns an empty enumerator for null delegate.
+        /// </remarks>
+        public static System.Delegate.InvocationListEnumerator<TDelegate> EnumerateInvocationList<TDelegate>(TDelegate? d) where TDelegate : System.Delegate
+            => new InvocationListEnumerator<TDelegate>(Unsafe.As<MulticastDelegate>(d));
+
+        /// <summary>
+        /// Provides an enumerator for the invocation list of a delegate.
+        /// </summary>
+        /// <typeparam name="TDelegate">Delegate type being enumerated.</typeparam>
+        public struct InvocationListEnumerator<TDelegate> where TDelegate : System.Delegate
+        {
+            private readonly MulticastDelegate? _delegate;
+            private int _index;
+            private TDelegate? _current;
+
+            internal InvocationListEnumerator(MulticastDelegate? d)
+            {
+                _delegate = d;
+                _index = -1;
+            }
+
+            /// <summary>
+            /// Implements the IEnumerator pattern.
+            /// </summary>
+            public TDelegate Current
+            {
+                get => _current!;
+            }
+
+            /// <summary>
+            /// Implements the IEnumerator pattern.
+            /// </summary>
+            public bool MoveNext()
+            {
+                int index = _index + 1;
+                if ((_current = Unsafe.As<TDelegate>(_delegate?.TryGetAt(index))) == null)
+                {
+                    return false;
+                }
+                _index = index;
+                return true;
+            }
+
+            /// <summary>
+            /// Implement IEnumerable.GetEnumerator() to return  'this' as the IEnumerator
+            /// </summary>
+            [EditorBrowsable(EditorBrowsableState.Never)] // Only here to make foreach work
+            public System.Delegate.InvocationListEnumerator<TDelegate> GetEnumerator() => this;
+        }
+
         public object? DynamicInvoke(params object?[]? args)
         {
             return DynamicInvokeImpl(args);
         }
-#endif
 
+        [Obsolete(Obsoletions.LegacyFormatterImplMessage, DiagnosticId = Obsoletions.LegacyFormatterImplDiagId, UrlFormat = Obsoletions.SharedUrlFormat)]
+        [EditorBrowsable(EditorBrowsableState.Never)]
         public virtual void GetObjectData(SerializationInfo info, StreamingContext context) => throw new PlatformNotSupportedException();
 
         public MethodInfo Method => GetMethodImpl();
@@ -97,7 +177,6 @@ namespace System
             return newDelegate;
         }
 
-        // Force inline as the true/false ternary takes it above ALWAYS_INLINE size even though the asm ends up smaller
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool operator ==(Delegate? d1, Delegate? d2)
         {
@@ -105,14 +184,12 @@ namespace System
             // so it can become a simple test
             if (d2 is null)
             {
-                // return true/false not the test result https://github.com/dotnet/runtime/issues/4207
-                return (d1 is null) ? true : false;
+                return d1 is null;
             }
 
             return ReferenceEquals(d2, d1) ? true : d2.Equals((object?)d1);
         }
 
-        // Force inline as the true/false ternary takes it above ALWAYS_INLINE size even though the asm ends up smaller
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool operator !=(Delegate? d1, Delegate? d2)
         {
@@ -120,8 +197,7 @@ namespace System
             // so it can become a simple test
             if (d2 is null)
             {
-                // return true/false not the test result https://github.com/dotnet/runtime/issues/4207
-                return (d1 is null) ? false : true;
+                return d1 is not null;
             }
 
             return ReferenceEquals(d2, d1) ? false : !d2.Equals(d1);

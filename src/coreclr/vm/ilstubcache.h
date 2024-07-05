@@ -17,7 +17,6 @@
 #include "vars.hpp"
 #include "util.hpp"
 #include "crst.h"
-#include "ngenhash.h"
 #include "stubgen.h"
 
 class ILStubHashBlobBase
@@ -32,53 +31,37 @@ public:
     BYTE    m_rgbBlobData[1];
 };
 
+class LoaderAllocator;
 
 //
 // This class caches MethodDesc's for dynamically generated IL stubs, it is not
 // persisted in NGEN images.
 //
-class ILStubCache : private CClosedHashBase
+class ILStubCache final
 {
-private:
-    //---------------------------------------------------------
-    // Hash entry for CClosedHashBase.
-    //---------------------------------------------------------
-    struct ILCHASHENTRY
-    {
-        // Values:
-        //   NULL  = free
-        //   -1    = deleted
-        //   other = used
-        MethodDesc*     m_pMethodDesc;
-        ILStubHashBlob* m_pBlob;
-    };
-
 public:
 
     //---------------------------------------------------------
     // Constructor
     //---------------------------------------------------------
-    ILStubCache(LoaderHeap* heap = NULL);
+    ILStubCache(LoaderAllocator* pAllocator = NULL);
 
-    //---------------------------------------------------------
-    // Destructor
-    //---------------------------------------------------------
-    virtual ~ILStubCache();
-
-    void Init(LoaderHeap* pHeap);
+    void Init(LoaderAllocator* pAllocator);
 
     MethodDesc* GetStubMethodDesc(
         MethodDesc *pTargetMD,
-        ILStubHashBlob* pParams,
+        ILStubHashBlob* pHashBlob,
         DWORD dwStubFlags,      // bitmask of NDirectStubFlags
         Module* pSigModule,
+        Module* pSigLoaderModule,
         PCCOR_SIGNATURE pSig,
         DWORD cbSig,
+        SigTypeContext* pTypeContext,
         AllocMemTracker* pamTracker,
         bool& bILStubCreator,
         MethodDesc* pLastMD);
 
-    void DeleteEntry(void *pParams);
+    void DeleteEntry(ILStubHashBlob* pHashBlob);
 
     void AddMethodDescChunkWithLockTaken(MethodDesc *pMD);
 
@@ -100,8 +83,13 @@ public:
 
     MethodTable* GetOrCreateStubMethodTable(Module* pLoaderModule);
 
-private:
+    MethodDesc* LookupStubMethodDesc(ILStubHashBlob* pHashBlob);
 
+    // Insert a stub MethodDesc into the cache
+    // If one is already present at a matching hash blob, return the already present one, otherwise, return pMD
+    MethodDesc* InsertStubMethodDesc(MethodDesc* pMD, ILStubHashBlob* pHashBlob);
+
+private: // static
     static MethodDesc* CreateNewMethodDesc(
         LoaderHeap* pCreationHeap,
         MethodTable* pMT,
@@ -112,125 +100,31 @@ private:
         SigTypeContext *pTypeContext,
         AllocMemTracker* pamTracker);
 
-    // *** OVERRIDES FOR CClosedHashBase ***/
+private: // Inner classes
+    struct ILStubCacheEntry
+    {
+        MethodDesc *m_pMethodDesc;
+        ILStubHashBlob *m_pBlob;
+    };
 
-    //*****************************************************************************
-    // Hash is called with a pointer to an element in the table.  You must override
-    // this method and provide a hash algorithm for your element type.
-    //*****************************************************************************
-    virtual unsigned int Hash(             // The key value.
-        void const*  pData);                // Raw data to hash.
-
-    //*****************************************************************************
-    // Compare is used in the typical memcmp way, 0 is eqaulity, -1/1 indicate
-    // direction of miscompare.  In this system everything is always equal or not.
-    //*****************************************************************************
-    virtual unsigned int Compare(          // 0, -1, or 1.
-        void const*  pData,                 // Raw key data on lookup.
-        BYTE*        pElement);             // The element to compare data against.
-
-    //*****************************************************************************
-    // Return true if the element is free to be used.
-    //*****************************************************************************
-    virtual ELEMENTSTATUS Status(           // The status of the entry.
-        BYTE*        pElement);             // The element to check.
-
-    //*****************************************************************************
-    // Sets the status of the given element.
-    //*****************************************************************************
-    virtual void SetStatus(
-        BYTE*         pElement,             // The element to set status for.
-        ELEMENTSTATUS eStatus);             // New status.
-
-    //*****************************************************************************
-    // Returns the internal key value for an element.
-    //*****************************************************************************
-    virtual void* GetKey(                   // The data to hash on.
-        BYTE*        pElement);             // The element to return data ptr for.
+    class ILStubCacheTraits : public DefaultSHashTraits<ILStubCacheEntry>
+    {
+    public:
+        using key_t = const ILStubHashBlob *;
+        static const key_t GetKey(_In_ const element_t& e) { LIMITED_METHOD_CONTRACT; return e.m_pBlob; }
+        static count_t Hash(_In_ key_t key);
+        static bool Equals(_In_ key_t lhs, _In_ key_t rhs);
+        static bool IsNull(_In_ const element_t& e) { LIMITED_METHOD_CONTRACT; return e.m_pMethodDesc == NULL; }
+        static const element_t Null() { LIMITED_METHOD_CONTRACT; return ILStubCacheEntry(); }
+        static bool IsDeleted(const element_t &e) { LIMITED_METHOD_CONTRACT; return e.m_pMethodDesc == (MethodDesc *)-1; }
+        static const element_t Deleted() { LIMITED_METHOD_CONTRACT; return ILStubCacheEntry{(MethodDesc *)-1, NULL}; }
+    };
 
 private:
     Crst            m_crst;
-    LoaderHeap*     m_heap;
+    LoaderAllocator*m_pAllocator;
     MethodTable*    m_pStubMT;
+    SHash<ILStubCacheTraits> m_hashMap;
 };
-
-
-#ifdef FEATURE_PREJIT
-//========================================================================================
-//
-// This hash table is used by interop to lookup NGENed marshaling stubs for methods
-// in cases where the MethodDesc cannot point to the stub directly.
-//
-// Keys are arbitrary MethodDesc's, values are IL stub MethodDescs.
-//
-//========================================================================================
-
-typedef DPTR(struct StubMethodHashEntry) PTR_StubMethodHashEntry;
-typedef struct StubMethodHashEntry
-{
-    PTR_MethodDesc GetMethod();
-    PTR_MethodDesc GetStubMethod();
-#ifndef DACCESS_COMPILE
-    void SetMethodAndStub(MethodDesc *pMD, MethodDesc *pStubMD);
-#endif // !DACCESS_COMPILE
-
-private:
-    friend class StubMethodHashTable;
-#ifdef DACCESS_COMPILE
-    friend class NativeImageDumper;
-#endif
-
-    PTR_MethodDesc      pMD;
-    PTR_MethodDesc      pStubMD;
-
-} StubMethodHashEntry_t;
-
-
-// The hash table itself
-typedef DPTR(class StubMethodHashTable) PTR_StubMethodHashTable;
-class StubMethodHashTable : public NgenHashTable<StubMethodHashTable, StubMethodHashEntry, 2>
-{
-#ifndef DACCESS_COMPILE
-    StubMethodHashTable();
-
-    StubMethodHashTable(Module *pModule, LoaderHeap *pHeap, DWORD cInitialBuckets) :
-        NgenHashTable<StubMethodHashTable, StubMethodHashEntry, 2>(pModule, pHeap, cInitialBuckets) {}
-
-    ~StubMethodHashTable();
-#endif
-public:
-    static StubMethodHashTable *Create(LoaderAllocator *pAllocator, Module *pModule, DWORD dwNumBuckets, AllocMemTracker *pamTracker);
-
-private:
-    void operator delete(void *p);
-
-public:
-    // Looks up a stub MethodDesc in the hash table, returns NULL if not found
-    MethodDesc *FindMethodDesc(MethodDesc *pMD);
-
-#ifndef DACCESS_COMPILE
-    // Inserts a method-stub pair into the hash table
-    VOID InsertMethodDesc(MethodDesc *pMD, MethodDesc *pStubMD);
-
-    void Save(DataImage *image, CorProfileData *profileData);
-    void Fixup(DataImage *image);
-
-    bool ShouldSave(DataImage *pImage, StubMethodHashEntry_t *pEntry);
-
-    bool IsHotEntry(StubMethodHashEntry_t *pEntry, CorProfileData *pProfileData)
-    { LIMITED_METHOD_CONTRACT; return true; }
-
-    bool SaveEntry(DataImage *pImage, CorProfileData *pProfileData, StubMethodHashEntry_t *pOldEntry, StubMethodHashEntry_t *pNewEntry, EntryMappingTable *pMap)
-    { LIMITED_METHOD_CONTRACT; return false; }
-
-    void FixupEntry(DataImage *pImage, StubMethodHashEntry_t *pEntry, void *pFixupBase, DWORD cbFixupOffset);
-#endif // !DACCESS_COMPILE
-
-#ifdef DACCESS_COMPILE
-    void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
-    void EnumMemoryRegionsForEntry(StubMethodHashEntry_t *pEntry, CLRDataEnumMemoryFlags flags);
-#endif
-};
-#endif // FEATURE_PREJIT
 
 #endif //_ILSTUBCACHE_H

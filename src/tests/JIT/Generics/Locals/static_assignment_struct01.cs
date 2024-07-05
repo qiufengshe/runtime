@@ -3,6 +3,7 @@
 //
 
 using System;
+using Xunit;
 
 public struct ValX0 { }
 public struct ValY0 { }
@@ -31,7 +32,7 @@ public struct Gen<T>
     }
 }
 
-public class Test
+public class Test_static_assignment_struct01
 {
     public static int counter = 0;
     public static bool result = true;
@@ -46,7 +47,8 @@ public class Test
 
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
 
         int _int = 1;

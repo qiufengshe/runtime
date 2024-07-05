@@ -2,9 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-
-using Interlocked = System.Threading.Interlocked;
 using Debug = System.Diagnostics.Debug;
+using Interlocked = System.Threading.Interlocked;
 
 namespace Internal.TypeSystem
 {
@@ -69,8 +68,7 @@ namespace Internal.TypeSystem
         /// </summary>
         public Instantiation ConvertInstantiationToCanonForm(Instantiation instantiation, CanonicalFormKind kind)
         {
-            bool changed;
-            return ConvertInstantiationToCanonForm(instantiation, kind, out changed);
+            return ConvertInstantiationToCanonForm(instantiation, kind, out _);
         }
 
         /// <summary>
@@ -95,7 +93,7 @@ namespace Internal.TypeSystem
         public abstract bool SupportsCanon { get; }
         public abstract bool SupportsUniversalCanon { get; }
 
-        public MetadataType GetCanonType(string name)
+        public DefType GetCanonType(string name)
         {
             switch (name)
             {

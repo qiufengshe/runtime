@@ -4,8 +4,8 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace System.Net.NetworkInformation
@@ -24,7 +24,7 @@ namespace System.Net.NetworkInformation
     // and that no new calls to the callback will be issued.
     //
 
-    internal class TeredoHelper
+    internal sealed class TeredoHelper
     {
         private readonly Action<object> _callback;
         private readonly object _state;

@@ -8,9 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using Newtonsoft.Json.Bson;
-using Microsoft.Xunit.Performance;
-
-[assembly: OptimizeForBenchmarks]
+using Xunit;
 
 namespace Serialization
 {
@@ -71,16 +69,6 @@ public class JsonBenchmarks
         SerializeJsonNetBench();
     }
 
-    [Benchmark]
-    private void SerializeDataContract()
-    {
-        foreach (var iteration in Benchmark.Iterations) {
-            using (iteration.StartMeasurement()) {
-                SerializeDataContractBench();
-            }
-        }
-    }
-
     private void SerializeDataContractBench() {
         TestObject t = TestObject.New();
         MemoryStream ms = new MemoryStream();
@@ -95,16 +83,6 @@ public class JsonBenchmarks
             s.WriteObject(ms, o);
             Escape(ms);
             ms.Flush();
-        }
-    }
-
-    [Benchmark]
-    private void SerializeDataContractJson()
-    {
-        foreach (var iteration in Benchmark.Iterations) {
-            using (iteration.StartMeasurement()) {
-                SerializeDataContractJsonBench();
-            }
         }
     }
 
@@ -123,16 +101,6 @@ public class JsonBenchmarks
             s.WriteObject(ms, o);
             Escape(ms);
             ms.Flush();
-        }
-    }
-
-    [Benchmark]
-    private void SerializeJsonNetBinary()
-    {
-        foreach (var iteration in Benchmark.Iterations) {
-            using (iteration.StartMeasurement()) {
-                SerializeJsonNetBinaryBench();
-            }
         }
     }
 
@@ -155,16 +123,6 @@ public class JsonBenchmarks
         }
     }
 
-    [Benchmark]
-    private void SerializeJsonNet()
-    {
-        foreach (var iteration in Benchmark.Iterations) {
-            using (iteration.StartMeasurement()) {
-                SerializeJsonNetBench();
-            }
-        }
-    }
-
     private void SerializeJsonNetBench()
     {
         TestObject t = TestObject.New();
@@ -180,7 +138,8 @@ public class JsonBenchmarks
         }
     }
 
-    public static int Main() {
+    [Fact]
+    public static int TestEntryPoint() {
         var tests = new JsonBenchmarks();
         bool result = tests.Serialize();
         return result ? 100 : -1;

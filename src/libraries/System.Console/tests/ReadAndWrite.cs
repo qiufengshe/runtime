@@ -4,6 +4,7 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -83,10 +84,14 @@ public class ReadAndWrite
         Console.Write("{0}", null, null);
         Console.Write("{0} {1} {2}", 32, "Hello", (uint)50);
         Console.Write("{0}", null, null, null);
-        Console.Write("{0} {1} {2} {3}", 32, "Hello", (uint)50, (ulong)5);
-        Console.Write("{0}", null, null, null, null);
-        Console.Write("{0} {1} {2} {3} {4}", 32, "Hello", (uint)50, (ulong)5, 'a');
-        Console.Write("{0}", null, null, null, null, null);
+        Console.Write("{0} {1} {2} {3}", new object[] { 32, "Hello", (uint)50, (ulong)5 });
+        Console.Write("{0} {1} {2} {3}", new object[] { 32, "Hello", (uint)50, (ulong)5 }.AsSpan());
+        Console.Write("{0}", new object[] { null, null, null, null });
+        Console.Write("{0}", new object[] { null, null, null, null }.AsSpan());
+        Console.Write("{0} {1} {2} {3} {4}", new object[] { 32, "Hello", (uint)50, (ulong)5, 'a' });
+        Console.Write("{0} {1} {2} {3} {4}", new object[] { 32, "Hello", (uint)50, (ulong)5, 'a' }.AsSpan());
+        Console.Write("{0}", new object[] { null, null, null, null, null });
+        Console.Write("{0}", new object[] { null, null, null, null, null }.AsSpan());
         Console.Write(true);
         Console.Write('a');
         Console.Write(new char[] { 'a', 'b', 'c', 'd', });
@@ -119,10 +124,14 @@ public class ReadAndWrite
         Console.WriteLine("{0}", null, null);
         Console.WriteLine("{0} {1} {2}", 32, "Hello", (uint)50);
         Console.WriteLine("{0}", null, null, null);
-        Console.WriteLine("{0} {1} {2} {3}", 32, "Hello", (uint)50, (ulong)5);
-        Console.WriteLine("{0}", null, null, null, null);
-        Console.WriteLine("{0} {1} {2} {3} {4}", 32, "Hello", (uint)50, (ulong)5, 'a');
-        Console.WriteLine("{0}", null, null, null, null, null);
+        Console.WriteLine("{0} {1} {2} {3}", new object[] { 32, "Hello", (uint)50, (ulong)5 });
+        Console.WriteLine("{0} {1} {2} {3}", new object[] { 32, "Hello", (uint)50, (ulong)5 }.AsSpan());
+        Console.WriteLine("{0}", new object[] { null, null, null, null });
+        Console.WriteLine("{0}", new object[] { null, null, null, null }.AsSpan());
+        Console.WriteLine("{0} {1} {2} {3} {4}", new object[] { 32, "Hello", (uint)50, (ulong)5, 'a' });
+        Console.WriteLine("{0} {1} {2} {3} {4}", new object[] { 32, "Hello", (uint)50, (ulong)5, 'a' }.AsSpan());
+        Console.WriteLine("{0}", new object[] { null, null, null, null, null });
+        Console.WriteLine("{0}", new object[] { null, null, null, null, null }.AsSpan());
         Console.WriteLine(true);
         Console.WriteLine('a');
         Console.WriteLine(new char[] { 'a', 'b', 'c', 'd', });
@@ -157,8 +166,10 @@ public class ReadAndWrite
                 writer.Write("{0}", 32);
                 writer.Write("{0} {1}", 32, "Hello");
                 writer.Write("{0} {1} {2}", 32, "Hello", (uint)50);
-                writer.Write("{0} {1} {2} {3}", 32, "Hello", (uint)50, (ulong)5);
-                writer.Write("{0} {1} {2} {3} {4}", 32, "Hello", (uint)50, (ulong)5, 'a');
+                writer.Write("{0} {1} {2} {3}", new object[] { 32, "Hello", (uint)50, (ulong)5 });
+                writer.Write("{0} {1} {2} {3}", new object[] { 32, "Hello", (uint)50, (ulong)5 }.AsSpan());
+                writer.Write("{0} {1} {2} {3} {4}", new object[] { 32, "Hello", (uint)50, (ulong)5, 'a' });
+                writer.Write("{0} {1} {2} {3} {4}", new object[] { 32, "Hello", (uint)50, (ulong)5, 'a' }.AsSpan());
                 writer.Write(true);
                 writer.Write('a');
                 writer.Write(new char[] { 'a', 'b', 'c', 'd', });
@@ -192,6 +203,25 @@ public class ReadAndWrite
         {
             Console.SetOut(savedStandardOutput);
         }
+    }
+
+    [Fact]
+    [PlatformSpecific(TestPlatforms.iOS | TestPlatforms.MacCatalyst | TestPlatforms.tvOS)]
+    public void TestConsoleWrite()
+    {
+        Stream s = new MemoryStream();
+        TextWriter w = new StreamWriter(s);
+        ((StreamWriter)w).AutoFlush = true;
+        TextReader r = new StreamReader(s);
+        Console.SetOut(w);
+
+        Console.Write("A");
+        Console.Write("B");
+        Console.Write("C");
+
+        s.Position = 0;
+        string line = r.ReadToEnd();
+        Assert.Equal("ABC", line);
     }
 
     private static unsafe void ValidateConsoleEncoding(Encoding encoding)
@@ -258,7 +288,7 @@ public class ReadAndWrite
     }
 
     [Fact]
-    [PlatformSpecific(~TestPlatforms.Browser)]
+    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.MacCatalyst | TestPlatforms.tvOS, "Not supported on Browser, iOS, MacCatalyst, or tvOS.")]
     public static unsafe void OutputEncodingPreamble()
     {
         Encoding curEncoding = Console.OutputEncoding;
@@ -281,7 +311,7 @@ public class ReadAndWrite
     }
 
     [Fact]
-    [PlatformSpecific(~TestPlatforms.Browser)]
+    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.MacCatalyst | TestPlatforms.tvOS, "Not supported on Browser, iOS, MacCatalyst, or tvOS.")]
     public static unsafe void OutputEncoding()
     {
         Encoding curEncoding = Console.OutputEncoding;
@@ -349,7 +379,7 @@ public class ReadAndWrite
     };
 
     [Fact]
-    [PlatformSpecific(~TestPlatforms.Browser)]
+    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.MacCatalyst | TestPlatforms.tvOS, "Not supported on Browser, iOS, MacCatalyst, or tvOS.")]
     public static void ReadAndReadLine()
     {
         TextWriter savedStandardOutput = Console.Out;
@@ -413,5 +443,21 @@ public class ReadAndWrite
     public static void OpenStandardError_NegativeBufferSize_ThrowsArgumentOutOfRangeException()
     {
         AssertExtensions.Throws<ArgumentOutOfRangeException>("bufferSize", () => Console.OpenStandardError(-1));
+    }
+
+    [Fact]
+    [SkipOnPlatform(TestPlatforms.Browser | TestPlatforms.iOS | TestPlatforms.MacCatalyst | TestPlatforms.tvOS, "Not supported on Browser, iOS, MacCatalyst, or tvOS.")]
+    public static async Task FlushOnStreams_Nop()
+    {
+        using Stream input = Console.OpenStandardInput();
+        using Stream output = Console.OpenStandardOutput();
+        using Stream error = Console.OpenStandardError();
+
+        foreach (Stream s in new[] { input, output, error })
+        {
+            s.Flush();
+            await s.FlushAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await s.FlushAsync(new CancellationToken(canceled: true)));
+        }
     }
 }

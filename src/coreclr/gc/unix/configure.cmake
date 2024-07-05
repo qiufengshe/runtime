@@ -1,6 +1,15 @@
+include(CheckCXXSourceCompiles)
+include(CheckCXXSourceRuns)
+include(CheckCXXSymbolExists)
+include(CheckFunctionExists)
+include(CheckPrototypeDefinition)
+include(CheckIncludeFiles)
+include(CheckStructHasMember)
+include(CheckTypeSize)
+include(CheckLibraryExists)
+
 check_include_files(sys/time.h HAVE_SYS_TIME_H)
 check_include_files(sys/mman.h HAVE_SYS_MMAN_H)
-check_include_files(numa.h HAVE_NUMA_H)
 check_include_files(pthread_np.h HAVE_PTHREAD_NP_H)
 
 check_function_exists(vm_allocate HAVE_VM_ALLOCATE)
@@ -18,8 +27,13 @@ check_cxx_source_compiles("
     }
     " HAVE_PTHREAD_THREADID_NP)
 
+if(HAVE_PTHREAD_NP_H)
+  set(PTHREAD_NP_H_INCLUDE "#include <pthread_np.h>")
+endif()
+
 check_cxx_source_compiles("
     #include <pthread.h>
+    ${PTHREAD_NP_H_INCLUDE}
     #include <stdint.h>
 
     int main()
@@ -69,16 +83,34 @@ check_cxx_source_runs("
     }
     " HAVE_SCHED_GETCPU)
 
-check_library_exists(pthread pthread_condattr_setclock "" HAVE_PTHREAD_CONDATTR_SETCLOCK)
-
 check_symbol_exists(
     clock_gettime_nsec_np
     time.h
     HAVE_CLOCK_GETTIME_NSEC_NP)
 
+check_cxx_source_runs("
+#include <stdlib.h>
+#include <time.h>
+#include <sys/time.h>
+
+int main()
+{
+  int ret;
+  struct timespec ts;
+  ret = clock_gettime(CLOCK_MONOTONIC, &ts);
+
+  exit(ret);
+}" HAVE_CLOCK_MONOTONIC)
+
+check_symbol_exists(
+    posix_madvise
+    sys/mman.h
+    HAVE_POSIX_MADVISE)
+
 check_library_exists(c sched_getaffinity "" HAVE_SCHED_GETAFFINITY)
 check_library_exists(c sched_setaffinity "" HAVE_SCHED_SETAFFINITY)
 check_library_exists(pthread pthread_create "" HAVE_LIBPTHREAD)
+check_library_exists(c pthread_create "" HAVE_PTHREAD_IN_LIBC)
 
 if (HAVE_LIBPTHREAD)
   set(PTHREAD_LIBRARY pthread)
@@ -86,12 +118,19 @@ elseif (HAVE_PTHREAD_IN_LIBC)
   set(PTHREAD_LIBRARY c)
 endif()
 
+check_library_exists(${PTHREAD_LIBRARY} pthread_condattr_setclock "" HAVE_PTHREAD_CONDATTR_SETCLOCK)
+
 check_library_exists(${PTHREAD_LIBRARY} pthread_setaffinity_np "" HAVE_PTHREAD_SETAFFINITY_NP)
 
 check_cxx_symbol_exists(_SC_PHYS_PAGES unistd.h HAVE__SC_PHYS_PAGES)
 check_cxx_symbol_exists(_SC_AVPHYS_PAGES unistd.h HAVE__SC_AVPHYS_PAGES)
 check_cxx_symbol_exists(swapctl sys/swap.h HAVE_SWAPCTL)
-check_function_exists(sysctl HAVE_SYSCTL)
+if(CLR_CMAKE_TARGET_LINUX)
+  # sysctl is deprecated on Linux
+  set(HAVE_SYSCTL 0)
+else()
+  check_function_exists(sysctl HAVE_SYSCTL)
+endif()
 check_function_exists(sysinfo HAVE_SYSINFO)
 check_function_exists(sysconf HAVE_SYSCONF)
 check_struct_has_member ("struct sysinfo" mem_unit "sys/sysinfo.h" HAVE_SYSINFO_WITH_MEM_UNIT)
@@ -144,5 +183,22 @@ check_prototype_definition(
     0
     ${STATFS_INCLUDES}
     HAVE_NON_LEGACY_STATFS)
+
+set(CMAKE_REQUIRED_LIBRARIES)
+check_cxx_source_runs("
+#include <fcntl.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+
+int main(void) {
+  int fd;
+
+  fd = open(\"/proc/self/statm\", O_RDONLY);
+  if (fd == -1) {
+    exit(1);
+  }
+  exit(0);
+}" HAVE_PROCFS_STATM)
 
 configure_file(${CMAKE_CURRENT_LIST_DIR}/config.gc.h.in ${CMAKE_CURRENT_BINARY_DIR}/config.gc.h)

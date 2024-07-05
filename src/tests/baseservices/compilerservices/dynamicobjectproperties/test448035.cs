@@ -2,21 +2,22 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 using System;
 using System.Runtime.CompilerServices;
+using Xunit;
 
-class Test 
+public class Test_test448035 
 {
     int countdown;
 
-    Test(int n) 
+    Test_test448035(int n) 
     {
         countdown = n;
     }
 
-    ~Test()
+    ~Test_test448035()
     {
         if (countdown > 0)
         { 
-            new Test(countdown - 1).ToString(); 
+            new Test_test448035(countdown - 1).ToString(); 
         }
 
         for (int i = 0; i < 1000; i++)
@@ -28,17 +29,16 @@ class Test
 
     static ConditionalWeakTable<Object,Object> table = new ConditionalWeakTable<Object,Object>();
 
-    public static int Main() 
+    [Fact]
+    public static void TestEntryPoint()
     {
         for (int i = 0; i < 10; i++)
         {
             table.Add(new Object(), new Object());
         }
 
-        new Test(5).ToString();
+        new Test_test448035(5).ToString();
 
-	Console.WriteLine("PASS: Test did not assert");
-	return 100;
+        Console.WriteLine("PASS: Test did not assert");
     }
 }
-    

@@ -3,31 +3,37 @@
 
 using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Microsoft.Extensions.Primitives
 {
     internal static class ThrowHelper
     {
+        [DoesNotReturn]
         internal static void ThrowArgumentNullException(ExceptionArgument argument)
         {
             throw new ArgumentNullException(GetArgumentName(argument));
         }
 
+        [DoesNotReturn]
         internal static void ThrowArgumentOutOfRangeException(ExceptionArgument argument)
         {
             throw new ArgumentOutOfRangeException(GetArgumentName(argument));
         }
 
+        [DoesNotReturn]
         internal static void ThrowArgumentException(ExceptionResource resource)
         {
             throw new ArgumentException(GetResourceText(resource));
         }
 
+        [DoesNotReturn]
         internal static void ThrowInvalidOperationException(ExceptionResource resource)
         {
             throw new InvalidOperationException(GetResourceText(resource));
         }
 
+        [DoesNotReturn]
         internal static void ThrowInvalidOperationException(ExceptionResource resource, params object[] args)
         {
             string message = string.Format(GetResourceText(resource), args);
@@ -52,7 +58,20 @@ namespace Microsoft.Extensions.Primitives
 
         private static string GetResourceText(ExceptionResource resource)
         {
-            return SR.GetResourceString(GetResourceName(resource));
+            Debug.Assert(Enum.IsDefined(typeof(ExceptionResource), resource),
+                "The enum value is not defined, please check the ExceptionResource Enum.");
+
+            switch (resource)
+            {
+                case ExceptionResource.Argument_InvalidOffsetLength: return SR.Argument_InvalidOffsetLength;
+                case ExceptionResource.Argument_InvalidOffsetLengthStringSegment: return SR.Argument_InvalidOffsetLengthStringSegment;
+                case ExceptionResource.Capacity_CannotChangeAfterWriteStarted: return SR.Capacity_CannotChangeAfterWriteStarted;
+                case ExceptionResource.Capacity_NotEnough: return SR.Capacity_NotEnough;
+                case ExceptionResource.Capacity_NotUsedEntirely: return SR.Capacity_NotUsedEntirely;
+                default:
+                    Debug.Fail($"Unexpected resource {resource}");
+                    return "";
+            }
         }
 
         private static string GetArgumentName(ExceptionArgument argument)
@@ -61,14 +80,6 @@ namespace Microsoft.Extensions.Primitives
                 "The enum value is not defined, please check the ExceptionArgument Enum.");
 
             return argument.ToString();
-        }
-
-        private static string GetResourceName(ExceptionResource resource)
-        {
-            Debug.Assert(Enum.IsDefined(typeof(ExceptionResource), resource),
-                "The enum value is not defined, please check the ExceptionResource Enum.");
-
-            return resource.ToString();
         }
     }
 
@@ -83,7 +94,12 @@ namespace Microsoft.Extensions.Primitives
         index,
         value,
         capacity,
-        separators
+        separators,
+        comparisonType,
+        changeTokens,
+        changeTokenProducer,
+        changeTokenConsumer,
+        array,
     }
 
     internal enum ExceptionResource

@@ -6,6 +6,7 @@
 
 using System;
 using System.IO;
+using Xunit;
 
 public class FLAG
 {
@@ -31,9 +32,10 @@ public struct A
 }
 
 
-public class Test
+public class Test_CctorZeroVal03
 {
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
  			
 		try

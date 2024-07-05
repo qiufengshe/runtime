@@ -2,12 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 //
 
-using Microsoft.Xunit.Performance;
 using System;
 using System.Runtime.CompilerServices;
 using Xunit;
-
-[assembly: OptimizeForBenchmarks]
 
 namespace Benchstone.BenchI
 {
@@ -103,22 +100,6 @@ public class TreeInsert
         return (_s.Nodes[500].A == 441);
     }
 
-    [Benchmark]
-    public static void Test()
-    {
-        TreeInsert T = new TreeInsert();
-        foreach (var iteration in Benchmark.Iterations)
-        {
-            using (iteration.StartMeasurement())
-            {
-                for (int i = 1; i <= Iterations; i++)
-                {
-                    T.Bench();
-                }
-            }
-        }
-    }
-
     private static bool TestBase()
     {
         TreeInsert T = new TreeInsert();
@@ -130,7 +111,8 @@ public class TreeInsert
         return result;
     }
 
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         bool result = TestBase();
         return (result ? 100 : -1);

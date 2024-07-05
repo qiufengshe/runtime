@@ -26,21 +26,8 @@
 #include "common.h"
 #include "excep.h"
 
-
-#if 0
-#define INC_COUNTER(_name, _amount) do { \
-    unsigned _count = REGUTIL::GetLong(W("AllocCounter_") _name, 0, NULL, HKEY_CURRENT_USER); \
-    REGUTIL::SetLong(W("AllocCounter_") _name, _count+(_amount), NULL, HKEY_CURRENT_USER); \
- } while (0)
-#define MAX_COUNTER(_name, _amount) do { \
-    unsigned _count = REGUTIL::GetLong(W("AllocCounter_") _name, 0, NULL, HKEY_CURRENT_USER); \
-    REGUTIL::SetLong(W("AllocCounter_") _name, max(_count, (_amount)), NULL, HKEY_CURRENT_USER); \
- } while (0)
-#else
 #define INC_COUNTER(_name, _amount)
 #define MAX_COUNTER(_name, _amount)
-#endif
-
 
 StackingAllocator::StackingAllocator()
 {
@@ -69,7 +56,7 @@ StackingAllocator::InitialStackBlock::InitialStackBlock()
 {
     m_initialBlockHeader.m_Next = NULL;
     m_initialBlockHeader.m_Length = sizeof(m_dataSpace);
-    INDEBUG(m_initialBlockHeader.m_Sentinal = 0);
+    INDEBUG(m_initialBlockHeader.m_Sentinel = 0);
 }
 
 StackingAllocator::~StackingAllocator()
@@ -201,7 +188,7 @@ bool StackingAllocator::AllocNewBlockForBytes(unsigned n)
         // request is larger than MaxBlockSize then allocate exactly that
         // amount.
         unsigned lower = MinBlockSize;
-        size_t allocSize = sizeof(StackBlock) + max(n, min(max(n * 4, lower), MaxBlockSize));
+        size_t allocSize = sizeof(StackBlock) + max(n, min(max(n * 4, lower), (unsigned)MaxBlockSize));
 
         // Allocate the block.
         // <TODO>@todo: Is it worth implementing a non-thread safe standard heap for
@@ -226,7 +213,7 @@ bool StackingAllocator::AllocNewBlockForBytes(unsigned n)
      // the cast below is safe because b->m_Length is less than MaxBlockSize (4096)
      m_BytesLeft = static_cast<unsigned>(b->m_Length);
 
-     INDEBUG(b->m_Sentinal = 0);
+     INDEBUG(b->m_Sentinel = 0);
 
      RETURN true;
 }
@@ -302,7 +289,7 @@ void StackingAllocator::Collapse(void *CheckpointMarker)
     }
 
     // Cache contents of checkpoint, we can potentially deallocate it in the
-    // next step (if a new block had to be allocated to accomodate the
+    // next step (if a new block had to be allocated to accommodate the
     // checkpoint).
     StackBlock *pOldBlock = c->m_OldBlock;
     unsigned iOldBytesLeft = c->m_OldBytesLeft;
@@ -328,7 +315,7 @@ void StackingAllocator::Validate(StackBlock *block, void* spot)
     if (!block)
         return;
     _ASSERTE(m_InitialBlock.m_initialBlockHeader.m_Length == sizeof(m_InitialBlock.m_dataSpace));
-    Sentinal* ptr = block->m_Sentinal;
+    Sentinel* ptr = block->m_Sentinel;
     _ASSERTE(spot);
     while(ptr >= spot)
     {
@@ -339,11 +326,11 @@ void StackingAllocator::Validate(StackBlock *block, void* spot)
             // has a return string buffer!.  This usually means the end
             // programmer did not allocate a big enough buffer before passing
             // it to the PINVOKE method.
-        if (ptr->m_Marker1 != Sentinal::marker1Val)
+        if (ptr->m_Marker1 != Sentinel::marker1Val)
             _ASSERTE(!"Memory overrun!! May be bad buffer passed to PINVOKE. turn on logging LF_STUBS level 6 to find method");
         ptr = ptr->m_Next;
     }
-    block->m_Sentinal = ptr;
+    block->m_Sentinel = ptr;
 }
 #endif // _DEBUG
 
@@ -412,7 +399,7 @@ void * __cdecl operator new[](size_t n, StackingAllocator * alloc)
     return retval;
 }
 
-void * __cdecl operator new(size_t n, StackingAllocator * alloc, const NoThrow&) throw()
+void * __cdecl operator new(size_t n, StackingAllocator * alloc, const std::nothrow_t&) noexcept
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_FAULT;
@@ -425,7 +412,7 @@ void * __cdecl operator new(size_t n, StackingAllocator * alloc, const NoThrow&)
     return alloc->UnsafeAllocNoThrow((unsigned)n);
 }
 
-void * __cdecl operator new[](size_t n, StackingAllocator * alloc, const NoThrow&) throw()
+void * __cdecl operator new[](size_t n, StackingAllocator * alloc, const std::nothrow_t&) noexcept
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_FAULT;
@@ -440,24 +427,33 @@ void * __cdecl operator new[](size_t n, StackingAllocator * alloc, const NoThrow
     return alloc->UnsafeAllocNoThrow((unsigned)n);
 }
 
+thread_local StackingAllocator* StackingAllocatorHolder::t_currentStackingAllocator = nullptr;
+
 StackingAllocatorHolder::~StackingAllocatorHolder()
 {
     m_pStackingAllocator->Collapse(m_checkpointMarker);
     if (m_owner)
     {
-        m_thread->m_stackLocalAllocator = NULL;
+        t_currentStackingAllocator = NULL;
         m_pStackingAllocator->~StackingAllocator();
     }
 }
 
-StackingAllocatorHolder::StackingAllocatorHolder(StackingAllocator *pStackingAllocator, Thread *pThread, bool owner) :
+StackingAllocatorHolder::StackingAllocatorHolder(StackingAllocator *pStackingAllocator, bool owner) :
     m_pStackingAllocator(pStackingAllocator),
     m_checkpointMarker(pStackingAllocator->GetCheckpoint()),
-    m_thread(pThread),
     m_owner(owner)
 {
+    _ASSERTE(pStackingAllocator != nullptr);
+    _ASSERTE((t_currentStackingAllocator == nullptr) == m_owner);
     if (m_owner)
     {
-        m_thread->m_stackLocalAllocator = pStackingAllocator;
+        t_currentStackingAllocator = pStackingAllocator;
     }
+}
+
+
+StackingAllocator* StackingAllocatorHolder::GetCurrentThreadStackingAllocator()
+{
+    return t_currentStackingAllocator;
 }

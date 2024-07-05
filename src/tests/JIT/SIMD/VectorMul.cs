@@ -4,8 +4,9 @@
 
 using System;
 using System.Numerics;
+using Xunit;
 
-internal partial class VectorTest
+public partial class VectorTest
 {
     private const int Pass = 100;
     private const int Fail = -1;
@@ -92,7 +93,8 @@ internal partial class VectorTest
         }
     }
 
-    private static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         int returnVal = Pass;
         if (VectorMulTest<float>.VectorMul(2, 3, (float)(2 * 3), (float)(2 * 3) * (2 * 3), (float)(3 * 3)) != Pass)
@@ -117,6 +119,10 @@ internal partial class VectorTest
         if (VectorMulTest<uint>.VectorMul(2u, 3u, 2u * 3u, (2u * 3u) * (2u * 3u), (3u * 3u)) != Pass)
             returnVal = Fail;
         if (VectorMulTest<ulong>.VectorMul(2ul, 3ul, 2ul * 3ul, (2ul * 3ul) * (2ul * 3ul), (3ul * 3ul)) != Pass)
+            returnVal = Fail;
+        if (VectorMulTest<nint>.VectorMul(2, 3, (2 * 3), (2 * 3) * (2 * 3), (3 * 3)) != Pass)
+            returnVal = Fail;
+        if (VectorMulTest<nuint>.VectorMul(2u, 3u, 2u * 3u, (2u * 3u) * (2u * 3u), (3u * 3u)) != Pass)
             returnVal = Fail;
 
         JitLog jitLog = new JitLog();

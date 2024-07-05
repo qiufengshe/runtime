@@ -45,56 +45,42 @@
 class ReflectionInvocation {
 
 public:
-    static
-    void QCALLTYPE CompileMethod(MethodDesc * pMD);
-
-    static
-    void QCALLTYPE RunClassConstructor(QCall::TypeHandle pType);
-
-    static
-    void QCALLTYPE RunModuleConstructor(QCall::ModuleHandle pModule);
-
-    static
-    void QCALLTYPE PrepareMethod(MethodDesc* pMD, TypeHandle *pInstantiation, UINT32 cInstantiation);
 
     static FCDECL1(void, PrepareDelegate, Object* delegateUNSAFE);
-    static FCDECL1(void, PrepareContractedDelegate, Object* delegateUNSAFE);
-    static FCDECL0(void, ProbeForSufficientStack);
     static FCDECL0(void, EnsureSufficientExecutionStack);
     static FCDECL0(FC_BOOL_RET, TryEnsureSufficientExecutionStack);
 
     // TypedReference functions, should go somewhere else
     static FCDECL4(void, MakeTypedReference, TypedByRef * value, Object* targetUNSAFE, ArrayBase* fldsUNSAFE, ReflectClassBaseObject *pFieldType);
-    static FCDECL1(Object*, TypedReferenceToObject, TypedByRef * value);
 
 #ifdef FEATURE_COMINTEROP
     static FCDECL8(Object*, InvokeDispMethod, ReflectClassBaseObject* refThisUNSAFE, StringObject* nameUNSAFE, INT32 invokeAttr, Object* targetUNSAFE, PTRArray* argsUNSAFE, PTRArray* byrefModifiersUNSAFE, LCID lcid, PTRArray* namedParametersUNSAFE);
 #endif  // FEATURE_COMINTEROP
     static FCDECL2(void, GetGUID, ReflectClassBaseObject* refThisUNSAFE, GUID * result);
-    static FCDECL2_IV(Object*, CreateEnum, ReflectClassBaseObject *pTypeUNSAFE, INT64 value);
 
     // helper fcalls for invocation
     static FCDECL2(FC_BOOL_RET, CanValueSpecialCast, ReflectClassBaseObject *valueType, ReflectClassBaseObject *targetType);
-    static FCDECL3(Object*, AllocateValueType, ReflectClassBaseObject *targetType, Object *valueUNSAFE, CLR_BOOL fForceTypeChange);
 };
 
-class ReflectionSerialization {
-public:
-    static
-    void QCALLTYPE GetUninitializedObject(QCall::TypeHandle pType, QCall::ObjectHandleOnStack retObject);
-};
+extern "C" void QCALLTYPE ReflectionInvocation_CompileMethod(MethodDesc * pMD);
 
-class ReflectionEnum {
-public:
-    static FCDECL1(Object *, InternalGetEnumUnderlyingType, ReflectClassBaseObject *target);
-    static FCDECL1(INT32, InternalGetCorElementType, Object *pRefThis);
+extern "C" void QCALLTYPE ReflectionInvocation_RunClassConstructor(QCall::TypeHandle pType);
 
-    static
-    void QCALLTYPE GetEnumValuesAndNames(QCall::TypeHandle pEnumType, QCall::ObjectHandleOnStack pReturnValues, QCall::ObjectHandleOnStack pReturnNames, BOOL fGetNames);
+extern "C" void QCALLTYPE ReflectionInvocation_RunModuleConstructor(QCall::ModuleHandle pModule);
 
-    static FCDECL2_IV(Object*, InternalBoxEnum, ReflectClassBaseObject* pEnumType, INT64 value);
-    static FCDECL2(FC_BOOL_RET, InternalEquals, Object *pRefThis, Object* pRefTarget);
-    static FCDECL2(FC_BOOL_RET, InternalHasFlag, Object *pRefThis, Object* pRefFlags);
-};
+extern "C" void QCALLTYPE ReflectionInvocation_PrepareMethod(MethodDesc* pMD, TypeHandle *pInstantiation, UINT32 cInstantiation);
+
+extern "C" void QCALLTYPE ReflectionSerialization_GetCreateUninitializedObjectInfo(QCall::TypeHandle pType, PCODE* ppfnAllocator, void** pvAllocatorFirstArg);
+
+extern "C" void QCALLTYPE ReflectionInvocation_GetBoxInfo(
+    QCall::TypeHandle pType,
+    PCODE* ppfnAllocator,
+    void** pvAllocatorFirstArg,
+    int32_t* pValueOffset,
+    uint32_t* pValueSize);
+
+extern "C" void QCALLTYPE Enum_GetValuesAndNames(QCall::TypeHandle pEnumType, QCall::ObjectHandleOnStack pReturnValues, QCall::ObjectHandleOnStack pReturnNames, BOOL fGetNames);
+
+extern "C" int32_t QCALLTYPE ReflectionInvocation_SizeOf(QCall::TypeHandle pType);
 
 #endif // _REFLECTIONINVOCATION_H_

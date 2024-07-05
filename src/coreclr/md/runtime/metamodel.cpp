@@ -90,7 +90,7 @@ static const char* rDummy3ColNames[] = { "" };
 //-----------------------------------------------------------------------------
 
 // Define the array of Coded Token Definitions.
-#define MiniMdCodedToken(x) {lengthof(CMiniMdBase::mdt##x), CMiniMdBase::mdt##x, #x},
+#define MiniMdCodedToken(x) {ARRAY_SIZE(CMiniMdBase::mdt##x), CMiniMdBase::mdt##x, #x},
 const CCodedTokenDef g_CodedTokens [] = {
     MiniMdCodedTokens()
 };
@@ -98,7 +98,7 @@ const CCodedTokenDef g_CodedTokens [] = {
 
 // Define the array of Table Definitions.
 #undef MiniMdTable
-#define MiniMdTable(x) { { r##x##Cols, lengthof(r##x##Cols), x##Rec::COL_KEY, 0 }, r##x##ColNames, #x},
+#define MiniMdTable(x) { { r##x##Cols, ARRAY_SIZE(r##x##Cols), x##Rec::COL_KEY, 0 }, r##x##ColNames, #x},
 const CMiniTableDefEx g_Tables[TBL_COUNT] = {
     MiniMdTables()
 #ifdef FEATURE_METADATA_EMIT_PORTABLE_PDB
@@ -107,7 +107,7 @@ const CMiniTableDefEx g_Tables[TBL_COUNT] = {
 };
 
 // Define a table descriptor for the obsolete v1.0 GenericParam table definition.
-const CMiniTableDefEx g_Table_GenericParamV1_1 = { { rGenericParamV1_1Cols, lengthof(rGenericParamV1_1Cols), GenericParamV1_1Rec::COL_KEY, 0 }, rGenericParamV1_1ColNames, "GenericParamV1_"};
+const CMiniTableDefEx g_Table_GenericParamV1_1 = { { rGenericParamV1_1Cols, ARRAY_SIZE(rGenericParamV1_1Cols), GenericParamV1_1Rec::COL_KEY, 0 }, rGenericParamV1_1ColNames, "GenericParamV1_"};
 
 
 
@@ -168,7 +168,7 @@ CMiniMdSchema::SaveTo(
 {
     ULONG ulData;   // Bytes stored.
     CMiniMdSchema *pDest = reinterpret_cast<CMiniMdSchema*>(pvData);
-    const unsigned __int64 one = 1;
+    const uint64_t one = 1;
 
     // Make sure the tables fit in the mask.
     _ASSERTE((sizeof(m_maskvalid) * 8) > TBL_COUNT);
@@ -244,7 +244,7 @@ CMiniMdSchema::LoadFrom(
     memcpy((void *)this, (void *)pvData, sizeof(CMiniMdSchemaBase));
     static_cast<CMiniMdSchemaBase*>(this)->ConvertEndianness();
 
-    unsigned __int64 maskvalid = m_maskvalid;
+    uint64_t maskvalid = m_maskvalid;
 
     // Transfer the variable fields.
     memset(m_cRecs, 0, sizeof(m_cRecs));
@@ -444,7 +444,7 @@ CMiniMdBase::encodeToken(
 //*****************************************************************************
 inline BYTE cbRID(ULONG ixMax) { return ixMax > USHRT_MAX ? (BYTE) sizeof(ULONG) : (BYTE) sizeof(USHORT); }
 
-#define _CBTKN(cRecs,tkns) cbRID((cRecs) << m_cb[lengthof(tkns)])
+#define _CBTKN(cRecs,tkns) cbRID((cRecs) << m_cb[ARRAY_SIZE(tkns)])
 
 //*****************************************************************************
 // Constructor.
@@ -717,13 +717,17 @@ CMiniMdBase::InitColsForTable(
                                     // should we write the data into the structure
 {
     const CMiniTableDef *pTemplate;     // Template table definition.
-    CMiniColDef pCols[9];               // The col defs to init.
+    // Mark the array of columns as not allocated (not ALLOCATED_MEMORY_MARKER) for SetNewColumnDefinition
+    const uint8_t MAX_COL_COUNT = 9;
+    BYTE colData[1 + sizeof(CMiniColDef) * MAX_COL_COUNT];
+    colData[0] = 0;
+    CMiniColDef* pCols = BYTEARRAY_TO_COLDES(colData);
     BYTE        iOffset;                // Running size of a record.
     BYTE        iSize;                  // Size of a field.
     HRESULT     hr = S_OK;
 
     _ASSERTE((bExtra == 0) || (bExtra == 1));
-    _ASSERTE(NumItems(pCols) >= pTable->m_cCols);
+    _ASSERTE(MAX_COL_COUNT >= pTable->m_cCols);
 
     bExtra = 0;//<TODO>@FUTURE: save in schema header.  until then use 0.</TODO>
 
@@ -751,7 +755,7 @@ CMiniMdBase::InitColsForTable(
             ULONG iCdTkn = pCols[ixCol].m_Type - iCodedToken;
             ULONG cRecs = 0;
 
-            _ASSERTE(iCdTkn < lengthof(g_CodedTokens));
+            _ASSERTE(iCdTkn < ARRAY_SIZE(g_CodedTokens));
             CCodedTokenDef const *pCTD = &g_CodedTokens[iCdTkn];
 
             // Iterate the token list of this coded token.
@@ -782,7 +786,7 @@ CMiniMdBase::InitColsForTable(
             // definition templates, only if the fixed field columns appear at the beginning
             // of a table record.
             // Initializing StartOffset and Length (4th and 5th columns of the portable PDB
-            // LocalScope table) can cause assertion to fail at this point, since preceeding
+            // LocalScope table) can cause assertion to fail at this point, since preceding
             // column sizes are determined dynamically (2 or 4 bytes for RIDs depending on the
             // number of records) and cannot be compared against the static template.
 #endif
@@ -939,18 +943,18 @@ CMiniMdBase::SwapConstant(
     case ELEMENT_TYPE_I4:
     case ELEMENT_TYPE_U4:
         _ASSERTE(ValueLength == 4);
-        *(__int32 *)pConstant = GET_UNALIGNED_VAL32(pBlobValue);
+        *(int32_t *)pConstant = GET_UNALIGNED_VAL32(pBlobValue);
         break;
     case ELEMENT_TYPE_R4:
         {
-            __int32 Value = GET_UNALIGNED_VAL32(pBlobValue);
+            int32_t Value = GET_UNALIGNED_VAL32(pBlobValue);
             *(float *)pConstant = (float &)Value;
         }
         break;
 
     case ELEMENT_TYPE_R8:
         {
-            __int64 Value = GET_UNALIGNED_VAL64(pBlobValue);
+            int64_t Value = GET_UNALIGNED_VAL64(pBlobValue);
             *(double *)pConstant = (double &) Value;
         }
         break;
@@ -958,7 +962,7 @@ CMiniMdBase::SwapConstant(
     case ELEMENT_TYPE_I8:
     case ELEMENT_TYPE_U8:
         _ASSERTE(ValueLength == 8);
-        *(__int64 *)pConstant = GET_UNALIGNED_VAL64(pBlobValue);
+        *(int64_t *)pConstant = GET_UNALIGNED_VAL64(pBlobValue);
         break;
     case ELEMENT_TYPE_STRING:
         memcpy(pConstant, pBlobValue, ValueLength);
@@ -1084,7 +1088,7 @@ CMiniMdBase::FindCustomAttributeFor(
 {
     HRESULT hr;
     int     ixFound;                // index of some custom value row.
-    ULONG   ulTarget = encodeToken(rid,tkObj,mdtHasCustomAttribute,lengthof(mdtHasCustomAttribute)); // encoded token representing target.
+    ULONG   ulTarget = encodeToken(rid,tkObj,mdtHasCustomAttribute, ARRAY_SIZE(mdtHasCustomAttribute)); // encoded token representing target.
     ULONG   ixCur;                  // Current row being examined.
     mdToken tkFound;                // Type of some custom value row.
     void   *pCur;                   // A custom value entry.
@@ -1107,7 +1111,7 @@ CMiniMdBase::FindCustomAttributeFor(
     {
         // Test the type of the current row.
         tkFound = getIX(pCur, _COLDEF(CustomAttribute,Type));
-        tkFound = decodeToken(tkFound, mdtCustomAttributeType, lengthof(mdtCustomAttributeType));
+        tkFound = decodeToken(tkFound, mdtCustomAttributeType, ARRAY_SIZE(mdtCustomAttributeType));
         if (tkFound == tkType)
         {
             *pFoundRid = ixCur;
@@ -1137,7 +1141,7 @@ CMiniMdBase::FindCustomAttributeFor(
             break;
         // Test the type of the current row.
         tkFound = getIX(pCur, _COLDEF(CustomAttribute,Type));
-        tkFound = decodeToken(tkFound, mdtCustomAttributeType, lengthof(mdtCustomAttributeType));
+        tkFound = decodeToken(tkFound, mdtCustomAttributeType, ARRAY_SIZE(mdtCustomAttributeType));
         if (tkFound == tkType)
         {
             *pFoundRid = ixCur;

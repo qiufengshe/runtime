@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using Xunit;
 
 public interface IGenX<T> 
 {
@@ -21,7 +22,7 @@ struct Gen<T> : IGenX<T[]>, IGenY<T>
   	}
 }
 
-public class Test
+public class Test_MultipleInterface06
 {
 	public static int counter = 0;
 	public static bool result = true;
@@ -36,7 +37,8 @@ public class Test
 	
 	}
 	
-	public static int Main()
+	[Fact]
+	public static int TestEntryPoint()
 	{
 
 		Gen<int> GenInt = new Gen<int>();

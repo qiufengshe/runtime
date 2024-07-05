@@ -165,14 +165,14 @@ inline COUNT_T SArray<ELEMENT, BITWISE_COPY>::GetAllocation() const
 }
 
 template <typename ELEMENT, BOOL BITWISE_COPY>
-inline void SArray<ELEMENT, BITWISE_COPY>::Preallocate(int count) const
+inline void SArray<ELEMENT, BITWISE_COPY>::Preallocate(int count)
 {
     WRAPPER_NO_CONTRACT;
     m_buffer.Preallocate(count * sizeof(ELEMENT));
 }
 
 template <typename ELEMENT, BOOL BITWISE_COPY>
-inline void SArray<ELEMENT, BITWISE_COPY>::Trim() const
+inline void SArray<ELEMENT, BITWISE_COPY>::Trim()
 {
     WRAPPER_NO_CONTRACT;
     m_buffer.Trim();
@@ -247,7 +247,7 @@ inline void SArray<ELEMENT, BITWISE_COPY>::Delete(const Iterator &i, COUNT_T cou
 }
 
 template <typename ELEMENT, BOOL BITWISE_COPY>
-inline void SArray<ELEMENT, BITWISE_COPY>:: Replace(const Iterator &i, COUNT_T deleteCount, COUNT_T insertCount)
+inline void SArray<ELEMENT, BITWISE_COPY>::Replace(const Iterator &i, COUNT_T deleteCount, COUNT_T insertCount)
 {
     WRAPPER_NO_CONTRACT;
     DestructBuffer(i, deleteCount);

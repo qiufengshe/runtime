@@ -3,12 +3,9 @@
 //
 // Newton's method adapted from Conte and De Boor
 
-using Microsoft.Xunit.Performance;
 using System;
 using System.Runtime.CompilerServices;
 using Xunit;
-
-[assembly: OptimizeForBenchmarks]
 
 namespace Benchstone.BenchF
 {
@@ -20,13 +17,8 @@ public static class NewtR
     public const int Iterations = 80000000;
 #endif
 
-    public static volatile object VolatileObject;
-
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void Escape(object obj)
-    {
-        VolatileObject = obj;
-    }
+    private static void Escape(object _) { }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static bool Bench()
@@ -105,27 +97,10 @@ public static class NewtR
         iflag = 2;
     }
 
-    [Benchmark]
-    public static void Test()
-    {
-        foreach (var iteration in Benchmark.Iterations)
-        {
-            using (iteration.StartMeasurement())
-            {
-                Bench();
-            }
-        }
-    }
-
-    private static bool TestBase()
+    [Fact]
+    public static int TestEntryPoint()
     {
         bool result = Bench();
-        return result;
-    }
-
-    public static int Main()
-    {
-        bool result = TestBase();
         return (result ? 100 : -1);
     }
 }

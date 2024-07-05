@@ -1,10 +1,13 @@
-#include "ep-rt-config.h"
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
+#include <eventpipe/ep-rt-config.h>
 
 #ifdef ENABLE_PERFTRACING
-#include "ep-types.h"
-#include "ep.h"
-#include "ep-stack-contents.h"
-#include "ep-rt.h"
+#include <eventpipe/ep-types.h>
+#include <eventpipe/ep.h>
+#include <eventpipe/ep-stack-contents.h>
+#include <eventpipe/ep-rt.h>
 #include "threadsuspend.h"
 
 ep_rt_lock_handle_t _ep_rt_coreclr_config_lock_handle;
@@ -12,7 +15,7 @@ CrstStatic _ep_rt_coreclr_config_lock;
 
 thread_local EventPipeCoreCLRThreadHolderTLS EventPipeCoreCLRThreadHolderTLS::g_threadHolderTLS;
 
-ep_char8_t *_ep_rt_coreclr_diagnostics_cmd_line;
+ep_char8_t *volatile _ep_rt_coreclr_diagnostics_cmd_line;
 
 #ifndef TARGET_UNIX
 uint32_t *_ep_rt_coreclr_proc_group_offsets;
@@ -46,14 +49,14 @@ stack_walk_callback (
 
 	// Get the IP.
 	UINT_PTR control_pc = (UINT_PTR)frame->GetRegisterSet ()->ControlPC;
-	if (control_pc == NULL) {
+	if (control_pc == 0) {
 		if (ep_stack_contents_get_length (stack_contents) == 0) {
 			// This happens for pinvoke stubs on the top of the stack.
 			return SWA_CONTINUE;
 		}
 	}
 
-	EP_ASSERT (control_pc != NULL);
+	EP_ASSERT (control_pc != 0);
 
 	// Add the IP to the captured stack.
 	ep_stack_contents_append (stack_contents, control_pc, frame->GetFunction ());
@@ -70,10 +73,6 @@ ep_rt_coreclr_walk_managed_stack_for_thread (
 	STATIC_CONTRACT_NOTHROW;
 	EP_ASSERT (thread != NULL);
 	EP_ASSERT (stack_contents != NULL);
-
-	// Calling into StackWalkFrames in preemptive mode violates the host contract,
-	// but this contract is not used on CoreCLR.
-	CONTRACT_VIOLATION (HostViolation);
 
 	// Before we call into StackWalkFrames we need to mark GC_ON_TRANSITIONS as FALSE
 	// because under GCStress runs (GCStress=0x3), a GC will be triggered for every transition,

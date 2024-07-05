@@ -8,7 +8,7 @@
 #include "ilasmpch.h"
 #include "assembler.h"
 
-Method::Method(Assembler *pAssembler, Class *pClass, __in __nullterminated char *pszName, BinStr* pbsSig, DWORD Attr)
+Method::Method(Assembler *pAssembler, Class *pClass, _In_ __nullterminated char *pszName, BinStr* pbsSig, DWORD Attr)
 {
 
     // default values
@@ -35,6 +35,8 @@ Method::Method(Assembler *pAssembler, Class *pClass, __in __nullterminated char 
     m_pbsBody = NULL;
     m_fNewBody = TRUE;
     m_fNew = TRUE;
+    m_FirstDocument = NULL;
+    m_HasMultipleDocuments = FALSE;
 
     // move the PInvoke descriptor (if any) from Assembler
     // (Assembler gets the descriptor BEFORE it calls new Method)

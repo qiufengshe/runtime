@@ -47,19 +47,22 @@ if(CLR_CMAKE_TARGET_WIN32)
     advapi32.lib)
 endif(CLR_CMAKE_TARGET_WIN32)
 
+add_definitions(-DVERIFY_HEAP)
+
 if(CLR_CMAKE_TARGET_WIN32)
     list(APPEND SOURCES
         ../windows/gcenv.windows.cpp)
     add_definitions(-DUNICODE)
+    add_compile_definitions(NOMINMAX)
 else()
     list(APPEND SOURCES
         ../gcenv.unix.cpp)
 endif()
 
-_add_executable(gcsample
+add_executable_clr(gcsample
     ${SOURCES}
 )
 
 if(CLR_CMAKE_TARGET_WIN32)
-    target_link_libraries(gcsample ${GC_LINK_LIBRARIES})
+    target_link_libraries(gcsample PRIVATE ${GC_LINK_LIBRARIES})
 endif()

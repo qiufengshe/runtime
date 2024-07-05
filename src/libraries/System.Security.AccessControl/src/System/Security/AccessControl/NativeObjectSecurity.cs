@@ -8,7 +8,6 @@
 **
 ===========================================================*/
 
-using Microsoft.Win32;
 using System;
 using System.Collections;
 using System.Diagnostics;
@@ -17,6 +16,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Principal;
+using Microsoft.Win32;
 using FileNotFoundException = System.IO.FileNotFoundException;
 
 namespace System.Security.AccessControl
@@ -345,10 +345,7 @@ namespace System.Security.AccessControl
 
         protected void Persist(string name, AccessControlSections includeSections, object? exceptionContext)
         {
-            if (name == null)
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
+            ArgumentNullException.ThrowIfNull(name);
 
             Persist(name, null, includeSections, exceptionContext);
         }
@@ -366,10 +363,7 @@ namespace System.Security.AccessControl
 
         protected void Persist(SafeHandle handle, AccessControlSections includeSections, object? exceptionContext)
         {
-            if (handle == null)
-            {
-                throw new ArgumentNullException(nameof(handle));
-            }
+            ArgumentNullException.ThrowIfNull(handle);
 
             Persist(null, handle, includeSections, exceptionContext);
         }

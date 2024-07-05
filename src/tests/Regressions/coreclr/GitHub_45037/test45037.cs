@@ -1,6 +1,10 @@
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Xunit;
 
 public abstract class Base<T>
 {
@@ -41,14 +45,13 @@ class Child<T> : Parent where T : class
 
 class Foo { }
 
-class Program
+public class Program
 {
-    static int Main()
+    [Fact]
+    public static void TestEntryPoint()
     {
         Type[] t = Assembly.GetExecutingAssembly().GetTypes();
         new Child<Foo>();
         new CovariantReturn();
-
-        return 100;
     }
 }

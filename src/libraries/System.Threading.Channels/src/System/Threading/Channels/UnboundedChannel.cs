@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 namespace System.Threading.Channels
 {
     /// <summary>Provides a buffered channel of unbounded capacity.</summary>
-    [DebuggerDisplay("Items={ItemsCountForDebugger}, Closed={ChannelIsClosedForDebugger}")]
+    [DebuggerDisplay("Items = {ItemsCountForDebugger}, Closed = {ChannelIsClosedForDebugger}")]
     [DebuggerTypeProxy(typeof(DebugEnumeratorDebugView<>))]
     internal sealed class UnboundedChannel<T> : Channel<T>, IDebugEnumerable<T>
     {
@@ -37,7 +37,7 @@ namespace System.Threading.Channels
             Writer = new UnboundedChannelWriter(this);
         }
 
-        [DebuggerDisplay("Items={Count}")]
+        [DebuggerDisplay("Items = {Count}")]
         [DebuggerTypeProxy(typeof(DebugEnumeratorDebugView<>))]
         private sealed class UnboundedChannelReader : ChannelReader<T>, IDebugEnumerable<T>
         {
@@ -55,6 +55,8 @@ namespace System.Threading.Channels
             public override Task Completion => _parent._completion.Task;
 
             public override bool CanCount => true;
+
+            public override bool CanPeek => true;
 
             public override int Count => _parent._items.Count;
 
@@ -123,7 +125,10 @@ namespace System.Threading.Channels
                 return false;
             }
 
-            private void CompleteIfDone(UnboundedChannel<T> parent)
+            public override bool TryPeek([MaybeNullWhen(false)] out T item) =>
+                _parent._items.TryPeek(out item);
+
+            private static void CompleteIfDone(UnboundedChannel<T> parent)
             {
                 if (parent._doneWriting != null && parent._items.IsEmpty)
                 {
@@ -186,7 +191,7 @@ namespace System.Threading.Channels
             IEnumerator<T> IDebugEnumerable<T>.GetEnumerator() => _parent._items.GetEnumerator();
         }
 
-        [DebuggerDisplay("Items={ItemsCountForDebugger}")]
+        [DebuggerDisplay("Items = {ItemsCountForDebugger}")]
         [DebuggerTypeProxy(typeof(DebugEnumeratorDebugView<>))]
         private sealed class UnboundedChannelWriter : ChannelWriter<T>, IDebugEnumerable<T>
         {

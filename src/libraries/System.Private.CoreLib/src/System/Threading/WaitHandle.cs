@@ -3,6 +3,7 @@
 
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.Tracing;
 using Microsoft.Win32.SafeHandles;
 
 namespace System.Threading
@@ -35,12 +36,13 @@ namespace System.Threading
         internal const int WaitAbandoned = 0x80;
 
         public const int WaitTimeout = 0x102;
+        internal const int WaitFailed = unchecked((int)0xffffffff);
 
         protected WaitHandle()
         {
         }
 
-        [Obsolete("Use the SafeWaitHandle property instead.")]
+        [Obsolete("WaitHandle.Handle has been deprecated. Use the SafeWaitHandle property instead.")]
         public virtual IntPtr Handle
         {
             get => _waitHandle == null ? InvalidHandle : _waitHandle.DangerousGetHandle();
@@ -77,14 +79,8 @@ namespace System.Threading
         internal static int ToTimeoutMilliseconds(TimeSpan timeout)
         {
             long timeoutMilliseconds = (long)timeout.TotalMilliseconds;
-            if (timeoutMilliseconds < -1)
-            {
-                throw new ArgumentOutOfRangeException(nameof(timeout), SR.ArgumentOutOfRange_NeedNonNegOrNegative1);
-            }
-            if (timeoutMilliseconds > int.MaxValue)
-            {
-                throw new ArgumentOutOfRangeException(nameof(timeout), SR.ArgumentOutOfRange_LessEqualToIntegerMaxVal);
-            }
+            ArgumentOutOfRangeException.ThrowIfLessThan(timeoutMilliseconds, -1, nameof(timeout));
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(timeoutMilliseconds, int.MaxValue, nameof(timeout));
             return (int)timeoutMilliseconds;
         }
 
@@ -103,37 +99,96 @@ namespace System.Threading
 
         public virtual bool WaitOne(int millisecondsTimeout)
         {
-            if (millisecondsTimeout < -1)
-            {
-                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout), SR.ArgumentOutOfRange_NeedNonNegOrNegative1);
-            }
+            ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1);
 
             return WaitOneNoCheck(millisecondsTimeout);
         }
 
-        private bool WaitOneNoCheck(int millisecondsTimeout)
+        internal bool WaitOneNoCheck(
+            int millisecondsTimeout,
+            bool useTrivialWaits = false,
+            object? associatedObject = null,
+            NativeRuntimeEventSource.WaitHandleWaitSourceMap waitSource = NativeRuntimeEventSource.WaitHandleWaitSourceMap.Unknown)
         {
             Debug.Assert(millisecondsTimeout >= -1);
 
             // The field value is modifiable via the public <see cref="WaitHandle.SafeWaitHandle"/> property, save it locally
             // to ensure that one instance is used in all places in this method
-            SafeWaitHandle waitHandle = _waitHandle ?? throw new ObjectDisposedException(null, SR.ObjectDisposed_Generic);
+            SafeWaitHandle? waitHandle = _waitHandle;
+            ObjectDisposedException.ThrowIf(waitHandle is null, this);
+
+#if FEATURE_WASM_MANAGED_THREADS
+            Thread.AssureBlockingPossible();
+#endif
 
             bool success = false;
             try
             {
-                int waitResult;
-
                 waitHandle.DangerousAddRef(ref success);
 
-                SynchronizationContext? context = SynchronizationContext.Current;
-                if (context != null && context.IsWaitNotificationRequired())
+                int waitResult = WaitFailed;
+
+                // Check if the wait should be forwarded to a SynchronizationContext wait override. Trivial waits don't allow
+                // reentrance or interruption, and are not forwarded.
+                bool usedSyncContextWait = false;
+                if (!useTrivialWaits)
                 {
-                    waitResult = context.Wait(new[] { waitHandle.DangerousGetHandle() }, false, millisecondsTimeout);
+                    SynchronizationContext? context = SynchronizationContext.Current;
+                    if (context != null && context.IsWaitNotificationRequired())
+                    {
+                        usedSyncContextWait = true;
+                        waitResult = context.Wait(new[] { waitHandle.DangerousGetHandle() }, false, millisecondsTimeout);
+                    }
                 }
-                else
+
+                if (!usedSyncContextWait)
                 {
-                    waitResult = WaitOneCore(waitHandle.DangerousGetHandle(), millisecondsTimeout);
+#if !CORECLR // CoreCLR sends the wait events from the native side
+                    bool sendWaitEvents =
+                        millisecondsTimeout != 0 &&
+                        !useTrivialWaits &&
+                        NativeRuntimeEventSource.Log.IsEnabled(
+                            EventLevel.Verbose,
+                            NativeRuntimeEventSource.Keywords.WaitHandleKeyword);
+
+                    // Monitor.Wait is typically a blocking wait. For other waits, when sending the wait events try a
+                    // nonblocking wait first such that the events sent are more likely to represent blocking waits.
+                    bool tryNonblockingWaitFirst =
+                        sendWaitEvents &&
+                        waitSource != NativeRuntimeEventSource.WaitHandleWaitSourceMap.MonitorWait;
+                    if (tryNonblockingWaitFirst)
+                    {
+                        waitResult = WaitOneCore(waitHandle.DangerousGetHandle(), 0 /* millisecondsTimeout */, useTrivialWaits);
+                        if (waitResult == WaitTimeout)
+                        {
+                            // Do a full wait and send the wait events
+                            tryNonblockingWaitFirst = false;
+                        }
+                        else
+                        {
+                            // The nonblocking wait was successful, don't send the wait events
+                            sendWaitEvents = false;
+                        }
+                    }
+
+                    if (sendWaitEvents)
+                    {
+                        NativeRuntimeEventSource.Log.WaitHandleWaitStart(waitSource, associatedObject ?? this);
+                    }
+
+                    // When tryNonblockingWaitFirst is true, we have a final wait result from the nonblocking wait above
+                    if (!tryNonblockingWaitFirst)
+#endif
+                    {
+                        waitResult = WaitOneCore(waitHandle.DangerousGetHandle(), millisecondsTimeout, useTrivialWaits);
+                    }
+
+#if !CORECLR // CoreCLR sends the wait events from the native side
+                    if (sendWaitEvents)
+                    {
+                        NativeRuntimeEventSource.Log.WaitHandleWaitStop();
+                    }
+#endif
                 }
 
                 if (waitResult == WaitAbandoned)
@@ -176,7 +231,7 @@ namespace System.Threading
 
         /// <summary>
         /// Obtains all of the corresponding safe wait handles and adds a ref to each. Since the <see cref="SafeWaitHandle"/>
-        /// property is publically modifiable, this makes sure that we add and release refs one the same set of safe wait
+        /// property is publicly modifiable, this makes sure that we add and release refs one the same set of safe wait
         /// handles to keep them alive during a multi-wait operation.
         /// </summary>
         private static void ObtainSafeWaitHandles(
@@ -196,12 +251,11 @@ namespace System.Threading
                     WaitHandle waitHandle = waitHandles[i];
                     if (waitHandle == null)
                     {
-                        throw new ArgumentNullException("waitHandles[" + i + ']', SR.ArgumentNull_ArrayElement);
+                        throw new ArgumentNullException($"waitHandles[{i}]", SR.ArgumentNull_ArrayElement);
                     }
 
-                    SafeWaitHandle safeWaitHandle = waitHandle._waitHandle ??
-                        // Throw ObjectDisposedException for backward compatibility even though it is not representative of the issue
-                        throw new ObjectDisposedException(null, SR.ObjectDisposed_Generic);
+                    SafeWaitHandle? safeWaitHandle = waitHandle._waitHandle;
+                    ObjectDisposedException.ThrowIf(safeWaitHandle is null, waitHandle); // throw ObjectDisposedException for backward compatibility even though it is not representative of the issue
 
                     lastSafeWaitHandle = safeWaitHandle;
                     lastSuccess = false;
@@ -240,10 +294,7 @@ namespace System.Threading
 
         private static int WaitMultiple(WaitHandle[] waitHandles, bool waitAll, int millisecondsTimeout)
         {
-            if (waitHandles == null)
-            {
-                throw new ArgumentNullException(nameof(waitHandles), SR.ArgumentNull_Waithandles);
-            }
+            ArgumentNullException.ThrowIfNull(waitHandles);
 
             return WaitMultiple(new ReadOnlySpan<WaitHandle>(waitHandles), waitAll, millisecondsTimeout);
         }
@@ -258,10 +309,7 @@ namespace System.Threading
             {
                 throw new NotSupportedException(SR.NotSupported_MaxWaitHandles);
             }
-            if (millisecondsTimeout < -1)
-            {
-                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout), SR.ArgumentOutOfRange_NeedNonNegOrNegative1);
-            }
+            ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1);
 
             SynchronizationContext? context = SynchronizationContext.Current;
             bool useWaitContext = context != null && context.IsWaitNotificationRequired();
@@ -353,30 +401,70 @@ namespace System.Threading
             return waitResult;
         }
 
+        internal static int WaitMultipleIgnoringSyncContext(Span<IntPtr> handles, bool waitAll, int millisecondsTimeout)
+        {
+            int waitResult = WaitFailed;
+
+#if !CORECLR // CoreCLR sends the wait events from the native side
+            bool sendWaitEvents =
+                millisecondsTimeout != 0 &&
+                NativeRuntimeEventSource.Log.IsEnabled(
+                    EventLevel.Verbose,
+                    NativeRuntimeEventSource.Keywords.WaitHandleKeyword);
+
+            // When sending the wait events try a nonblocking wait first such that the events sent are more likely to
+            // represent blocking waits
+            bool tryNonblockingWaitFirst = sendWaitEvents;
+            if (tryNonblockingWaitFirst)
+            {
+                waitResult = WaitMultipleIgnoringSyncContextCore(handles, waitAll, millisecondsTimeout: 0);
+                if (waitResult == WaitTimeout)
+                {
+                    // Do a full wait and send the wait events
+                    tryNonblockingWaitFirst = false;
+                }
+                else
+                {
+                    // The nonblocking wait was successful, don't send the wait events
+                    sendWaitEvents = false;
+                }
+            }
+
+            if (sendWaitEvents)
+            {
+                NativeRuntimeEventSource.Log.WaitHandleWaitStart();
+            }
+
+            // When tryNonblockingWaitFirst is true, we have a final wait result from the nonblocking wait above
+            if (!tryNonblockingWaitFirst)
+#endif
+            {
+                waitResult = WaitMultipleIgnoringSyncContextCore(handles, waitAll, millisecondsTimeout);
+            }
+
+#if !CORECLR // CoreCLR sends the wait events from the native side
+            if (sendWaitEvents)
+            {
+                NativeRuntimeEventSource.Log.WaitHandleWaitStop();
+            }
+#endif
+
+            return waitResult;
+        }
+
         private static bool SignalAndWait(WaitHandle toSignal, WaitHandle toWaitOn, int millisecondsTimeout)
         {
-            if (toSignal == null)
-            {
-                throw new ArgumentNullException(nameof(toSignal));
-            }
-            if (toWaitOn == null)
-            {
-                throw new ArgumentNullException(nameof(toWaitOn));
-            }
-            if (millisecondsTimeout < -1)
-            {
-                throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout), SR.ArgumentOutOfRange_NeedNonNegOrNegative1);
-            }
+            ArgumentNullException.ThrowIfNull(toSignal);
+            ArgumentNullException.ThrowIfNull(toWaitOn);
+
+            ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1);
 
             // The field value is modifiable via the public <see cref="WaitHandle.SafeWaitHandle"/> property, save it locally
             // to ensure that one instance is used in all places in this method
             SafeWaitHandle? safeWaitHandleToSignal = toSignal._waitHandle;
             SafeWaitHandle? safeWaitHandleToWaitOn = toWaitOn._waitHandle;
-            if (safeWaitHandleToSignal == null || safeWaitHandleToWaitOn == null)
-            {
-                // Throw ObjectDisposedException for backward compatibility even though it is not be representative of the issue
-                throw new ObjectDisposedException(null, SR.ObjectDisposed_Generic);
-            }
+            ObjectDisposedException.ThrowIf(safeWaitHandleToSignal is null, toSignal); // throw ObjectDisposedException for backward compatibility even though it is not representative of the issue
+            ObjectDisposedException.ThrowIf(safeWaitHandleToWaitOn is null, toWaitOn);
 
             bool successSignal = false, successWait = false;
             try
@@ -409,6 +497,13 @@ namespace System.Threading
             }
         }
 
+        internal static void ThrowInvalidHandleException()
+        {
+            var ex = new InvalidOperationException(SR.InvalidOperation_InvalidHandle);
+            ex.HResult = HResults.E_HANDLE;
+            throw ex;
+        }
+
         public virtual bool WaitOne(TimeSpan timeout) => WaitOneNoCheck(ToTimeoutMilliseconds(timeout));
         public virtual bool WaitOne() => WaitOneNoCheck(-1);
         public virtual bool WaitOne(int millisecondsTimeout, bool exitContext) => WaitOne(millisecondsTimeout);
@@ -429,6 +524,8 @@ namespace System.Threading
             WaitMultiple(waitHandles, false, millisecondsTimeout);
         internal static int WaitAny(ReadOnlySpan<SafeWaitHandle> safeWaitHandles, int millisecondsTimeout) =>
             WaitAnyMultiple(safeWaitHandles, millisecondsTimeout);
+        internal static int WaitAny(ReadOnlySpan<WaitHandle> waitHandles, int millisecondsTimeout) =>
+            WaitMultiple(waitHandles, false, millisecondsTimeout);
         public static int WaitAny(WaitHandle[] waitHandles, TimeSpan timeout) =>
             WaitMultiple(waitHandles, false, ToTimeoutMilliseconds(timeout));
         public static int WaitAny(WaitHandle[] waitHandles) =>

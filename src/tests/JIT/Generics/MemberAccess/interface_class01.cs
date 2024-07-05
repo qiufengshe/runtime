@@ -3,6 +3,7 @@
 //
 
 using System;
+using Xunit;
 
 interface IGen<T>
 {
@@ -58,9 +59,10 @@ class Gen<T> : IGen<T>
 
 }
 
-public class Test
+public class Test_interface_class01
 {
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         int ret = 100;
 

@@ -35,7 +35,7 @@ void DumpIL_RemoveFullPath(SString &strTokenFormatting)
     SString::Iterator leftBracket = strTokenFormatting.Begin();
 
     // Find the first '[' in the string.
-    while ((leftBracket != end) && (*leftBracket != W('[')))
+    while ((leftBracket != end) && (*leftBracket != '['))
     {
         ++leftBracket;
     }
@@ -44,8 +44,8 @@ void DumpIL_RemoveFullPath(SString &strTokenFormatting)
     {
         SString::Iterator lastSlash = strTokenFormatting.End() - 1;
 
-        // Find the last '\\' in the string.
-        while ((lastSlash != leftBracket) && (*lastSlash != W('\\')))
+        // Find the last directory separator character ('\\' on Windows, '/' on Unix) in the string.
+        while ((lastSlash != leftBracket) && (*lastSlash != DIRECTORY_SEPARATOR_CHAR_A))
         {
             --lastSlash;
         }
@@ -78,7 +78,6 @@ void ILStubLinker::DumpIL_FormatToken(mdToken token, SString &strTokenFormatting
             pvLookupRetVal = typeHnd.AsPtr();
             CONSISTENCY_CHECK(!typeHnd.IsNull());
 
-            SString typeName;
             MethodTable *pMT = NULL;
             if (typeHnd.IsTypeDesc())
             {
@@ -91,11 +90,12 @@ void ILStubLinker::DumpIL_FormatToken(mdToken token, SString &strTokenFormatting
             }
 
             // AppendType handles NULL correctly
+            SString typeName;
             TypeString::AppendType(typeName, TypeHandle(pMT));
 
             if (pMT && typeHnd.IsNativeValueType())
                 typeName.Append(W("_NativeValueType"));
-            strTokenFormatting.Set(typeName);
+            typeName.ConvertToUTF8(strTokenFormatting);
         }
         else if (TypeFromToken(token) == mdtFieldDef)
         {
@@ -106,8 +106,7 @@ void ILStubLinker::DumpIL_FormatToken(mdToken token, SString &strTokenFormatting
             SString typeName;
             TypeString::AppendType(typeName, TypeHandle(pFD->GetApproxEnclosingMethodTable()));
 
-            SString strFieldName(SString::Utf8, pFD->GetName());
-            strTokenFormatting.Printf(W("%s::%s"), typeName.GetUnicode(), strFieldName.GetUnicode());
+            strTokenFormatting.Printf("%s::%s", typeName.GetUTF8(), pFD->GetName());
         }
         else if (TypeFromToken(token) == mdtModule)
         {
@@ -117,7 +116,7 @@ void ILStubLinker::DumpIL_FormatToken(mdToken token, SString &strTokenFormatting
         {
             CQuickBytes qbTargetSigBytes;
             PCCOR_SIGNATURE pSig;
-            DWORD cbSig;
+            uint32_t cbSig;
 
             if (token == TOKEN_ILSTUB_TARGET_SIG)
             {
@@ -141,13 +140,13 @@ void ILStubLinker::DumpIL_FormatToken(mdToken token, SString &strTokenFormatting
         }
         else
         {
-            strTokenFormatting.Printf(W("%d"), token);
+            strTokenFormatting.Printf("%d", token);
         }
         DumpIL_RemoveFullPath(strTokenFormatting);
     }
     EX_CATCH
     {
-        strTokenFormatting.Printf(W("%d"), token);
+        strTokenFormatting.Printf("%d", token);
     }
     EX_END_CATCH(SwallowAllExceptions)
 }
@@ -466,11 +465,11 @@ ILStubLinker::LogILInstruction(
 
     if (isLabeled)
     {
-        strLabel.Printf(W("IL_%04x:"), curOffset);
+        strLabel.Printf("IL_%04x:", (uint32_t)curOffset);
     }
     else
     {
-        strLabel.Set(W("        "));
+        strLabel.SetUTF8("        ");
     }
 
     //
@@ -479,12 +478,8 @@ ILStubLinker::LogILInstruction(
     SString strOpcode;
 
     ILCodeStream::ILInstrEnum instr = (ILCodeStream::ILInstrEnum)pInstruction->uInstruction;
-    size_t      cbOpcodeName = strlen(s_rgOpcodeNames[instr]);
-    SString strOpcodeName;
-    strOpcodeName.SetUTF8(s_rgOpcodeNames[instr]);
     // Set the width of the opcode to 15.
-    strOpcode.Set(W("               "));
-    strOpcode.Replace(strOpcode.Begin(), (COUNT_T)cbOpcodeName, strOpcodeName);
+    strOpcode.Printf("%-15s", s_rgOpcodeNames[instr]);
 
     //
     // format argument
@@ -502,13 +497,11 @@ ILStubLinker::LogILInstruction(
     {
         size_t branchDistance = (size_t)pInstruction->uArg;
         size_t targetOffset = curOffset + s_rgbOpcodeSizes[instr] + branchDistance;
-        strArgument.Printf(W("IL_%04x"), targetOffset);
+        strArgument.Printf("IL_%04x", (uint32_t)targetOffset);
     }
     else if ((ILCodeStream::ILInstrEnum)CEE_NOP == instr)
     {
-        SString strInstruction;
-        strInstruction.Printf("%s", (char *)pInstruction->uArg);
-        strInstruction.ConvertToUnicode(strArgument);
+        strArgument.Printf("%s", (char *)pInstruction->uArg);
     }
     else
     {
@@ -520,11 +513,11 @@ ILStubLinker::LogILInstruction(
         case ShortInlineVar:
         case ShortInlineI:
         case InlineI:
-            strArgument.Printf(W("0x%x"), pInstruction->uArg);
+            strArgument.Printf("0x%p", pInstruction->uArg);
             break;
 
         case InlineI8:
-            strArgument.Printf(W("0x%p"), (void *)pInstruction->uArg);
+            strArgument.Printf("0x%llx", (uint64_t)pInstruction->uArg);
             break;
 
         case InlineMethod:
@@ -536,7 +529,7 @@ ILStubLinker::LogILInstruction(
         case InlineTok:
             // No token value when we dump IL for ETW
             if (pDumpILStubCode == NULL)
-                strArgument.Printf(W("0x%08x"), pInstruction->uArg);
+                strArgument.Printf("0x%08p", pInstruction->uArg);
 
             // Dump to szTokenNameBuffer if logging, otherwise dump to szArgumentBuffer to avoid an extra space because we are omitting the token
             _ASSERTE(FitsIn<mdToken>(pInstruction->uArg));
@@ -554,17 +547,13 @@ ILStubLinker::LogILInstruction(
     //
     if (pDumpILStubCode)
     {
-        pDumpILStubCode->AppendPrintf(W("%s /*(%2d)*/ %s %s %s\n"), strLabel.GetUnicode(), iCurStack, strOpcode.GetUnicode(),
-            strArgument.GetUnicode(), strTokenName.GetUnicode());
+        pDumpILStubCode->AppendPrintf("%s /*(%2d)*/ %s %s %s\n", strLabel.GetUTF8(), iCurStack, strOpcode.GetUTF8(),
+            strArgument.GetUTF8(), strTokenName.GetUTF8());
     }
     else
     {
-        StackScratchBuffer strLabelBuffer;
-        StackScratchBuffer strOpcodeBuffer;
-        StackScratchBuffer strArgumentBuffer;
-        StackScratchBuffer strTokenNameBuffer;
-        LOG((LF_STUBS, LL_INFO1000, "%s (%2d) %s %s %s\n", strLabel.GetUTF8(strLabelBuffer), iCurStack, \
-            strOpcode.GetUTF8(strOpcodeBuffer), strArgument.GetUTF8(strArgumentBuffer), strTokenName.GetUTF8(strTokenNameBuffer)));
+        LOG((LF_STUBS, LL_INFO1000, "%s (%2d) %s %s %s\n", strLabel.GetUTF8(), iCurStack, \
+            strOpcode.GetUTF8(), strArgument.GetUTF8(), strTokenName.GetUTF8()));
     }
 } // ILStubLinker::LogILInstruction
 
@@ -620,11 +609,11 @@ ILStubLinker::LogILStubWorker(
     {
         if (pDumpILStubCode)
         {
-            pDumpILStubCode->AppendPrintf(W("IL_%04x:\n"), *pcbCode);
+            pDumpILStubCode->AppendPrintf("IL_%04x:\n", (uint32_t)*pcbCode);
         }
         else
         {
-            LOG((LF_STUBS, LL_INFO1000, "IL_%04x:\n", *pcbCode));
+            LOG((LF_STUBS, LL_INFO1000, "IL_%04zx:\n", *pcbCode));
         }
     }
 }
@@ -1247,6 +1236,11 @@ void ILCodeStream::EmitCLT_UN()
 {
     WRAPPER_NO_CONTRACT;
     Emit(CEE_CLT_UN, -1, 0);
+}
+void ILCodeStream::EmitCONSTRAINED(int token)
+{
+    WRAPPER_NO_CONTRACT;
+    Emit(CEE_CONSTRAINED, 0, token);
 }
 void ILCodeStream::EmitCONV_I()
 {
@@ -2050,7 +2044,7 @@ LocalSigBuilder::GetSig(
     }
     else
     {
-        return NULL;
+        return 0;
     }
 }
 
@@ -2131,7 +2125,7 @@ void FunctionSigBuilder::SetSig(PCCOR_SIGNATURE pSig, DWORD cSig)
     SigPointer sigPtr(pSig, cSig);
 
     // 1) calling convention
-    ULONG callConv;
+    uint32_t callConv;
     IfFailThrow(sigPtr.GetCallingConvInfo(&callConv));
     SetCallingConv((CorCallingConvention)callConv);
 
@@ -2245,7 +2239,7 @@ FunctionSigBuilder::GetSig(
     }
     else
     {
-        return NULL;
+        return 0;
     }
 }
 
@@ -2322,7 +2316,7 @@ static BOOL SigHasVoidReturnType(const Signature &signature)
 
     SigPointer ptr = signature.CreateSigPointer();
 
-    ULONG data;
+    uint32_t data;
     IfFailThrow(ptr.GetCallingConvInfo(&data));
     // Skip number of type arguments
     if (data & IMAGE_CEE_CS_CALLCONV_GENERIC)
@@ -2400,7 +2394,7 @@ ILStubLinker::ILStubLinker(Module* pStubSigModule, const Signature &signature, S
         // IMAGE_CEE_CS_CALLCONV_HASTHIS.
         //
 
-        ULONG   uStubCallingConvInfo;
+        uint32_t   uStubCallingConvInfo;
         IfFailThrow(m_managedSigPtr.GetCallingConvInfo(&uStubCallingConvInfo));
 
         m_fHasThis = (flags & ILSTUB_LINKER_FLAG_STUB_HAS_THIS) != 0;
@@ -2410,10 +2404,10 @@ ILStubLinker::ILStubLinker(Module* pStubSigModule, const Signature &signature, S
         // Otherwise, derive one based on the stub's signature.
         //
 
-        ULONG   uCallingConvInfo = uStubCallingConvInfo;
+        uint32_t   uCallingConvInfo = uStubCallingConvInfo;
 
-        ULONG   uCallingConv    = (uCallingConvInfo & IMAGE_CEE_CS_CALLCONV_MASK);
-        ULONG   uNativeCallingConv;
+        uint32_t   uCallingConv    = (uCallingConvInfo & IMAGE_CEE_CS_CALLCONV_MASK);
+        uint32_t   uNativeCallingConv;
 
         if (IMAGE_CEE_CS_CALLCONV_VARARG == uCallingConv)
         {
@@ -2483,7 +2477,7 @@ ILStubLinker::ILStubLinker(Module* pStubSigModule, const Signature &signature, S
         if (uStubCallingConvInfo & IMAGE_CEE_CS_CALLCONV_GENERIC)
             IfFailThrow(m_managedSigPtr.GetData(NULL));    // skip number of type parameters
 
-        ULONG numParams = 0;
+        uint32_t numParams = 0;
         IfFailThrow(m_managedSigPtr.GetData(&numParams));
         // If we are a reverse stub, then the target signature called in the stub
         // is the managed signature. In that case, we calculate the target IL stack delta
@@ -2587,18 +2581,18 @@ void ILStubLinker::GetStubReturnType(LocalDesc* pLoc, Module* pModule)
 {
     STANDARD_VM_CONTRACT;
     SigPointer ptr = m_stubSig.CreateSigPointer();
-    ULONG uCallingConv;
-    int   nTypeArgs = 0;
-    int   nArgs;
+    uint32_t uCallingConv;
+    uint32_t nTypeArgs = 0;
+    uint32_t nArgs;
 
     IfFailThrow(ptr.GetCallingConvInfo(&uCallingConv));
 
     if (uCallingConv & IMAGE_CEE_CS_CALLCONV_GENERIC)
-        IfFailThrow(ptr.GetData((ULONG*)&nTypeArgs));
+        IfFailThrow(ptr.GetData(&nTypeArgs));
 
-    IfFailThrow(ptr.GetData((ULONG*)&nArgs));
+    IfFailThrow(ptr.GetData(&nArgs));
 
-    GetManagedTypeHelper(pLoc, pModule, ptr.GetPtr(), m_pTypeContext, m_pMD);
+    GetManagedTypeHelper(pLoc, pModule, ptr.GetPtr(), m_pTypeContext);
 }
 
 CorCallingConvention ILStubLinker::GetStubTargetCallingConv()
@@ -2645,22 +2639,16 @@ void ILStubLinker::TransformArgForJIT(LocalDesc *pLoc)
 
         case ELEMENT_TYPE_PTR:
         {
-#ifdef TARGET_X86
-            if (pLoc->bIsCopyConstructed)
-            {
-                // The only pointers that we don't transform to ELEMENT_TYPE_I are those that are
-                // ET_TYPE_CMOD_REQD<IsCopyConstructed>/ET_TYPE_CMOD_REQD<NeedsCopyConstructorModifier>
-                // in the original signature. This convention is understood by the UM thunk compiler
-                // (code:UMThunkMarshInfo.CompileNExportThunk) which will generate different thunk code.
-                // Such parameters come from unmanaged by value but must enter the IL stub by reference
-                // because we are not supposed to make a copy.
-            }
-            else
-#endif // TARGET_X86
-            {
-                pLoc->ElementType[0] = ELEMENT_TYPE_I;
-                pLoc->cbType = 1;
-            }
+            // Don't transform pointer types to ELEMENT_TYPE_I. The JIT can handle the correct type information,
+            // and it's required for some cases (such as SwiftError*).
+            break;
+        }
+
+        case ELEMENT_TYPE_BYREF:
+        {
+            // Transform ELEMENT_TYPE_BYREF to ELEMENT_TYPE_PTR to retain the pointed-to type information
+            // while making the type blittable.
+            pLoc->ElementType[0] = ELEMENT_TYPE_PTR;
             break;
         }
 
@@ -2669,13 +2657,13 @@ void ILStubLinker::TransformArgForJIT(LocalDesc *pLoc)
             // JIT will handle structures
             if (pLoc->InternalToken.IsValueType())
             {
-                _ASSERTE(pLoc->InternalToken.IsBlittable());
+                _ASSERTE(pLoc->InternalToken.IsNativeValueType() || !pLoc->InternalToken.GetMethodTable()->ContainsPointers());
                 break;
             }
             FALLTHROUGH;
         }
 
-        // pointers, byrefs, strings, arrays, other ref types -> ELEMENT_TYPE_I
+        // ref types -> ELEMENT_TYPE_I
         default:
         {
             pLoc->ElementType[0] = ELEMENT_TYPE_I;
@@ -2763,6 +2751,88 @@ void ILStubLinker::SetStubTargetCallingConv(CorCallingConvention uNativeCallingC
     }
 }
 
+void ILStubLinker::SetStubTargetCallingConv(CorInfoCallConvExtension callConv)
+{
+    LIMITED_METHOD_CONTRACT;
+    _ASSERTE(callConv != CorInfoCallConvExtension::Managed);
+
+    const CorCallingConvention originalCallingConvention = m_nativeFnSigBuilder.GetCallingConv();
+    if (originalCallingConvention != IMAGE_CEE_CS_CALLCONV_UNMANAGED)
+    {
+        // For performance reasons, we try to encode the calling convention using
+        // the flags-based method if possible before using modopts.
+        switch (callConv)
+        {
+            case CorInfoCallConvExtension::C:
+                m_nativeFnSigBuilder.SetCallingConv(IMAGE_CEE_CS_CALLCONV_C);
+                break;
+            case CorInfoCallConvExtension::Stdcall:
+                m_nativeFnSigBuilder.SetCallingConv(IMAGE_CEE_CS_CALLCONV_STDCALL);
+                break;
+            case CorInfoCallConvExtension::Thiscall:
+                m_nativeFnSigBuilder.SetCallingConv(IMAGE_CEE_CS_CALLCONV_THISCALL);
+                break;
+            case CorInfoCallConvExtension::Fastcall:
+                m_nativeFnSigBuilder.SetCallingConv(IMAGE_CEE_CS_CALLCONV_FASTCALL);
+                break;
+            default:
+                m_nativeFnSigBuilder.SetCallingConv(IMAGE_CEE_CS_CALLCONV_UNMANAGED);
+                break;
+        }
+    }
+
+    // We may have updated the calling convention above, so reread the calling convention
+    // from the signature builder instead of using originalCallingConvention.
+    if (m_nativeFnSigBuilder.GetCallingConv() == IMAGE_CEE_CS_CALLCONV_UNMANAGED)
+    {
+        // In this case we're already using the "Unmanaged" calling convention, so encode the specific callconv
+        // with the requisite modopts for the calling convention.
+        switch (callConv)
+        {
+            case CorInfoCallConvExtension::C:
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_CDECL)));
+                break;
+            case CorInfoCallConvExtension::Stdcall:
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_STDCALL)));
+                break;
+            case CorInfoCallConvExtension::Thiscall:
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_THISCALL)));
+                break;
+            case CorInfoCallConvExtension::Fastcall:
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_FASTCALL)));
+                break;
+            case CorInfoCallConvExtension::CMemberFunction:
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_CDECL)));
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_MEMBERFUNCTION)));
+                break;
+            case CorInfoCallConvExtension::StdcallMemberFunction:
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_STDCALL)));
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_MEMBERFUNCTION)));
+                break;
+            case CorInfoCallConvExtension::FastcallMemberFunction:
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_FASTCALL)));
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_MEMBERFUNCTION)));
+                break;
+            case CorInfoCallConvExtension::Swift:
+                m_nativeFnSigBuilder.AddCallConvModOpt(GetToken(CoreLibBinder::GetClass(CLASS__CALLCONV_SWIFT)));
+                break;
+            default:
+                _ASSERTE("Unknown calling convention. Unable to encode it in the native function pointer signature.");
+                break;
+        }
+    }
+
+    if (!m_fIsReverseStub)
+    {
+        if (originalCallingConvention & CORINFO_CALLCONV_HASTHIS)
+        {
+            // Our calling convention had an implied-this beforehand and now it doesn't.
+            // Account for this in the target stack delta.
+            m_iTargetStackDelta++;
+        }
+    }
+}
+
 static size_t GetManagedTypeForMDArray(LocalDesc* pLoc, Module* pModule, PCCOR_SIGNATURE psigManagedArg, SigTypeContext *pTypeContext)
 {
     CONTRACTL
@@ -2829,7 +2899,7 @@ static size_t GetManagedTypeForMDArray(LocalDesc* pLoc, Module* pModule, PCCOR_S
 
 
 // static
-void ILStubLinker::GetManagedTypeHelper(LocalDesc* pLoc, Module* pModule, PCCOR_SIGNATURE psigManagedArg, SigTypeContext *pTypeContext, MethodDesc *pMD)
+void ILStubLinker::GetManagedTypeHelper(LocalDesc* pLoc, Module* pModule, PCCOR_SIGNATURE psigManagedArg, SigTypeContext *pTypeContext)
 {
     CONTRACTL
     {
@@ -2875,7 +2945,7 @@ void ILStubLinker::GetManagedTypeHelper(LocalDesc* pLoc, Module* pModule, PCCOR_
         case ELEMENT_TYPE_MVAR:
             {
                 IfFailThrow(ptr.GetElemType(NULL)); // skip ET
-                ULONG varNum;
+                uint32_t varNum;
                 IfFailThrowBF(ptr.GetData(&varNum), BFA_BAD_COMPLUS_SIG, pModule);
 
                 DWORD varCount = (eType == ELEMENT_TYPE_VAR ? pTypeContext->m_classInst.GetNumArgs() :
@@ -2978,7 +3048,7 @@ void ILStubLinker::GetStubTargetReturnType(LocalDesc* pLoc, Module* pModule)
     }
     CONTRACTL_END;
 
-    GetManagedTypeHelper(pLoc, pModule, m_nativeFnSigBuilder.GetReturnSig(), m_pTypeContext, NULL);
+    GetManagedTypeHelper(pLoc, pModule, m_nativeFnSigBuilder.GetReturnSig(), m_pTypeContext);
 }
 
 void ILStubLinker::GetStubArgType(LocalDesc* pLoc)
@@ -3005,7 +3075,7 @@ void ILStubLinker::GetStubArgType(LocalDesc* pLoc, Module* pModule)
     }
     CONTRACTL_END;
 
-    GetManagedTypeHelper(pLoc, pModule, m_managedSigPtr.GetPtr(), m_pTypeContext, m_pMD);
+    GetManagedTypeHelper(pLoc, pModule, m_managedSigPtr.GetPtr(), m_pTypeContext);
 }
 
 //---------------------------------------------------------------------------------------
@@ -3057,6 +3127,18 @@ int ILStubLinker::GetToken(MethodDesc* pMD)
     return m_tokenMap.GetToken(pMD);
 }
 
+int ILStubLinker::GetToken(MethodDesc* pMD, mdToken typeSignature)
+{
+    STANDARD_VM_CONTRACT;
+    return m_tokenMap.GetToken(pMD, typeSignature);
+}
+
+int ILStubLinker::GetToken(MethodDesc* pMD, mdToken typeSignature, mdToken methodSignature)
+{
+    STANDARD_VM_CONTRACT;
+    return m_tokenMap.GetToken(pMD, typeSignature, methodSignature);
+}
+
 int ILStubLinker::GetToken(MethodTable* pMT)
 {
     STANDARD_VM_CONTRACT;
@@ -3073,6 +3155,12 @@ int ILStubLinker::GetToken(FieldDesc* pFD)
 {
     STANDARD_VM_CONTRACT;
     return m_tokenMap.GetToken(pFD);
+}
+
+int ILStubLinker::GetToken(FieldDesc* pFD, mdToken typeSignature)
+{
+    STANDARD_VM_CONTRACT;
+    return m_tokenMap.GetToken(pFD, typeSignature);
 }
 
 int ILStubLinker::GetSigToken(PCCOR_SIGNATURE pSig, DWORD cbSig)
@@ -3151,6 +3239,16 @@ int ILCodeStream::GetToken(MethodDesc* pMD)
     STANDARD_VM_CONTRACT;
     return m_pOwner->GetToken(pMD);
 }
+int ILCodeStream::GetToken(MethodDesc* pMD, mdToken typeSignature)
+{
+    STANDARD_VM_CONTRACT;
+    return m_pOwner->GetToken(pMD, typeSignature);
+}
+int ILCodeStream::GetToken(MethodDesc* pMD, mdToken typeSignature, mdToken methodSignature)
+{
+    STANDARD_VM_CONTRACT;
+    return m_pOwner->GetToken(pMD, typeSignature, methodSignature);
+}
 int ILCodeStream::GetToken(MethodTable* pMT)
 {
     STANDARD_VM_CONTRACT;
@@ -3165,6 +3263,11 @@ int ILCodeStream::GetToken(FieldDesc* pFD)
 {
     STANDARD_VM_CONTRACT;
     return m_pOwner->GetToken(pFD);
+}
+int ILCodeStream::GetToken(FieldDesc* pFD, mdToken typeSignature)
+{
+    STANDARD_VM_CONTRACT;
+    return m_pOwner->GetToken(pFD, typeSignature);
 }
 int ILCodeStream::GetSigToken(PCCOR_SIGNATURE pSig, DWORD cbSig)
 {

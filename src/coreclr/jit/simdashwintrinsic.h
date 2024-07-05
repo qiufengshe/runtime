@@ -7,25 +7,22 @@
 enum class SimdAsHWIntrinsicClassId
 {
     Unknown,
-    Vector2,
-    Vector3,
-    Vector4,
-    VectorT128,
-    VectorT256,
+    Vector,
+    VectorT,
 };
 
 enum class SimdAsHWIntrinsicFlag : unsigned int
 {
     None = 0,
 
-    // Indicates compFloatingPointUsed does not need to be set.
-    NoFloatingPointUsed = 0x1,
+    // For SIMDVectorHandle, keep the base type from the result type
+    KeepBaseTypeFromRet = 0x01,
 
-    // Indicates the intrinsic is for an instance method.
-    InstanceMethod = 0x02,
+    // Indicates that side effects need to be spilled for op1
+    SpillSideEffectsOp1 = 0x02,
 
-    // Indicates the operands should be swapped in importation.
-    NeedsOperandsSwapped = 0x04,
+    // Indicates that side effects need to be spilled for op2
+    SpillSideEffectsOp2 = 0x04,
 };
 
 inline SimdAsHWIntrinsicFlag operator~(SimdAsHWIntrinsicFlag value)
@@ -59,14 +56,15 @@ struct SimdAsHWIntrinsicInfo
 
     static const SimdAsHWIntrinsicInfo& lookup(NamedIntrinsic id);
 
-    static NamedIntrinsic lookupId(CORINFO_SIG_INFO* sig,
+    static NamedIntrinsic lookupId(Compiler*         comp,
+                                   CORINFO_SIG_INFO* sig,
                                    const char*       className,
                                    const char*       methodName,
-                                   const char*       enclosingClassName,
-                                   int               sizeOfVectorT);
-    static SimdAsHWIntrinsicClassId lookupClassId(const char* className,
-                                                  const char* enclosingClassName,
-                                                  int         sizeOfVectorT);
+                                   const char*       enclosingClassName);
+
+    static SimdAsHWIntrinsicClassId lookupClassId(Compiler*   comp,
+                                                  const char* className,
+                                                  const char* enclosingClassName);
 
     // Member lookup
 
@@ -107,22 +105,22 @@ struct SimdAsHWIntrinsicInfo
 
     // Flags lookup
 
-    static bool IsFloatingPointUsed(NamedIntrinsic id)
+    static bool KeepBaseTypeFromRet(NamedIntrinsic id)
     {
         SimdAsHWIntrinsicFlag flags = lookupFlags(id);
-        return (flags & SimdAsHWIntrinsicFlag::NoFloatingPointUsed) == SimdAsHWIntrinsicFlag::None;
+        return (flags & SimdAsHWIntrinsicFlag::KeepBaseTypeFromRet) == SimdAsHWIntrinsicFlag::KeepBaseTypeFromRet;
     }
 
-    static bool IsInstanceMethod(NamedIntrinsic id)
+    static bool SpillSideEffectsOp1(NamedIntrinsic id)
     {
         SimdAsHWIntrinsicFlag flags = lookupFlags(id);
-        return (flags & SimdAsHWIntrinsicFlag::InstanceMethod) == SimdAsHWIntrinsicFlag::InstanceMethod;
+        return (flags & SimdAsHWIntrinsicFlag::SpillSideEffectsOp1) == SimdAsHWIntrinsicFlag::SpillSideEffectsOp1;
     }
 
-    static bool NeedsOperandsSwapped(NamedIntrinsic id)
+    static bool SpillSideEffectsOp2(NamedIntrinsic id)
     {
         SimdAsHWIntrinsicFlag flags = lookupFlags(id);
-        return (flags & SimdAsHWIntrinsicFlag::NeedsOperandsSwapped) == SimdAsHWIntrinsicFlag::NeedsOperandsSwapped;
+        return (flags & SimdAsHWIntrinsicFlag::SpillSideEffectsOp2) == SimdAsHWIntrinsicFlag::SpillSideEffectsOp2;
     }
 };
 

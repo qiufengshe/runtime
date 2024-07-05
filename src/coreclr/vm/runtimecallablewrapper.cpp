@@ -31,7 +31,6 @@ class Object;
 #include "eeconfig.h"
 #include "comdelegate.h"
 #include "comcache.h"
-#include "notifyexternals.h"
 #include "../md/compiler/custattr.h"
 #include "olevariant.h"
 #include "interopconverter.h"
@@ -51,7 +50,6 @@ SLIST_HEADER RCW::s_RCWStandbyList;
 #ifdef FEATURE_COMINTEROP_UNMANAGED_ACTIVATION
 #include "interoplibinterface.h"
 
-#ifndef CROSSGEN_COMPILE
 
 void ComClassFactory::ThrowHRMsg(HRESULT hr, DWORD dwMsgResID)
 {
@@ -66,11 +64,11 @@ void ComClassFactory::ThrowHRMsg(HRESULT hr, DWORD dwMsgResID)
 
     SString strMessage;
     SString strResource;
-    WCHAR strClsid[39];
+    WCHAR strClsid[GUID_STR_BUFFER_LEN];
     SString strHRDescription;
 
     // Obtain the textual representation of the HRESULT.
-    StringFromGUID2(m_rclsid, strClsid, sizeof(strClsid) / sizeof(WCHAR));
+    GuidToLPWSTR(m_rclsid, strClsid);
 
     SString strHRHex;
     strHRHex.Printf("%.8x", hr);
@@ -506,11 +504,11 @@ IClassFactory *ComClassFactory::GetIClassFactory()
     {
         SString strMessage;
         SString strResource;
-        WCHAR strClsid[39];
+        WCHAR strClsid[GUID_STR_BUFFER_LEN];
         SString strHRDescription;
 
         // Obtain the textual representation of the HRESULT.
-        StringFromGUID2(m_rclsid, strClsid, sizeof(strClsid) / sizeof(WCHAR));
+        GuidToLPWSTR(m_rclsid, strClsid);
 
         SString strHRHex;
         strHRHex.Printf("%.8x", hr);
@@ -583,11 +581,10 @@ OBJECTREF ComClassFactory::CreateInstance(MethodTable* pMTClass, BOOL ForManaged
 
     return RetObj;
 }
-#endif //#ifndef CROSSGEN_COMPILE
 
 //--------------------------------------------------------------
 // Init the ComClassFactory.
-void ComClassFactory::Init(__in_opt PCWSTR wszServer, MethodTable* pClassMT)
+void ComClassFactory::Init(_In_opt_ PCWSTR wszServer, MethodTable* pClassMT)
 {
     LIMITED_METHOD_CONTRACT;
 
@@ -617,7 +614,6 @@ void ComClassFactory::Cleanup()
 
 #endif // FEATURE_COMINTEROP_UNMANAGED_ACTIVATION
 
-#ifndef CROSSGEN_COMPILE
 //---------------------------------------------------------------------
 // RCW cache, act as the manager for the RCWs
 // uses a hash table to map IUnknown to the corresponding wrappers
@@ -1107,13 +1103,7 @@ VOID RCWCleanupList::CleanupAllWrappers()
 
 VOID RCWCleanupList::CleanupWrappersInCurrentCtxThread(BOOL fWait, BOOL fManualCleanupRequested, BOOL bIgnoreComObjectEagerCleanupSetting)
 {
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
+    STANDARD_VM_CONTRACT;
 
     if (!m_doCleanupInContexts && !fManualCleanupRequested)
         return;
@@ -1237,16 +1227,6 @@ HRESULT RCWCleanupList::ReleaseRCWListInCorrectCtx(LPVOID pData)
 
     LPVOID pCurrCtxCookie = GetCurrentCtxCookie();
 
-    // If we are releasing our IP's as a result of shutdown, we MUST not transition
-    // into cooperative GC mode. This "fix" will prevent us from doing so.
-    if (g_fEEShutDown & ShutDown_Finalize2)
-    {
-        Thread *pThread = GetThread();
-        if (pThread && !FinalizerThread::IsCurrentThreadFinalizer())
-            pThread->SetThreadStateNC(Thread::TSNC_UnsafeSkipEnterCooperative);
-    }
-
-
     // Make sure we're in the right context / apartment.
     // Also - if we've already transitioned once, we don't want to do so again.
     //  If the cookie exists in multiple MTA apartments, and the STA has gone away
@@ -1254,7 +1234,7 @@ HRESULT RCWCleanupList::ReleaseRCWListInCorrectCtx(LPVOID pData)
     //  the MTA context), we will infinitely loop.  So, we short circuit this with ctxTried.
 
     Thread *pHeadThread = pHead->GetSTAThread();
-    BOOL fCorrectThread = (pHeadThread == NULL) ? TRUE : (pHeadThread == GetThread());
+    BOOL fCorrectThread = (pHeadThread == NULL) ? TRUE : (pHeadThread == GetThreadNULLOk());
     BOOL fCorrectCookie = (pCurrCtxCookie == NULL) ? TRUE : (pHead->GetWrapperCtxCookie() == pCurrCtxCookie);
 
     if ( pHead->IsFreeThreaded() || // Avoid context transition if the list is for free threaded RCW
@@ -1276,14 +1256,6 @@ HRESULT RCWCleanupList::ReleaseRCWListInCorrectCtx(LPVOID pData)
             // The only option we have left is to try and clean up the RCW's from the current context.
             ReleaseRCWListRaw(pHead);
         }
-    }
-
-    // Reset the bit indicating we cannot transition into cooperative GC mode.
-    if (g_fEEShutDown & ShutDown_Finalize2)
-    {
-        Thread *pThread = GetThread();
-        if (pThread && !FinalizerThread::IsCurrentThreadFinalizer())
-            pThread->ResetThreadStateNC(Thread::TSNC_UnsafeSkipEnterCooperative);
     }
 
     return S_OK;
@@ -1383,22 +1355,8 @@ RCW* RCW::CreateRCWInternal(IUnknown *pUnk, DWORD dwSyncBlockIndex, DWORD flags,
     }
 
     AppDomain * pAppDomain = GetAppDomain();
-    if(flags & CF_QueryForIdentity)
-    {
-        IUnknown *pUnkTemp = NULL;
-        HRESULT hr = SafeQueryInterfacePreemp(pUnk, IID_IUnknown, &pUnkTemp);
-        LogInteropQI(pUnk, IID_IUnknown, hr, "QI for IID_IUnknown in RCW::CreateRCW");
-        if(SUCCEEDED(hr))
-        {
-            pUnk = pUnkTemp;
-
-        }
-    }
-    else
-    {
-        ULONG cbRef = SafeAddRefPreemp(pUnk);
-        LogInteropAddRef(pUnk, cbRef, "RCWCache::CreateRCW: Addref pUnk because creating new RCW");
-    }
+    ULONG cbRef = SafeAddRefPreemp(pUnk);
+    LogInteropAddRef(pUnk, cbRef, "RCWCache::CreateRCW: Addref pUnk because creating new RCW");
 
     // Make sure we release AddRef-ed pUnk in case of exceptions
     SafeComHolderPreemp<IUnknown> pUnkHolder = pUnk;
@@ -1447,7 +1405,6 @@ void RCW::Initialize(IUnknown* pUnk, DWORD dwSyncBlockIndex, MethodTable *pClass
     // if this thread is an STA thread, then when the STA dies
     // we need to cleanup this wrapper
     m_pCreatorThread  = GetThread();
-    _ASSERTE(m_pCreatorThread != NULL);
 
     m_pRCWCache = RCWCache::GetRCWCache();
 
@@ -1493,9 +1450,9 @@ void RCW::Initialize(IUnknown* pUnk, DWORD dwSyncBlockIndex, MethodTable *pClass
 
     // We can't safely pump here for Releasing (or directly release)
     // if we're currently in a SendMessage.
-    // Also, clients can opt out of this. The option is is a per-thread flag which they can
+    // Also, clients can opt out of this. The option is a per-thread flag which they can
     // set by calling DisableComEagerCleanup on the appropriate thread. Why would they
-    // want to opt out? Because pumping can lead to re-entrancy in in unexpected places.
+    // want to opt out? Because pumping can lead to re-entrancy in unexpected places.
     // If a client decides to opt out, they are required to cleanup RCWs themselves by
     // calling Marshal.CleanupUnusedObjectsInCurrentContext periodically. The best place
     // to make that call is within their own message pump.
@@ -1584,7 +1541,6 @@ void RCW::RemoveMemoryPressure()
         NOTHROW;
         GC_TRIGGERS;
         MODE_PREEMPTIVE;
-        PRECONDITION((GetThread()->m_StateNC & Thread::TSNC_UnsafeSkipEnterCooperative) == 0);
     }
     CONTRACTL_END;
 
@@ -1753,7 +1709,7 @@ void RCW::MinorCleanup()
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        PRECONDITION(GCHeapUtilities::IsGCInProgress() || ( (g_fEEShutDown & ShutDown_SyncBlock) && g_fProcessDetach ));
+        PRECONDITION(GCHeapUtilities::IsGCInProgress() || ( (g_fEEShutDown & ShutDown_SyncBlock) && IsAtProcessExit() ));
     }
     CONTRACTL_END;
 
@@ -1796,7 +1752,6 @@ void RCW::Cleanup()
     // if the wrapper is still in the cache.  Also, if we can't switch to coop mode,
     // we're guaranteed to have already decoupled the RCW from its object.
 #ifdef _DEBUG
-    if (!(GetThread()->m_StateNC & Thread::TSNC_UnsafeSkipEnterCooperative))
     {
         GCX_COOP();
 
@@ -1814,9 +1769,7 @@ void RCW::Cleanup()
         ReleaseAllInterfacesCallBack(this);
 
         // Remove the memory pressure caused by this RCW (if present)
-        // If we're in a shutdown situation, we can ignore the memory pressure.
-        if ((GetThread()->m_StateNC & Thread::TSNC_UnsafeSkipEnterCooperative) == 0 && !g_fForbidEnterEE)
-            RemoveMemoryPressure();
+        RemoveMemoryPressure();
     }
 
 #ifdef _DEBUG
@@ -1890,7 +1843,7 @@ void RCW::CreateDuplicateWrapper(MethodTable *pNewMT, RCWHolder* pNewRCW)
         pNewRCW->InitNoCheck(NewWrapperObj);
 
         // Insert the wrapper into the hashtable. The wrapper will be a duplicate however we
-        // we fix the identity to ensure there is no collison in the hash table & it is required
+        // we fix the identity to ensure there is no collision in the hash table & it is required
         // since the hashtable is used on appdomain unload to determine what RCW's need to released.
         {
             RCWCache::LockHolder lh(pCache);
@@ -2112,9 +2065,7 @@ HRESULT RCW::SafeQueryInterfaceRemoteAware(REFIID iid, IUnknown** ppResUnk)
     return hr;
 }
 
-#endif //#ifndef CROSSGEN_COMPILE
 
-#ifndef CROSSGEN_COMPILE
 // Performs QI for the given interface, optionally instantiating it with the given generic args.
 HRESULT RCW::CallQueryInterface(MethodTable *pMT, Instantiation inst, IID *piid, IUnknown **ppUnk)
 {
@@ -2314,7 +2265,7 @@ HRESULT __stdcall RCW::ReleaseAllInterfacesCallBack(LPVOID pData)
 }
 
 //---------------------------------------------------------------------
-// Helper function called from ReleaseAllInterfacesCallBack do do the
+// Helper function called from ReleaseAllInterfacesCallBack to do the
 // actual releases.
 void RCW::ReleaseAllInterfaces()
 {
@@ -2563,7 +2514,11 @@ BOOL ComObject::SupportsInterface(OBJECTREF oref, MethodTable* pIntfTable)
                     MethodTable::InterfaceMapIterator it = pIntfTable->IterateInterfaceMap();
                     while (it.Next())
                     {
-                        bSupportsItf = Object::SupportsInterface(oref, it.GetInterface());
+                        MethodTable *pItf = it.GetInterfaceApprox();
+                        if (pItf->HasInstantiation() || pItf->IsGenericTypeDefinition())
+                            continue;
+
+                        bSupportsItf = Object::SupportsInterface(oref, pItf);
                         if (!bSupportsItf)
                             break;
                     }
@@ -2652,8 +2607,8 @@ void ComObject::ThrowInvalidCastException(OBJECTREF *pObj, MethodTable *pCastToM
         }
 
         // Convert the IID to a string.
-        WCHAR strIID[39];
-        StringFromGUID2(iid, strIID, sizeof(strIID) / sizeof(WCHAR));
+        WCHAR strIID[GUID_STR_BUFFER_LEN];
+        GuidToLPWSTR(iid, strIID);
 
         // Obtain the textual description of the HRESULT.
         SString strHRDescription;
@@ -2670,8 +2625,8 @@ void ComObject::ThrowInvalidCastException(OBJECTREF *pObj, MethodTable *pCastToM
             pSrcItfClass->GetGuid(&SrcItfIID, TRUE);
 
             // Convert the source interface IID to a string.
-            WCHAR strSrcItfIID[39];
-            StringFromGUID2(SrcItfIID, strSrcItfIID, sizeof(strSrcItfIID) / sizeof(WCHAR));
+            WCHAR strSrcItfIID[GUID_STR_BUFFER_LEN];
+            GuidToLPWSTR(SrcItfIID, strSrcItfIID);
 
             COMPlusThrow(kInvalidCastException, IDS_EE_RCW_INVALIDCAST_EVENTITF, strHRDescription.GetUnicode(), strComObjClassName.GetUnicode(),
                 strCastToName.GetUnicode(), strIID, strSrcItfIID);
@@ -2684,8 +2639,8 @@ void ComObject::ThrowInvalidCastException(OBJECTREF *pObj, MethodTable *pCastToM
         else if ((pNativeIID = MngStdInterfaceMap::GetNativeIIDForType(thCastTo)) != NULL)
         {
             // Convert the source interface IID to a string.
-            WCHAR strNativeItfIID[39];
-            StringFromGUID2(*pNativeIID, strNativeItfIID, sizeof(strNativeItfIID) / sizeof(WCHAR));
+            WCHAR strNativeItfIID[GUID_STR_BUFFER_LEN];
+            GuidToLPWSTR(*pNativeIID, strNativeItfIID);
 
             // Query for the interface to determine the failure HRESULT.
             HRESULT hr2 = pRCW->SafeQueryInterfaceRemoteAware(iid, (IUnknown**)&pItf);
@@ -2819,5 +2774,4 @@ IUnknown *ComObject::GetComIPFromRCWThrowing(OBJECTREF *pObj, MethodTable* pIntf
 }
 #endif // #ifndef DACCESS_COMPILE
 
-#endif //#ifndef CROSSGEN_COMPILE
 

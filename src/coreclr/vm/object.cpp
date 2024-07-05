@@ -6,8 +6,6 @@
 // Definitions of a Com+ Object
 //
 
-
-
 #include "common.h"
 
 #include "vars.hpp"
@@ -23,6 +21,18 @@
 
 SVAL_IMPL(INT32, ArrayBase, s_arrayBoundsZero);
 
+static DWORD GetGlobalNewHashCode()
+{
+    LIMITED_METHOD_CONTRACT;
+    // Used for generating hash codes for exceptions to determine whether the
+    // Catch_Handler_Found_Event should be reported. See Thread::GetNewHashCode.
+    // Using linear congruential generator from Knuth Vol. 2, p. 102, line 24
+    static DWORD dwHashCodeSeed = 123456789U * 1566083941U + 1;
+    const DWORD multiplier = 1*4 + 5; //same as the GetNewHashCode method
+    dwHashCodeSeed = dwHashCodeSeed*multiplier + 1;
+    return dwHashCodeSeed;
+}
+
 // follow the necessary rules to get a new valid hashcode for an object
 DWORD Object::ComputeHashCode()
 {
@@ -31,10 +41,18 @@ DWORD Object::ComputeHashCode()
     // note that this algorithm now uses at most HASHCODE_BITS so that it will
     // fit into the objheader if the hashcode has to be moved back into the objheader
     // such as for an object that is being frozen
+    Thread *pThread = GetThreadNULLOk();
     do
     {
-        // we use the high order bits in this case because they're more random
-        hashCode = GetThread()->GetNewHashCode() >> (32-HASHCODE_BITS);
+        if (pThread == NULL)
+        {
+            hashCode = (GetGlobalNewHashCode() >> (32-HASHCODE_BITS));
+        }
+        else
+        {
+            // we use the high order bits in this case because they're more random
+            hashCode = pThread->GetNewHashCode() >> (32-HASHCODE_BITS);
+        }
     }
     while (hashCode == 0);   // need to enforce hashCode != 0
 
@@ -42,6 +60,18 @@ DWORD Object::ComputeHashCode()
      _ASSERTE((hashCode & ((1<<HASHCODE_BITS)-1)) == hashCode);
 
     return hashCode;
+}
+
+DWORD Object::GetGlobalNewHashCode()
+{
+    LIMITED_METHOD_CONTRACT;
+    // Used for generating hash codes for exceptions to determine whether the
+    // Catch_Handler_Found_Event should be reported. See Thread::GetNewHashCode.
+    // Using linear congruential generator from Knuth Vol. 2, p. 102, line 24
+    static DWORD dwHashCodeSeed = 123456789U * 1566083941U + 1;
+    const DWORD multiplier = 1*4 + 5; //same as the GetNewHashCode method
+    dwHashCodeSeed = dwHashCodeSeed*multiplier + 1;
+    return dwHashCodeSeed;
 }
 
 #ifndef DACCESS_COMPILE
@@ -213,7 +243,6 @@ TypeHandle Object::GetGCSafeTypeHandleIfPossible() const
         GC_TRIGGERS;
         INJECT_FAULT(COMPlusThrowOM());
         PRECONDITION(CheckPointer(pInterfaceMT));
-        PRECONDITION(pObj->GetMethodTable()->IsRestored_NoLogging());
         PRECONDITION(pInterfaceMT->IsInterface());
     }
     CONTRACTL_END
@@ -390,7 +419,15 @@ void STDCALL CopyValueClassArgUnchecked(ArgDestination *argDest, void* src, Meth
 
     if (argDest->IsHFA())
     {
-        argDest->CopyHFAStructToRegister(src, pMT->GetAlignedNumInstanceFieldBytes());
+        argDest->CopyHFAStructToRegister(src, pMT->GetNumInstanceFieldBytes());
+        return;
+    }
+
+#elif defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+
+    if (argDest->IsStructPassedInRegs())
+    {
+        argDest->CopyStructToRegisters(src, pMT->GetNumInstanceFieldBytes(), destOffset);
         return;
     }
 
@@ -418,6 +455,16 @@ void InitValueClassArg(ArgDestination *argDest, MethodTable *pMT)
     }
 
 #endif
+
+#if defined(TARGET_LOONGARCH64) || defined(TARGET_RISCV64)
+    if (argDest->IsStructPassedInRegs())
+    {
+        *(UINT64*)(argDest->GetStructGenRegDestinationAddress()) = 0;
+        *(UINT64*)(argDest->GetDestinationAddress()) = 0;
+        return;
+    }
+#endif
+
     InitValueClass(argDest->GetDestinationAddress(), pMT);
 }
 
@@ -448,14 +495,6 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
     STATIC_CONTRACT_MODE_COOPERATIVE;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
 
-    if (g_IBCLogger.InstrEnabled() && !GCStress<cfg_any>::IsEnabled())
-    {
-        // If we are instrumenting for IBC (and GCStress is not enabled)
-        // then skip these Object::Validate() as they slow down the
-        // instrument phase by an order of magnitude
-        return;
-    }
-
     if (g_fEEShutDown & ShutDown_Phase2)
     {
         // During second phase of shutdown the code below is not guaranteed to work.
@@ -464,8 +503,7 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
 
 #ifdef _DEBUG
     {
-        BEGIN_GETTHREAD_ALLOWED_IN_NO_THROW_REGION;
-        Thread *pThread = GetThread();
+        Thread *pThread = GetThreadNULLOk();
 
         if (pThread != NULL && !(pThread->PreemptiveGCDisabled()))
         {
@@ -480,7 +518,6 @@ VOID Object::Validate(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock)
             if (!dbgOnly_IsSpecialEEThread() && !IsGCSpecialThread())
                 _ASSERTE(!"OBJECTREF being accessed while thread is in preemptive GC mode.");
         }
-        END_GETTHREAD_ALLOWED_IN_NO_THROW_REGION;
     }
 #endif
 
@@ -566,6 +603,7 @@ VOID Object::ValidateInner(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncB
         {
             Object * nextObj = GCHeapUtilities::GetGCHeap ()->NextObj (this);
             if ((nextObj != NULL) &&
+                (nextObj->GetGCSafeMethodTable() != nullptr) &&
                 (nextObj->GetGCSafeMethodTable() != g_pFreeObjectMethodTable))
             {
                 // we need a read barrier here - to make sure we read the object header _after_
@@ -581,7 +619,7 @@ VOID Object::ValidateInner(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncB
 #ifdef FEATURE_64BIT_ALIGNMENT
         if (pMT->RequiresAlign8())
         {
-            CHECK_AND_TEAR_DOWN((((size_t)this) & 0x7) == (pMT->IsValueType()? 4:0));
+            CHECK_AND_TEAR_DOWN((((size_t)this) & 0x7) == (size_t)(pMT->IsValueType()?4:0));
         }
         lastTest = 9;
 #endif // FEATURE_64BIT_ALIGNMENT
@@ -687,7 +725,7 @@ STRINGREF StringObject::NewString(const WCHAR *pwsz)
     else
     {
 
-        DWORD nch = (DWORD)wcslen(pwsz);
+        DWORD nch = (DWORD)u16_strlen(pwsz);
         if (nch==0) {
             return GetEmptyString();
         }
@@ -769,7 +807,7 @@ STRINGREF StringObject::NewString(LPCUTF8 psz)
     }
     CQuickBytes qb;
     WCHAR* pwsz = (WCHAR*) qb.AllocThrows((length) * sizeof(WCHAR));
-    length = WszMultiByteToWideChar(CP_UTF8, 0, psz, length, pwsz, length);
+    length = MultiByteToWideChar(CP_UTF8, 0, psz, length, pwsz, length);
     if (length == 0) {
         COMPlusThrow(kArgumentException, W("Arg_InvalidUTF8String"));
     }
@@ -798,7 +836,7 @@ STRINGREF StringObject::NewString(LPCUTF8 psz, int cBytes)
         COMPlusThrowOM();
     CQuickBytes qb;
     WCHAR* pwsz = (WCHAR*) qb.AllocThrows(cWszBytes);
-    int length = WszMultiByteToWideChar(CP_UTF8, 0, psz, cBytes, pwsz, cBytes);
+    int length = MultiByteToWideChar(CP_UTF8, 0, psz, cBytes, pwsz, cBytes);
     if (length == 0) {
         COMPlusThrow(kArgumentException, W("Arg_InvalidUTF8String"));
     }
@@ -810,7 +848,8 @@ STRINGREF StringObject::NewString(LPCUTF8 psz, int cBytes)
 // STATIC MEMBER VARIABLES
 //
 //
-STRINGREF* StringObject::EmptyStringRefPtr=NULL;
+STRINGREF* StringObject::EmptyStringRefPtr = NULL;
+bool StringObject::EmptyStringIsFrozen = false;
 
 //The special string helpers are used as flag bits for weird strings that have bytes
 //after the terminating 0.  The only case where we use this right now is the VB BSTR as
@@ -847,14 +886,16 @@ STRINGREF* StringObject::InitEmptyStringRefPtr() {
     GCX_COOP();
 
     EEStringData data(0, W(""), TRUE);
-    EmptyStringRefPtr = SystemDomain::System()->DefaultDomain()->GetLoaderAllocator()->GetStringObjRefPtrFromUnicodeString(&data);
+    void* pinnedStr = nullptr;
+    EmptyStringRefPtr = SystemDomain::System()->DefaultDomain()->GetLoaderAllocator()->GetStringObjRefPtrFromUnicodeString(&data, &pinnedStr);
+    EmptyStringIsFrozen = pinnedStr != nullptr;
     return EmptyStringRefPtr;
 }
 
 // strAChars must be null-terminated, with an appropriate aLength
 // strBChars must be null-terminated, with an appropriate bLength OR bLength == -1
 // If bLength == -1, we stop on the first null character in strBChars
-BOOL StringObject::CaseInsensitiveCompHelper(__in_ecount(aLength) WCHAR *strAChars, __in_z INT8 *strBChars, INT32 aLength, INT32 bLength, INT32 *result) {
+BOOL StringObject::CaseInsensitiveCompHelper(_In_reads_(aLength) WCHAR *strAChars, _In_z_ INT8 *strBChars, INT32 aLength, INT32 bLength, INT32 *result) {
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
@@ -869,7 +910,8 @@ BOOL StringObject::CaseInsensitiveCompHelper(__in_ecount(aLength) WCHAR *strACha
     unsigned charA;
     unsigned charB;
 
-    for(;;) {
+    while (true)
+    {
         charA = *strAChars;
         charB = (unsigned) *strBChars;
 
@@ -913,7 +955,6 @@ BOOL StringObject::CaseInsensitiveCompHelper(__in_ecount(aLength) WCHAR *strACha
         // Next char
         strAChars++; strBChars++;
     }
-
 }
 
 /*============================InternalTrailByteCheck============================
@@ -1036,6 +1077,41 @@ OBJECTREF::OBJECTREF(const OBJECTREF & objref)
 
 
 //-------------------------------------------------------------
+// VolatileLoadWithoutBarrier constructor
+//-------------------------------------------------------------
+OBJECTREF::OBJECTREF(const OBJECTREF *pObjref, tagVolatileLoadWithoutBarrier tag)
+{
+    STATIC_CONTRACT_NOTHROW;
+    STATIC_CONTRACT_GC_NOTRIGGER;
+    STATIC_CONTRACT_MODE_COOPERATIVE;
+    STATIC_CONTRACT_FORBID_FAULT;
+
+    Object* objrefAsObj = VolatileLoadWithoutBarrier(&pObjref->m_asObj);
+    VALIDATEOBJECT(objrefAsObj);
+
+    // !!! If this assert is fired, there are two possibilities:
+    // !!! 1.  You are doing a type cast, e.g.  *(OBJECTREF*)pObj
+    // !!!     Instead, you should use ObjectToOBJECTREF(*(Object**)pObj),
+    // !!!                          or ObjectToSTRINGREF(*(StringObject**)pObj)
+    // !!! 2.  There is a real GC hole here.
+    // !!! Either way you need to fix the code.
+    _ASSERTE(Thread::IsObjRefValid(pObjref));
+    if ((objrefAsObj != 0) &&
+        ((IGCHeap*)GCHeapUtilities::GetGCHeap())->IsHeapPointer( (BYTE*)this ))
+    {
+        _ASSERTE(!"Write Barrier violation. Must use SetObjectReference() to assign OBJECTREF's into the GC heap!");
+    }
+    m_asObj = objrefAsObj;
+
+    if (m_asObj != 0) {
+        ENABLESTRESSHEAP();
+    }
+
+    Thread::ObjectRefNew(this);
+}
+
+
+//-------------------------------------------------------------
 // To allow NULL to be used as an OBJECTREF.
 //-------------------------------------------------------------
 OBJECTREF::OBJECTREF(TADDR nul)
@@ -1120,7 +1196,7 @@ int OBJECTREF::operator==(const OBJECTREF &objref) const
     {
         // REVISIT_TODO: Weakening the contract system a little bit here. We should really
         // add a special NULLOBJECTREF which can be used for these situations and have
-        // a seperate code path for that with the correct contract protections.
+        // a separate code path for that with the correct contract protections.
         STATIC_CONTRACT_VIOLATION(ModeViolation);
 
         VALIDATEOBJECT(objref.m_asObj);
@@ -1158,7 +1234,7 @@ int OBJECTREF::operator!=(const OBJECTREF &objref) const
     {
         // REVISIT_TODO: Weakening the contract system a little bit here. We should really
         // add a special NULLOBJECTREF which can be used for these situations and have
-        // a seperate code path for that with the correct contract protections.
+        // a separate code path for that with the correct contract protections.
         STATIC_CONTRACT_VIOLATION(ModeViolation);
 
         VALIDATEOBJECT(objref.m_asObj);
@@ -1303,7 +1379,7 @@ void* __cdecl GCSafeMemCpy(void * dest, const void * src, size_t len)
     if (!(((*(BYTE**)&dest) <  g_lowest_address ) ||
           ((*(BYTE**)&dest) >= g_highest_address)))
     {
-        Thread* pThread = GetThread();
+        Thread* pThread = GetThreadNULLOk();
 
         // GCHeapUtilities::IsHeapPointer has race when called in preemptive mode. It walks the list of segments
         // that can be modified by GC. Do the check below only if it is safe to do so.
@@ -1388,7 +1464,7 @@ void StackTraceArray::CheckState() const
     if (!m_array)
         return;
 
-    assert(GetObjectThread() == GetThread());
+    assert(GetObjectThread() == GetThreadNULLOk());
 
     size_t size = Size();
     StackTraceElement const * p;
@@ -1443,7 +1519,7 @@ void StackTraceArray::EnsureThreadAffinity()
     if (!m_array)
         return;
 
-    if (GetObjectThread() != GetThread())
+    if (GetObjectThread() != GetThreadNULLOk())
     {
         // object is being changed by a thread different from the one which created it
         // make a copy of the array to prevent a race condition when two different threads try to change it
@@ -1454,10 +1530,6 @@ void StackTraceArray::EnsureThreadAffinity()
         GCPROTECT_END();
     }
 }
-
-#ifdef _MSC_VER
-#pragma warning(disable: 4267)
-#endif
 
 // Deep copies the stack trace array
 void StackTraceArray::CopyFrom(StackTraceArray const & src)
@@ -1482,11 +1554,6 @@ void StackTraceArray::CopyFrom(StackTraceArray const & src)
                     // another thread might have changed it at the time of copying
     SetObjectThread();  // affinitize the newly created array with the current thread
 }
-
-#ifdef _MSC_VER
-#pragma warning(default: 4267)
-#endif
-
 
 #ifdef _DEBUG
 //===============================================================================
@@ -1556,6 +1623,15 @@ BOOL Nullable::IsNullableForTypeHelperNoGC(MethodTable* nullableMT, MethodTable*
 }
 
 //===============================================================================
+int32_t Nullable::GetValueAddrOffset(MethodTable* nullableMT)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    _ASSERTE(IsNullableType(nullableMT));
+    _ASSERTE(strcmp(nullableMT->GetApproxFieldDescListRaw()[1].GetDebugName(), "value") == 0);
+    return nullableMT->GetApproxFieldDescListRaw()[1].GetOffset();
+}
+
 CLR_BOOL* Nullable::HasValueAddr(MethodTable* nullableMT) {
 
     LIMITED_METHOD_CONTRACT;
@@ -1575,7 +1651,7 @@ void* Nullable::ValueAddr(MethodTable* nullableMT) {
 }
 
 //===============================================================================
-// Special Logic to box a nullable<T> as a boxed<T>
+// Special logic to box a nullable<T> as a boxed<T>
 
 OBJECTREF Nullable::Box(void* srcPtr, MethodTable* nullableMT)
 {
@@ -1592,7 +1668,7 @@ OBJECTREF Nullable::Box(void* srcPtr, MethodTable* nullableMT)
     Nullable* src = (Nullable*) srcPtr;
 
     _ASSERTE(IsNullableType(nullableMT));
-        // We better have a concrete instantiation, or our field offset asserts are not useful
+    // We better have a concrete instantiation, or our field offset asserts are not useful
     _ASSERTE(!nullableMT->ContainsGenericVariables());
 
     if (!*src->HasValueAddr(nullableMT))
@@ -1601,7 +1677,12 @@ OBJECTREF Nullable::Box(void* srcPtr, MethodTable* nullableMT)
     OBJECTREF obj = 0;
     GCPROTECT_BEGININTERIOR (src);
     MethodTable* argMT = nullableMT->GetInstantiation()[0].AsMethodTable();
-    obj = argMT->Allocate();
+
+    // MethodTable::Allocate() triggers cctors, so to avoid that we
+    // allocate directly without triggering cctors - boxing should not trigger cctors.
+    argMT->EnsureInstanceActive();
+    obj = AllocateObject(argMT);
+
     CopyValueClass(obj->UnBox(), src->ValueAddr(nullableMT), argMT);
     GCPROTECT_END ();
 
@@ -1623,16 +1704,16 @@ BOOL Nullable::UnBox(void* destPtr, OBJECTREF boxedVal, MethodTable* destMT)
     Nullable* dest = (Nullable*) destPtr;
     BOOL fRet = TRUE;
 
-        // We should only get here if we are unboxing a T as a Nullable<T>
+    // We should only get here if we are unboxing a T as a Nullable<T>
     _ASSERTE(IsNullableType(destMT));
 
-        // We better have a concrete instantiation, or our field offset asserts are not useful
+    // We better have a concrete instantiation, or our field offset asserts are not useful
     _ASSERTE(!destMT->ContainsGenericVariables());
 
     if (boxedVal == NULL)
     {
         // Logically we are doing *dest->HasValueAddr(destMT) = false;
-        // We zero out the whole structure becasue it may contain GC references
+        // We zero out the whole structure because it may contain GC references
         // and these need to be initialized to zero.   (could optimize in the non-GC case)
         InitValueClass(destPtr, destMT);
         fRet = TRUE;
@@ -1679,16 +1760,16 @@ BOOL Nullable::UnBoxNoGC(void* destPtr, OBJECTREF boxedVal, MethodTable* destMT)
     CONTRACTL_END;
     Nullable* dest = (Nullable*) destPtr;
 
-        // We should only get here if we are unboxing a T as a Nullable<T>
+    // We should only get here if we are unboxing a T as a Nullable<T>
     _ASSERTE(IsNullableType(destMT));
 
-        // We better have a concrete instantiation, or our field offset asserts are not useful
+    // We better have a concrete instantiation, or our field offset asserts are not useful
     _ASSERTE(!destMT->ContainsGenericVariables());
 
     if (boxedVal == NULL)
     {
         // Logically we are doing *dest->HasValueAddr(destMT) = false;
-        // We zero out the whole structure becasue it may contain GC references
+        // We zero out the whole structure because it may contain GC references
         // and these need to be initialized to zero.   (could optimize in the non-GC case)
         InitValueClass(destPtr, destMT);
     }
@@ -1713,63 +1794,6 @@ BOOL Nullable::UnBoxNoGC(void* destPtr, OBJECTREF boxedVal, MethodTable* destMT)
 }
 
 //===============================================================================
-// Special Logic to unbox a boxed T as a nullable<T> into an argument
-// specified by the argDest.
-// Does not handle type equivalence (may conservatively return FALSE)
-BOOL Nullable::UnBoxIntoArgNoGC(ArgDestination *argDest, OBJECTREF boxedVal, MethodTable* destMT)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-
-#if defined(UNIX_AMD64_ABI)
-    if (argDest->IsStructPassedInRegs())
-    {
-        // We should only get here if we are unboxing a T as a Nullable<T>
-        _ASSERTE(IsNullableType(destMT));
-
-        // We better have a concrete instantiation, or our field offset asserts are not useful
-        _ASSERTE(!destMT->ContainsGenericVariables());
-
-        if (boxedVal == NULL)
-        {
-            // Logically we are doing *dest->HasValueAddr(destMT) = false;
-            // We zero out the whole structure becasue it may contain GC references
-            // and these need to be initialized to zero.   (could optimize in the non-GC case)
-            InitValueClassArg(argDest, destMT);
-        }
-        else
-        {
-            if (!IsNullableForTypeNoGC(destMT, boxedVal->GetMethodTable()))
-            {
-                // For safety's sake, also allow true nullables to be unboxed normally.
-                // This should not happen normally, but we want to be robust
-                if (destMT == boxedVal->GetMethodTable())
-                {
-                    CopyValueClassArg(argDest, boxedVal->GetData(), destMT, 0);
-                    return TRUE;
-                }
-                return FALSE;
-            }
-
-            Nullable* dest = (Nullable*)argDest->GetStructGenRegDestinationAddress();
-            *dest->HasValueAddr(destMT) = true;
-            int destOffset = (BYTE*)dest->ValueAddr(destMT) - (BYTE*)dest;
-            CopyValueClassArg(argDest, boxedVal->UnBox(), boxedVal->GetMethodTable(), destOffset);
-        }
-        return TRUE;
-    }
-
-#endif // UNIX_AMD64_ABI
-
-    return UnBoxNoGC(argDest->GetDestinationAddress(), boxedVal, destMT);
-}
-
-//===============================================================================
 // Special Logic to unbox a boxed T as a nullable<T>
 // Does not do any type checks.
 void Nullable::UnBoxNoCheck(void* destPtr, OBJECTREF boxedVal, MethodTable* destMT)
@@ -1783,16 +1807,16 @@ void Nullable::UnBoxNoCheck(void* destPtr, OBJECTREF boxedVal, MethodTable* dest
     CONTRACTL_END;
     Nullable* dest = (Nullable*) destPtr;
 
-        // We should only get here if we are unboxing a T as a Nullable<T>
+    // We should only get here if we are unboxing a T as a Nullable<T>
     _ASSERTE(IsNullableType(destMT));
 
-        // We better have a concrete instantiation, or our field offset asserts are not useful
+    // We better have a concrete instantiation, or our field offset asserts are not useful
     _ASSERTE(!destMT->ContainsGenericVariables());
 
     if (boxedVal == NULL)
     {
         // Logically we are doing *dest->HasValueAddr(destMT) = false;
-        // We zero out the whole structure becasue it may contain GC references
+        // We zero out the whole structure because it may contain GC references
         // and these need to be initialized to zero.   (could optimize in the non-GC case)
         InitValueClass(destPtr, destMT);
     }
@@ -1884,6 +1908,13 @@ void ExceptionObject::SetStackTrace(I1ARRAYREF stackTrace, PTRARRAYREF dynamicMe
     }
     CONTRACTL_END;
 
+#ifdef STRESS_LOG
+    if (StressLog::StressLogOn(~0u, 0))
+    {
+        StressLog::CreateThreadStressLog();
+    }
+#endif
+
     SpinLock::AcquireLock(&g_StackTraceArrayLock);
 
     SetObjectReference((OBJECTREF*)&_stackTrace, (OBJECTREF)stackTrace);
@@ -1922,19 +1953,60 @@ void ExceptionObject::GetStackTrace(StackTraceArray & stackTrace, PTRARRAYREF * 
 
 }
 
-bool LAHashDependentHashTrackerObject::IsLoaderAllocatorLive()
+#ifndef DACCESS_COMPILE
+void LoaderAllocatorObject::SetSlotsUsed(INT32 newSlotsUsed)
 {
-    return (ObjectFromHandle(_dependentHandle) != NULL);
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_COOPERATIVE;
+        PRECONDITION(m_pLoaderAllocatorScout->m_nativeLoaderAllocator->HasHandleTableLock());
+    }
+    CONTRACTL_END;
+
+    m_slotsUsed = newSlotsUsed;
 }
 
-void LAHashDependentHashTrackerObject::GetDependentAndLoaderAllocator(OBJECTREF *pLoaderAllocatorRef, GCHEAPHASHOBJECTREF *pGCHeapHash)
+PTRARRAYREF LoaderAllocatorObject::GetHandleTable()
 {
-    OBJECTREF primary = ObjectFromHandle(_dependentHandle);
-    if (pLoaderAllocatorRef != NULL)
-        *pLoaderAllocatorRef = primary;
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_COOPERATIVE;
+        PRECONDITION(m_pLoaderAllocatorScout->m_nativeLoaderAllocator->HasHandleTableLock());
+    }
+    CONTRACTL_END;
 
-    IGCHandleManager *mgr = GCHandleUtilities::GetGCHandleManager();
-    // Secondary is tracked only if primary is non-null
-    if (pGCHeapHash != NULL)
-        *pGCHeapHash = (GCHEAPHASHOBJECTREF)(OBJECTREF)((primary != NULL) ? mgr->GetDependentHandleSecondary(_dependentHandle) : NULL);
+    return (PTRARRAYREF)m_pSlots;
 }
+
+void LoaderAllocatorObject::SetHandleTable(PTRARRAYREF handleTable)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_COOPERATIVE;
+        PRECONDITION(m_pLoaderAllocatorScout->m_nativeLoaderAllocator->HasHandleTableLock());
+    }
+    CONTRACTL_END;
+
+    SetObjectReference(&m_pSlots, (OBJECTREF)handleTable);
+}
+
+INT32 LoaderAllocatorObject::GetSlotsUsed()
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_COOPERATIVE;
+        PRECONDITION(m_pLoaderAllocatorScout->m_nativeLoaderAllocator->HasHandleTableLock());
+    }
+    CONTRACTL_END;
+
+    return m_slotsUsed;
+}
+#endif // DACCESS_COMPILE

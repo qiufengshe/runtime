@@ -20,7 +20,7 @@ namespace System
                 builder.EnsureCapacity((int)length);
             }
 
-            if (length == 0 && Marshal.GetLastWin32Error() == Interop.Errors.ERROR_ENVVAR_NOT_FOUND)
+            if (length == 0 && Marshal.GetLastPInvokeError() == Interop.Errors.ERROR_ENVVAR_NOT_FOUND)
             {
                 builder.Dispose();
                 return null;
@@ -30,11 +30,21 @@ namespace System
             return builder.ToString();
         }
 
+        /// <summary>GetEnvironmentVariableCore that avoids using the ArrayPool. Environment variables must be less than 128 characters in length or won't be found.</summary>
+        internal static string? GetEnvironmentVariableCore_NoArrayPool(string variable)
+        {
+            Span<char> span = stackalloc char[128];
+            uint length = Interop.Kernel32.GetEnvironmentVariable(variable, ref MemoryMarshal.GetReference(span), (uint)span.Length);
+            return length > 0 && length <= span.Length ?
+                span.Slice(0, (int)length).ToString() :
+                null;
+        }
+
         private static void SetEnvironmentVariableCore(string variable, string? value)
         {
             if (!Interop.Kernel32.SetEnvironmentVariable(variable, value))
             {
-                int errorCode = Marshal.GetLastWin32Error();
+                int errorCode = Marshal.GetLastPInvokeError();
                 switch (errorCode)
                 {
                     case Interop.Errors.ERROR_ENVVAR_NOT_FOUND:
@@ -48,10 +58,10 @@ namespace System
 
                     case Interop.Errors.ERROR_NOT_ENOUGH_MEMORY:
                     case Interop.Errors.ERROR_NO_SYSTEM_RESOURCES:
-                        throw new OutOfMemoryException(Interop.Kernel32.GetMessage(errorCode));
+                        throw new OutOfMemoryException(Marshal.GetPInvokeErrorMessage(errorCode));
 
                     default:
-                        throw new ArgumentException(Interop.Kernel32.GetMessage(errorCode));
+                        throw new ArgumentException(Marshal.GetPInvokeErrorMessage(errorCode));
                 }
             }
         }
@@ -84,13 +94,11 @@ namespace System
                 char* currentPtr = stringPtr;
                 while (true)
                 {
-                    int variableLength = string.wcslen(currentPtr);
-                    if (variableLength == 0)
+                    ReadOnlySpan<char> variable = MemoryMarshal.CreateReadOnlySpanFromNullTerminated(currentPtr);
+                    if (variable.IsEmpty)
                     {
                         break;
                     }
-
-                    var variable = new ReadOnlySpan<char>(currentPtr, variableLength);
 
                     // Find the = separating the key and value. We skip entries that begin with =.  We also skip entries that don't
                     // have =, which can happen on some older OSes when the environment block gets corrupted.
@@ -111,7 +119,7 @@ namespace System
                     }
 
                     // Move to the end of this variable, after its terminator.
-                    currentPtr += variableLength + 1;
+                    currentPtr += variable.Length + 1;
                 }
 
                 return results;

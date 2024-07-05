@@ -5,13 +5,17 @@
 //
 // Reference: TF Bug 150041
 
+#pragma warning disable SYSLIB0032 // HandleProcessCorruptedStateExceptionsAttribute is obsolete
+
 using System;
 using System.Runtime.ExceptionServices;
+using Xunit;
 
 public class Program
 {
     [HandleProcessCorruptedStateExceptions]
-    public static int Main()
+    [Fact]
+    public static int TestEntryPoint()
     {
         int ret = 99;
 

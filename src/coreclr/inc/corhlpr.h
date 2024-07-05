@@ -17,18 +17,14 @@
 #define CORHLPR_TURNED_FPO_ON 1
 #endif
 
+#include <assert.h>
 #include "cor.h"
 #include "corhdr.h"
 #include "corerror.h"
 #include "unreachable.h"
+#include <new>
 
-// This header is consumed both within the runtime and externally. In the former
-// case we need to wrap memory allocations, in the latter there is no
-// infrastructure to support this. Detect which way we're building and provide a
-// very simple abstraction layer (handles allocating bytes only).
-#ifdef _BLD_CLR
-#include "new.hpp"
-
+using std::nothrow;
 
 #define NEW_NOTHROW(_bytes) new (nothrow) BYTE[_bytes]
 #define NEW_THROWS(_bytes) new BYTE[_bytes]
@@ -37,27 +33,6 @@ inline void DECLSPEC_NORETURN THROW_OUT_OF_MEMORY()
 {
     ThrowOutOfMemory();
 }
-#else
-#define NEW_NOTHROW(_bytes) new BYTE[_bytes]
-#define NEW_THROWS(_bytes) __CorHlprNewThrows(_bytes)
-static inline void DECLSPEC_NORETURN __CorHlprThrowOOM()
-{
-    RaiseException(STATUS_NO_MEMORY, 0, 0, NULL);
-    __UNREACHABLE();
-}
-static inline BYTE *__CorHlprNewThrows(size_t bytes)
-{
-    BYTE *pbMemory = new BYTE[bytes];
-    if (pbMemory == NULL)
-        __CorHlprThrowOOM();
-    return pbMemory;
-}
-inline void DECLSPEC_NORETURN THROW_OUT_OF_MEMORY()
-{
-    __CorHlprThrowOOM();
-}
-#endif
-
 
 //*****************************************************************************
 // There are a set of macros commonly used in the helpers which you will want
@@ -82,19 +57,10 @@ do { hr = (EXPR); if(FAILED(hr)) { goto LABEL; } } while (0)
 #endif
 
 
-#ifndef _ASSERTE
-#define _ASSERTE(expr)
-#endif
-
-#ifndef COUNTOF
-#define COUNTOF(a) (sizeof(a) / sizeof(*a))
-#endif
-
 #if !BIGENDIAN
 #define VAL16(x) x
 #define VAL32(x) x
 #endif
-
 
 //*****************************************************************************
 //
@@ -264,7 +230,7 @@ typedef struct tagCOR_ILMETHOD_SECT_EH_CLAUSE_SMALL : public IMAGE_COR_ILMETHOD_
         return VAL16(TryOffset);
     }
     void SetTryOffset(DWORD Offset) {
-        _ASSERTE((Offset & ~0xffff) == 0);
+        assert((Offset & ~0xffff) == 0);
         TryOffset = VAL16(Offset);
     }
 
@@ -272,7 +238,7 @@ typedef struct tagCOR_ILMETHOD_SECT_EH_CLAUSE_SMALL : public IMAGE_COR_ILMETHOD_
         return TryLength;
     }
     void SetTryLength(DWORD Length) {
-        _ASSERTE((Length & ~0xff) == 0);
+        assert((Length & ~0xff) == 0);
         TryLength = Length;
     }
 
@@ -280,7 +246,7 @@ typedef struct tagCOR_ILMETHOD_SECT_EH_CLAUSE_SMALL : public IMAGE_COR_ILMETHOD_
         return VAL16(HandlerOffset);
     }
     void SetHandlerOffset(DWORD Offset) {
-        _ASSERTE((Offset & ~0xffff) == 0);
+        assert((Offset & ~0xffff) == 0);
         HandlerOffset = VAL16(Offset);
     }
 
@@ -288,7 +254,7 @@ typedef struct tagCOR_ILMETHOD_SECT_EH_CLAUSE_SMALL : public IMAGE_COR_ILMETHOD_
         return HandlerLength;
     }
     void SetHandlerLength(DWORD Length) {
-        _ASSERTE((Length & ~0xff) == 0);
+        assert((Length & ~0xff) == 0);
         HandlerLength = Length;
     }
 
@@ -336,7 +302,7 @@ struct COR_ILMETHOD_SECT
     const COR_ILMETHOD_SECT* Next() const
     {
         if (!More()) return(0);
-        return ((COR_ILMETHOD_SECT*)(((BYTE *)this) + DataSize()))->Align();
+        return ((COR_ILMETHOD_SECT*)Align(((BYTE *)this) + DataSize()));
     }
 
     const BYTE* Data() const
@@ -374,9 +340,9 @@ struct COR_ILMETHOD_SECT
         return((AsSmall()->Kind & CorILMethod_Sect_FatFormat) != 0);
     }
 
-    const COR_ILMETHOD_SECT* Align() const
+    static const void* Align(const void* p)
     {
-        return((COR_ILMETHOD_SECT*) ((((UINT_PTR) this) + 3) & ~3));
+        return((void*) ((((UINT_PTR) p) + 3) & ~3));
     }
 
 protected:
@@ -506,7 +472,7 @@ typedef struct tagCOR_ILMETHOD_TINY : IMAGE_COR_ILMETHOD_TINY
 
 
 /************************************/
-// This strucuture is the 'fat' layout, where no compression is attempted.
+// This structure is the 'fat' layout, where no compression is attempted.
 // Note that this structure can be added on at the end, thus making it extensible
 typedef struct tagCOR_ILMETHOD_FAT : IMAGE_COR_ILMETHOD_FAT
 {
@@ -579,7 +545,7 @@ typedef struct tagCOR_ILMETHOD_FAT : IMAGE_COR_ILMETHOD_FAT
 
     const COR_ILMETHOD_SECT* GetSect() const {
         if (!More()) return (0);
-        return(((COR_ILMETHOD_SECT*) (GetCode() + GetCodeSize()))->Align());
+        return(((COR_ILMETHOD_SECT*) COR_ILMETHOD_SECT::Align(GetCode() + GetCodeSize())));
     }
 } COR_ILMETHOD_FAT;
 
@@ -624,7 +590,7 @@ struct COR_ILMETHOD
 extern "C" {
 /***************************************************************************/
 /* COR_ILMETHOD_DECODER is the only way functions internal to the EE should
-   fetch data from a COR_ILMETHOD.  This way any dependancy on the file format
+   fetch data from a COR_ILMETHOD.  This way any dependency on the file format
    (and the multiple ways of encoding the header) is centralized to the
    COR_ILMETHOD_DECODER constructor) */
     void __stdcall DecoderInit(void * pThis, COR_ILMETHOD* header);
@@ -634,9 +600,7 @@ extern "C" {
 class COR_ILMETHOD_DECODER : public COR_ILMETHOD_FAT
 {
 public:
-    // This returns an uninitialized decoder, suitable for placement new but nothing
-    // else. Use with caution.
-    COR_ILMETHOD_DECODER() {}
+    COR_ILMETHOD_DECODER() = default;
 
     // Typically the ONLY way you should access COR_ILMETHOD is through
     // this constructor so format changes are easier.

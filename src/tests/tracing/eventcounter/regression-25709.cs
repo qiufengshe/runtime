@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
+using Xunit;
 
 namespace EventCounterRegressionTests
 {
@@ -19,7 +20,7 @@ namespace EventCounterRegressionTests
     {        
         private readonly EventLevel _level = EventLevel.Verbose;
 
-        public int MaxIncrement { get; private set; } = 0;
+        public double MaxIncrement { get; private set; } = 0;
 
         public SimpleEventListener()
         {
@@ -38,7 +39,7 @@ namespace EventCounterRegressionTests
 
         protected override void OnEventWritten(EventWrittenEventArgs eventData)
         {
-            int increment = 0;
+            double increment = 0;
             bool isExceptionCounter = false;
 
             for (int i = 0; i < eventData.Payload.Count; i++)
@@ -52,7 +53,7 @@ namespace EventCounterRegressionTests
                             isExceptionCounter = true;
                         if (payload.Key.Equals("Increment"))
                         {
-                            increment = Int32.Parse(payload.Value.ToString());
+                            increment = double.Parse(payload.Value.ToString());
                         }
                     }
                     if (isExceptionCounter)
@@ -86,7 +87,8 @@ namespace EventCounterRegressionTests
             }
         }
 
-        public static int Main(string[] args)
+        [Fact]
+        public static int TestEntryPoint()
         {
             Task exceptionTask = Task.Run(ThrowExceptionTask);
             Thread.Sleep(5000);

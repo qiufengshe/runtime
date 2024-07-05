@@ -8,6 +8,9 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Microsoft.Extensions.Hosting
 {
+    /// <summary>
+    /// Provides extension methods for the <see cref="IHost"/> from the hosting abstractions package.
+    /// </summary>
     public static class HostingAbstractionsHostExtensions
     {
         /// <summary>
@@ -51,7 +54,8 @@ namespace Microsoft.Extensions.Hosting
         }
 
         /// <summary>
-        /// Runs an application and returns a Task that only completes when the token is triggered or shutdown is triggered.
+        /// Runs an application and returns a <see cref="Task"/> that only completes when the token is triggered or shutdown is triggered.
+        /// The <paramref name="host"/> instance is disposed of after running.
         /// </summary>
         /// <param name="host">The <see cref="IHost"/> to run.</param>
         /// <param name="token">The token to trigger shutdown.</param>
@@ -74,7 +78,6 @@ namespace Microsoft.Extensions.Hosting
                 {
                     host.Dispose();
                 }
-
             }
         }
 
@@ -86,22 +89,26 @@ namespace Microsoft.Extensions.Hosting
         /// <returns>The <see cref="Task"/> that represents the asynchronous operation.</returns>
         public static async Task WaitForShutdownAsync(this IHost host, CancellationToken token = default)
         {
-            IHostApplicationLifetime applicationLifetime = host.Services.GetService<IHostApplicationLifetime>();
+            IHostApplicationLifetime applicationLifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
 
             token.Register(state =>
             {
-                ((IHostApplicationLifetime)state).StopApplication();
+                ((IHostApplicationLifetime)state!).StopApplication();
             },
             applicationLifetime);
 
-            var waitForStop = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+#if NET8_0_OR_GREATER
+            await Task.Delay(Timeout.Infinite, applicationLifetime.ApplicationStopping).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+#else
+            var waitForStop = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
             applicationLifetime.ApplicationStopping.Register(obj =>
             {
-                var tcs = (TaskCompletionSource<object>)obj;
+                var tcs = (TaskCompletionSource<object?>)obj!;
                 tcs.TrySetResult(null);
             }, waitForStop);
 
             await waitForStop.Task.ConfigureAwait(false);
+#endif
 
             // Host will use its default ShutdownTimeout if none is specified.
             // The cancellation token may have been triggered to unblock waitForStop. Don't pass it here because that would trigger an abortive shutdown.

@@ -9,9 +9,7 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 using Newtonsoft.Json.Bson;
-using Microsoft.Xunit.Performance;
-
-[assembly: OptimizeForBenchmarks]
+using Xunit;
 
 namespace Serialization
 {
@@ -82,16 +80,6 @@ public class JsonBenchmarks
         DeserializeJsonNetBench();
     }
 
-    [Benchmark]
-    private void DeserializeDataContract()
-    {
-        foreach (var iteration in Benchmark.Iterations) {
-            using (iteration.StartMeasurement()) {
-                DeserializeDataContractBench();
-            }
-        }
-    }
-
     private void DeserializeDataContractBench() {
         DataContractSerializer ds = new DataContractSerializer(typeof(TestObject));
         MemoryStream ms = new MemoryStream(Encoding.UTF8.GetBytes(DataContractXml));
@@ -106,16 +94,6 @@ public class JsonBenchmarks
             t = (TestObject)ds.ReadObject(ms);
             Escape(t.Name);
             ms.Seek(0, SeekOrigin.Begin);
-        }
-    }
-
-    [Benchmark]
-    private void DeserializeDataContractJson()
-    {
-        foreach (var iteration in Benchmark.Iterations) {
-            using (iteration.StartMeasurement()) {
-                DeserializeDataContractJsonBench();
-            }
         }
     }
 
@@ -137,16 +115,6 @@ public class JsonBenchmarks
         }
     }
 
-    [Benchmark]
-    private void DeserializeJsonNetBinary()
-    {
-        foreach (var iteration in Benchmark.Iterations) {
-            using (iteration.StartMeasurement()) {
-                DeserializeJsonNetBinaryBench();
-            }
-        }
-    }
-
     private void DeserializeJsonNetBinaryBench()
     {
         DeserializeJsonNetBinaryBenchInner();
@@ -161,16 +129,6 @@ public class JsonBenchmarks
             BsonDataReader br = new BsonDataReader(new MemoryStream(JsonNetBinary));
             TestObject t = (TestObject)ds.Deserialize(br, ty);
             Escape(t.Name);
-        }
-    }
-
-    [Benchmark]
-    private void DeserializeJsonNet()
-    {
-        foreach (var iteration in Benchmark.Iterations) {
-            using (iteration.StartMeasurement()) {
-                DeserializeJsonNetBench();
-            }
         }
     }
 
@@ -192,7 +150,8 @@ public class JsonBenchmarks
         }
     }
 
-    public static int Main() {
+    [Fact]
+    public static int TestEntryPoint() {
         var tests = new JsonBenchmarks();
         bool result = tests.Deserialize();
         return result ? 100 : -1;

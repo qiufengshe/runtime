@@ -84,7 +84,7 @@ namespace ILCompiler.Reflection.ReadyToRun
     /// A runtime function corresponds to a contiguous fragment of code that implements a method.
     /// </summary>
     /// <remarks>
-    /// Based on <a href="https://github.com/dotnet/runtime/blob/master/src/coreclr/pal/inc/pal.h">src/pal/inc/pal.h</a> _RUNTIME_FUNCTION
+    /// Based on <a href="https://github.com/dotnet/runtime/blob/main/src/coreclr/pal/inc/pal.h">src/pal/inc/pal.h</a> _RUNTIME_FUNCTION
     /// </remarks>
     public class RuntimeFunction
     {
@@ -105,7 +105,7 @@ namespace ILCompiler.Reflection.ReadyToRun
         /// <summary>
         /// The relative virtual address to the end of the code block
         /// </summary>
-        public int EndAddress { get;  }
+        public int EndAddress { get; }
 
         /// <summary>
         /// The size of the code block in bytes
@@ -225,9 +225,17 @@ namespace ILCompiler.Reflection.ReadyToRun
             {
                 return (int)arm64Info.FunctionLength;
             }
+            else if (UnwindInfo is LoongArch64.UnwindInfo loongarch64Info)
+            {
+                return (int)loongarch64Info.FunctionLength;
+            }
+            else if (UnwindInfo is RiscV64.UnwindInfo riscv64Info)
+            {
+                return (int)riscv64Info.FunctionLength;
+            }
             else if (Method.GcInfo != null)
             {
-                return Method.GcInfo.CodeLength; 
+                return Method.GcInfo.CodeLength;
             }
             else
             {
@@ -305,7 +313,8 @@ namespace ILCompiler.Reflection.ReadyToRun
             if (this._runtimeFunctions == null)
             {
                 this._runtimeFunctions = new List<RuntimeFunction>();
-                this.ParseRuntimeFunctions();
+                this.ParseRuntimeFunctions(false);
+                _readyToRunReader.ValidateRuntimeFunctions(_runtimeFunctions);
             }
         }
 
@@ -313,7 +322,7 @@ namespace ILCompiler.Reflection.ReadyToRun
         /// The id of the entrypoint runtime function
         /// </summary>
         public int EntryPointRuntimeFunctionId { get; set; }
-
+        public int ColdRuntimeFunctionId { get; set; }
         public int GcInfoRva { get; set; }
 
         public BaseGcInfo GcInfo
@@ -327,6 +336,18 @@ namespace ILCompiler.Reflection.ReadyToRun
 
         private BaseGcInfo _gcInfo;
 
+        public PgoInfo PgoInfo
+        {
+            get
+            {
+                EnsureInitialized();
+                if (_pgoInfo == PgoInfo.EmptySingleton)
+                    return null;
+                return _pgoInfo;
+            }
+        }
+
+        private PgoInfo _pgoInfo;
 
         private ReadyToRunReader _readyToRunReader;
         private List<FixupCell> _fixupCells;
@@ -342,7 +363,10 @@ namespace ILCompiler.Reflection.ReadyToRun
             }
         }
 
+        public string[] InstanceArgs { get; set; }
+
         public int RuntimeFunctionCount { get; set; }
+        public int ColdRuntimeFunctionCount { get; set; }
 
         /// <summary>
         /// Extracts the method signature from the metadata by rid
@@ -357,6 +381,7 @@ namespace ILCompiler.Reflection.ReadyToRun
             string[] instanceArgs,
             int? fixupOffset)
         {
+            InstanceArgs = (string[])instanceArgs?.Clone();
             _readyToRunReader = readyToRunReader;
             _fixupOffset = fixupOffset;
             MethodHandle = methodHandle;
@@ -450,7 +475,7 @@ namespace ILCompiler.Reflection.ReadyToRun
                 {
                     sb.Append(", ");
                 }
-                sb.AppendFormat($"{Signature.ParameterTypes[i]}");
+                sb.Append($"{Signature.ParameterTypes[i]}");
             }
             sb.Append(")");
 
@@ -459,17 +484,34 @@ namespace ILCompiler.Reflection.ReadyToRun
 
         private void EnsureInitialized()
         {
-            if (_gcInfo == null && GcInfoRva != 0)
+            if (_gcInfo == null)
             {
-                int gcInfoOffset = _readyToRunReader.CompositeReader.GetOffset(GcInfoRva);
-                if (_readyToRunReader.Machine == Machine.I386)
+                ParseRuntimeFunctions(true);
+                if (GcInfoRva != 0)
                 {
-                    _gcInfo = new x86.GcInfo(_readyToRunReader.Image, gcInfoOffset, _readyToRunReader.Machine, _readyToRunReader.ReadyToRunHeader.MajorVersion);
+                    int gcInfoOffset = _readyToRunReader.CompositeReader.GetOffset(GcInfoRva);
+                    if (_readyToRunReader.Machine == Machine.I386)
+                    {
+                        _gcInfo = new x86.GcInfo(_readyToRunReader.Image, gcInfoOffset);
+                    }
+                    else
+                    {
+                        // Arm, Arm64, LoongArch64 and RISCV64 use the same GcInfo format as Amd64
+                        _gcInfo = new Amd64.GcInfo(
+                            _readyToRunReader.Image,
+                            gcInfoOffset,
+                            _readyToRunReader.Machine,
+                            _readyToRunReader.ReadyToRunHeader.MajorVersion,
+                            _readyToRunReader.ReadyToRunHeader.MinorVersion);
+                    }
                 }
-                else
+            }
+            if (_pgoInfo == null)
+            {
+                _pgoInfo = _readyToRunReader.GetPgoInfoByKey(PgoInfoKey.FromReadyToRunMethod(this));
+                if (_pgoInfo == null)
                 {
-                    // Arm and Arm64 use the same GcInfo format as Amd64
-                    _gcInfo = new Amd64.GcInfo(_readyToRunReader.Image, gcInfoOffset, _readyToRunReader.Machine, _readyToRunReader.ReadyToRunHeader.MajorVersion);
+                    _pgoInfo = PgoInfo.EmptySingleton;
                 }
             }
         }
@@ -524,16 +566,25 @@ namespace ILCompiler.Reflection.ReadyToRun
         /// Get the RVAs of the runtime functions for each method
         /// based on <a href="https://github.com/dotnet/coreclr/blob/master/src/zap/zapcode.cpp">ZapUnwindInfo::Save</a>
         /// </summary>
-        private void ParseRuntimeFunctions()
+        private void ParseRuntimeFunctions(bool partial)
         {
             int runtimeFunctionId = EntryPointRuntimeFunctionId;
+            int coldRuntimeFunctionId = ColdRuntimeFunctionId;
             int runtimeFunctionSize = _readyToRunReader.CalculateRuntimeFunctionSize();
             int runtimeFunctionOffset = _readyToRunReader.CompositeReader.GetOffset(_readyToRunReader.ReadyToRunHeader.Sections[ReadyToRunSectionType.RuntimeFunctions].RelativeVirtualAddress);
             int curOffset = runtimeFunctionOffset + runtimeFunctionId * runtimeFunctionSize;
+            int coldOffset = runtimeFunctionOffset + coldRuntimeFunctionId * runtimeFunctionSize;
             int codeOffset = 0;
+
+            int hotRuntimeFunctionCount = RuntimeFunctionCount - ColdRuntimeFunctionCount;
 
             for (int i = 0; i < RuntimeFunctionCount; i++)
             {
+                if (i == hotRuntimeFunctionCount)
+                {
+                    curOffset = coldOffset;
+                    runtimeFunctionId = coldRuntimeFunctionId;
+                }
                 int startRva = NativeReader.ReadInt32(_readyToRunReader.Image, ref curOffset);
                 if (_readyToRunReader.Machine == Machine.ArmThumb2)
                 {
@@ -566,6 +617,14 @@ namespace ILCompiler.Reflection.ReadyToRun
                 {
                     unwindInfo = new Arm64.UnwindInfo(_readyToRunReader.Image, unwindOffset);
                 }
+                else if (_readyToRunReader.Machine == Machine.LoongArch64)
+                {
+                    unwindInfo = new LoongArch64.UnwindInfo(_readyToRunReader.Image, unwindOffset);
+                }
+                else if (_readyToRunReader.Machine == Machine.RiscV64)
+                {
+                    unwindInfo = new RiscV64.UnwindInfo(_readyToRunReader.Image, unwindOffset);
+                }
 
                 if (i == 0 && unwindInfo != null)
                 {
@@ -577,6 +636,11 @@ namespace ILCompiler.Reflection.ReadyToRun
                     {
                         GcInfoRva = unwindRva + unwindInfo.Size;
                     }
+                }
+
+                if (partial)
+                {
+                    return;
                 }
 
                 RuntimeFunction rtf = new RuntimeFunction(
@@ -593,7 +657,6 @@ namespace ILCompiler.Reflection.ReadyToRun
                 runtimeFunctionId++;
                 codeOffset += rtf.Size;
             }
-
             _size = codeOffset;
         }
     }

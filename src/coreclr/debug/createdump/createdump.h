@@ -6,29 +6,33 @@
 #define ___in       _SAL1_Source_(__in, (), _In_)
 #define ___out      _SAL1_Source_(__out, (), _Out_)
 
-#ifndef _countof
-#define _countof(x) (sizeof(x)/sizeof(x[0]))
-#endif
-
-extern void trace_printf(const char* format, ...);
 extern bool g_diagnostics;
+extern bool g_diagnosticsVerbose;
 
 #ifdef HOST_UNIX
+extern void trace_printf(const char* format, ...);
+extern void trace_verbose_printf(const char* format, ...);
 #define TRACE(args...) trace_printf(args)
-#define TRACE_VERBOSE(args...)
+#define TRACE_VERBOSE(args...) trace_verbose_printf(args)
 #else
 #define TRACE(args, ...)
 #define TRACE_VERBOSE(args, ...)
 #endif
 
+// Keep in sync with the definitions in dbgutil.cpp and daccess.h
+#define DACCESS_TABLE_SYMBOL "g_dacTable"
+
+#ifdef HOST_64BIT
+#define PRIA "016"
+#else
+#define PRIA "08"
+#endif
 
 #ifdef HOST_UNIX
 #include "config.h"
 #endif
 
 #include <windows.h>
-#include <winternl.h>
-#include <winver.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -47,7 +51,10 @@ typedef int T_CONTEXT;
 #include <arrayholder.h>
 #include <releaseholder.h>
 #ifdef HOST_UNIX
+#include <minipal/utf8.h>
+#include <dn-u16.h>
 #include <dumpcommon.h>
+#include <clrconfignocache.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/types.h>
@@ -64,6 +71,7 @@ typedef int T_CONTEXT;
 #endif
 #include <dirent.h>
 #include <fcntl.h>
+#include <dlfcn.h>
 #ifdef __APPLE__
 #include <ELF.h>
 #else
@@ -73,6 +81,7 @@ typedef int T_CONTEXT;
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 #else
+#include <winternl.h>
 #include <dbghelp.h>
 #endif
 #include <map>
@@ -80,21 +89,66 @@ typedef int T_CONTEXT;
 #include <vector>
 #include <array>
 #include <string>
+
+enum class DumpType
+{
+    Mini,
+    Heap,
+    Triage,
+    Full
+};
+
+enum class AppModelType
+{
+    Normal,
+    SingleFile,
+    NativeAOT
+};
+
+typedef struct
+{
+    const char* DumpPathTemplate;
+    enum DumpType DumpType;
+    enum AppModelType AppModel;
+    bool CreateDump;
+    bool CrashReport;
+    int Pid;
+    int CrashThread;
+    int Signal;
+    int SignalCode;
+    int SignalErrno;
+    uint64_t SignalAddress;
+    uint64_t ExceptionRecord;
+} CreateDumpOptions;
+
 #ifdef HOST_UNIX
 #ifdef __APPLE__
-#include "mac.h"
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 #endif
+#include "moduleinfo.h"
 #include "datatarget.h"
+#include "stackframe.h"
 #include "threadinfo.h"
 #include "memoryregion.h"
 #include "crashinfo.h"
+#include "crashreportwriter.h"
 #include "dumpwriter.h"
+#include "runtimeinfo.h"
+#include "specialdiaginfo.h"
 #endif
 
 #ifndef MAX_LONGPATH
 #define MAX_LONGPATH   1024
 #endif
 
-bool FormatDumpName(std::string& name, const char* pattern, const char* exename, int pid);
-bool CreateDump(const char* dumpPathTemplate, int pid, const char* dumpType, MINIDUMP_TYPE minidumpType);
+extern bool CreateDump(const CreateDumpOptions& options);
+extern bool FormatDumpName(std::string& name, const char* pattern, const char* exename, int pid);
+extern const char* GetDumpTypeString(DumpType dumpType);
+extern MINIDUMP_TYPE GetMiniDumpType(DumpType dumpType);
 
+#ifdef HOST_WINDOWS
+extern std::string GetLastErrorString();
+#endif
+extern void printf_status(const char* format, ...);
+extern void printf_error(const char* format, ...);

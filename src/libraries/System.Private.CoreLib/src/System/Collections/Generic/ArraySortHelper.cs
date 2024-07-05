@@ -5,13 +5,14 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using Internal.Runtime.CompilerServices;
+
+#pragma warning disable CA1822
 
 namespace System.Collections.Generic
 {
     #region ArraySortHelper for single arrays
 
-    internal partial class ArraySortHelper<T>
+    internal sealed partial class ArraySortHelper<T>
     {
         #region IArraySortHelper<T> Members
 
@@ -127,6 +128,9 @@ namespace System.Collections.Generic
             }
         }
 
+        // IntroSort is recursive; block it from being inlined into itself as
+        // this is currenly not profitable.
+        [MethodImpl(MethodImplOptions.NoInlining)]
         private static void IntroSort(Span<T> keys, int depthLimit, Comparison<T> comparer)
         {
             Debug.Assert(!keys.IsEmpty);
@@ -167,7 +171,7 @@ namespace System.Collections.Generic
                 int p = PickPivotAndPartition(keys.Slice(0, partitionSize), comparer);
 
                 // Note we've already partitioned around the pivot and do not have to move the pivot again.
-                IntroSort(keys[(p+1)..partitionSize], depthLimit, comparer);
+                IntroSort(keys[(p + 1)..partitionSize], depthLimit, comparer);
                 partitionSize = p;
             }
         }
@@ -269,7 +273,7 @@ namespace System.Collections.Generic
         }
     }
 
-    internal partial class GenericArraySortHelper<T>
+    internal sealed partial class GenericArraySortHelper<T>
         where T : IComparable<T>
     {
         // Do not add a constructor to this class because ArraySortHelper<T>.CreateSortHelper will not execute it
@@ -401,6 +405,9 @@ namespace System.Collections.Generic
             j = t;
         }
 
+        // IntroSort is recursive; block it from being inlined into itself as
+        // this is currenly not profitable.
+        [MethodImpl(MethodImplOptions.NoInlining)]
         private static void IntroSort(Span<T> keys, int depthLimit)
         {
             Debug.Assert(!keys.IsEmpty);
@@ -443,12 +450,12 @@ namespace System.Collections.Generic
                 int p = PickPivotAndPartition(keys.Slice(0, partitionSize));
 
                 // Note we've already partitioned around the pivot and do not have to move the pivot again.
-                IntroSort(keys[(p+1)..partitionSize], depthLimit);
+                IntroSort(keys[(p + 1)..partitionSize], depthLimit);
                 partitionSize = p;
             }
         }
 
-        private static int PickPivotAndPartition(Span<T> keys)
+        private static unsafe int PickPivotAndPartition(Span<T> keys)
         {
             Debug.Assert(keys.Length >= Array.IntrosortSizeThreshold);
 
@@ -493,7 +500,9 @@ namespace System.Collections.Generic
             {
                 Swap(ref leftRef, ref nextToLastRef);
             }
-            return (int)((nint)Unsafe.ByteOffset(ref zeroRef, ref leftRef) / Unsafe.SizeOf<T>());
+#pragma warning disable 8500 // sizeof of managed types
+            return (int)((nint)Unsafe.ByteOffset(ref zeroRef, ref leftRef) / sizeof(T));
+#pragma warning restore 8500
         }
 
         private static void HeapSort(Span<T> keys)
@@ -557,44 +566,43 @@ namespace System.Collections.Generic
         // - The floating-point comparisons here assume no NaNs, which is valid only because the sorting routines
         //   themselves special-case NaN with a pre-pass that ensures none are present in the values being sorted
         //   by moving them all to the front first and then sorting the rest.
-        // - The `? true : false` is to work-around poor codegen: https://github.com/dotnet/runtime/issues/37904#issuecomment-644180265.
         // - These are duplicated here rather than being on a helper type due to current limitations around generic inlining.
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)] // compiles to a single comparison or method call
         private static bool LessThan(ref T left, ref T right)
         {
-            if (typeof(T) == typeof(byte)) return (byte)(object)left < (byte)(object)right ? true : false;
-            if (typeof(T) == typeof(sbyte)) return (sbyte)(object)left < (sbyte)(object)right ? true : false;
-            if (typeof(T) == typeof(ushort)) return (ushort)(object)left < (ushort)(object)right ? true : false;
-            if (typeof(T) == typeof(short)) return (short)(object)left < (short)(object)right ? true : false;
-            if (typeof(T) == typeof(uint)) return (uint)(object)left < (uint)(object)right ? true : false;
-            if (typeof(T) == typeof(int)) return (int)(object)left < (int)(object)right ? true : false;
-            if (typeof(T) == typeof(ulong)) return (ulong)(object)left < (ulong)(object)right ? true : false;
-            if (typeof(T) == typeof(long)) return (long)(object)left < (long)(object)right ? true : false;
-            if (typeof(T) == typeof(nuint)) return (nuint)(object)left < (nuint)(object)right ? true : false;
-            if (typeof(T) == typeof(nint)) return (nint)(object)left < (nint)(object)right ? true : false;
-            if (typeof(T) == typeof(float)) return (float)(object)left < (float)(object)right ? true : false;
-            if (typeof(T) == typeof(double)) return (double)(object)left < (double)(object)right ? true : false;
-            if (typeof(T) == typeof(Half)) return (Half)(object)left < (Half)(object)right ? true : false;
+            if (typeof(T) == typeof(byte)) return (byte)(object)left < (byte)(object)right;
+            if (typeof(T) == typeof(sbyte)) return (sbyte)(object)left < (sbyte)(object)right;
+            if (typeof(T) == typeof(ushort)) return (ushort)(object)left < (ushort)(object)right;
+            if (typeof(T) == typeof(short)) return (short)(object)left < (short)(object)right;
+            if (typeof(T) == typeof(uint)) return (uint)(object)left < (uint)(object)right;
+            if (typeof(T) == typeof(int)) return (int)(object)left < (int)(object)right;
+            if (typeof(T) == typeof(ulong)) return (ulong)(object)left < (ulong)(object)right;
+            if (typeof(T) == typeof(long)) return (long)(object)left < (long)(object)right;
+            if (typeof(T) == typeof(nuint)) return (nuint)(object)left < (nuint)(object)right;
+            if (typeof(T) == typeof(nint)) return (nint)(object)left < (nint)(object)right;
+            if (typeof(T) == typeof(float)) return (float)(object)left < (float)(object)right;
+            if (typeof(T) == typeof(double)) return (double)(object)left < (double)(object)right;
+            if (typeof(T) == typeof(Half)) return (Half)(object)left < (Half)(object)right;
             return left.CompareTo(right) < 0 ? true : false;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)] // compiles to a single comparison or method call
         private static bool GreaterThan(ref T left, ref T right)
         {
-            if (typeof(T) == typeof(byte)) return (byte)(object)left > (byte)(object)right ? true : false;
-            if (typeof(T) == typeof(sbyte)) return (sbyte)(object)left > (sbyte)(object)right ? true : false;
-            if (typeof(T) == typeof(ushort)) return (ushort)(object)left > (ushort)(object)right ? true : false;
-            if (typeof(T) == typeof(short)) return (short)(object)left > (short)(object)right ? true : false;
-            if (typeof(T) == typeof(uint)) return (uint)(object)left > (uint)(object)right ? true : false;
-            if (typeof(T) == typeof(int)) return (int)(object)left > (int)(object)right ? true : false;
-            if (typeof(T) == typeof(ulong)) return (ulong)(object)left > (ulong)(object)right ? true : false;
-            if (typeof(T) == typeof(long)) return (long)(object)left > (long)(object)right ? true : false;
-            if (typeof(T) == typeof(nuint)) return (nuint)(object)left > (nuint)(object)right ? true : false;
-            if (typeof(T) == typeof(nint)) return (nint)(object)left > (nint)(object)right ? true : false;
-            if (typeof(T) == typeof(float)) return (float)(object)left > (float)(object)right ? true : false;
-            if (typeof(T) == typeof(double)) return (double)(object)left > (double)(object)right ? true : false;
-            if (typeof(T) == typeof(Half)) return (Half)(object)left > (Half)(object)right ? true : false;
+            if (typeof(T) == typeof(byte)) return (byte)(object)left > (byte)(object)right;
+            if (typeof(T) == typeof(sbyte)) return (sbyte)(object)left > (sbyte)(object)right;
+            if (typeof(T) == typeof(ushort)) return (ushort)(object)left > (ushort)(object)right;
+            if (typeof(T) == typeof(short)) return (short)(object)left > (short)(object)right;
+            if (typeof(T) == typeof(uint)) return (uint)(object)left > (uint)(object)right;
+            if (typeof(T) == typeof(int)) return (int)(object)left > (int)(object)right;
+            if (typeof(T) == typeof(ulong)) return (ulong)(object)left > (ulong)(object)right;
+            if (typeof(T) == typeof(long)) return (long)(object)left > (long)(object)right;
+            if (typeof(T) == typeof(nuint)) return (nuint)(object)left > (nuint)(object)right;
+            if (typeof(T) == typeof(nint)) return (nint)(object)left > (nint)(object)right;
+            if (typeof(T) == typeof(float)) return (float)(object)left > (float)(object)right;
+            if (typeof(T) == typeof(double)) return (double)(object)left > (double)(object)right;
+            if (typeof(T) == typeof(Half)) return (Half)(object)left > (Half)(object)right;
             return left.CompareTo(right) > 0 ? true : false;
         }
     }
@@ -603,7 +611,7 @@ namespace System.Collections.Generic
 
     #region ArraySortHelper for paired key and value arrays
 
-    internal partial class ArraySortHelper<TKey, TValue>
+    internal sealed partial class ArraySortHelper<TKey, TValue>
     {
         public void Sort(Span<TKey> keys, Span<TValue> values, IComparer<TKey>? comparer)
         {
@@ -708,7 +716,7 @@ namespace System.Collections.Generic
                 int p = PickPivotAndPartition(keys.Slice(0, partitionSize), values.Slice(0, partitionSize), comparer);
 
                 // Note we've already partitioned around the pivot and do not have to move the pivot again.
-                IntroSort(keys[(p+1)..partitionSize], values[(p+1)..partitionSize], depthLimit, comparer);
+                IntroSort(keys[(p + 1)..partitionSize], values[(p + 1)..partitionSize], depthLimit, comparer);
                 partitionSize = p;
             }
         }
@@ -819,7 +827,7 @@ namespace System.Collections.Generic
         }
     }
 
-    internal partial class GenericArraySortHelper<TKey, TValue>
+    internal sealed partial class GenericArraySortHelper<TKey, TValue>
         where TKey : IComparable<TKey>
     {
         public void Sort(Span<TKey> keys, Span<TValue> values, IComparer<TKey>? comparer)
@@ -937,7 +945,7 @@ namespace System.Collections.Generic
                 int p = PickPivotAndPartition(keys.Slice(0, partitionSize), values.Slice(0, partitionSize));
 
                 // Note we've already partitioned around the pivot and do not have to move the pivot again.
-                IntroSort(keys[(p+1)..partitionSize], values[(p+1)..partitionSize], depthLimit);
+                IntroSort(keys[(p + 1)..partitionSize], values[(p + 1)..partitionSize], depthLimit);
                 partitionSize = p;
             }
         }
@@ -1055,44 +1063,43 @@ namespace System.Collections.Generic
         // - The floating-point comparisons here assume no NaNs, which is valid only because the sorting routines
         //   themselves special-case NaN with a pre-pass that ensures none are present in the values being sorted
         //   by moving them all to the front first and then sorting the rest.
-        // - The `? true : false` is to work-around poor codegen: https://github.com/dotnet/runtime/issues/37904#issuecomment-644180265.
         // - These are duplicated here rather than being on a helper type due to current limitations around generic inlining.
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)] // compiles to a single comparison or method call
         private static bool LessThan(ref TKey left, ref TKey right)
         {
-            if (typeof(TKey) == typeof(byte)) return (byte)(object)left < (byte)(object)right ? true : false;
-            if (typeof(TKey) == typeof(sbyte)) return (sbyte)(object)left < (sbyte)(object)right ? true : false;
-            if (typeof(TKey) == typeof(ushort)) return (ushort)(object)left < (ushort)(object)right ? true : false;
-            if (typeof(TKey) == typeof(short)) return (short)(object)left < (short)(object)right ? true : false;
-            if (typeof(TKey) == typeof(uint)) return (uint)(object)left < (uint)(object)right ? true : false;
-            if (typeof(TKey) == typeof(int)) return (int)(object)left < (int)(object)right ? true : false;
-            if (typeof(TKey) == typeof(ulong)) return (ulong)(object)left < (ulong)(object)right ? true : false;
-            if (typeof(TKey) == typeof(long)) return (long)(object)left < (long)(object)right ? true : false;
-            if (typeof(TKey) == typeof(nuint)) return (nuint)(object)left < (nuint)(object)right ? true : false;
-            if (typeof(TKey) == typeof(nint)) return (nint)(object)left < (nint)(object)right ? true : false;
-            if (typeof(TKey) == typeof(float)) return (float)(object)left < (float)(object)right ? true : false;
-            if (typeof(TKey) == typeof(double)) return (double)(object)left < (double)(object)right ? true : false;
-            if (typeof(TKey) == typeof(Half)) return (Half)(object)left < (Half)(object)right ? true : false;
+            if (typeof(TKey) == typeof(byte)) return (byte)(object)left < (byte)(object)right;
+            if (typeof(TKey) == typeof(sbyte)) return (sbyte)(object)left < (sbyte)(object)right;
+            if (typeof(TKey) == typeof(ushort)) return (ushort)(object)left < (ushort)(object)right;
+            if (typeof(TKey) == typeof(short)) return (short)(object)left < (short)(object)right;
+            if (typeof(TKey) == typeof(uint)) return (uint)(object)left < (uint)(object)right;
+            if (typeof(TKey) == typeof(int)) return (int)(object)left < (int)(object)right;
+            if (typeof(TKey) == typeof(ulong)) return (ulong)(object)left < (ulong)(object)right;
+            if (typeof(TKey) == typeof(long)) return (long)(object)left < (long)(object)right;
+            if (typeof(TKey) == typeof(nuint)) return (nuint)(object)left < (nuint)(object)right;
+            if (typeof(TKey) == typeof(nint)) return (nint)(object)left < (nint)(object)right;
+            if (typeof(TKey) == typeof(float)) return (float)(object)left < (float)(object)right;
+            if (typeof(TKey) == typeof(double)) return (double)(object)left < (double)(object)right;
+            if (typeof(TKey) == typeof(Half)) return (Half)(object)left < (Half)(object)right;
             return left.CompareTo(right) < 0 ? true : false;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)] // compiles to a single comparison or method call
         private static bool GreaterThan(ref TKey left, ref TKey right)
         {
-            if (typeof(TKey) == typeof(byte)) return (byte)(object)left > (byte)(object)right ? true : false;
-            if (typeof(TKey) == typeof(sbyte)) return (sbyte)(object)left > (sbyte)(object)right ? true : false;
-            if (typeof(TKey) == typeof(ushort)) return (ushort)(object)left > (ushort)(object)right ? true : false;
-            if (typeof(TKey) == typeof(short)) return (short)(object)left > (short)(object)right ? true : false;
-            if (typeof(TKey) == typeof(uint)) return (uint)(object)left > (uint)(object)right ? true : false;
-            if (typeof(TKey) == typeof(int)) return (int)(object)left > (int)(object)right ? true : false;
-            if (typeof(TKey) == typeof(ulong)) return (ulong)(object)left > (ulong)(object)right ? true : false;
-            if (typeof(TKey) == typeof(long)) return (long)(object)left > (long)(object)right ? true : false;
-            if (typeof(TKey) == typeof(nuint)) return (nuint)(object)left > (nuint)(object)right ? true : false;
-            if (typeof(TKey) == typeof(nint)) return (nint)(object)left > (nint)(object)right ? true : false;
-            if (typeof(TKey) == typeof(float)) return (float)(object)left > (float)(object)right ? true : false;
-            if (typeof(TKey) == typeof(double)) return (double)(object)left > (double)(object)right ? true : false;
-            if (typeof(TKey) == typeof(Half)) return (Half)(object)left > (Half)(object)right ? true : false;
+            if (typeof(TKey) == typeof(byte)) return (byte)(object)left > (byte)(object)right;
+            if (typeof(TKey) == typeof(sbyte)) return (sbyte)(object)left > (sbyte)(object)right;
+            if (typeof(TKey) == typeof(ushort)) return (ushort)(object)left > (ushort)(object)right;
+            if (typeof(TKey) == typeof(short)) return (short)(object)left > (short)(object)right;
+            if (typeof(TKey) == typeof(uint)) return (uint)(object)left > (uint)(object)right;
+            if (typeof(TKey) == typeof(int)) return (int)(object)left > (int)(object)right;
+            if (typeof(TKey) == typeof(ulong)) return (ulong)(object)left > (ulong)(object)right;
+            if (typeof(TKey) == typeof(long)) return (long)(object)left > (long)(object)right;
+            if (typeof(TKey) == typeof(nuint)) return (nuint)(object)left > (nuint)(object)right;
+            if (typeof(TKey) == typeof(nint)) return (nint)(object)left > (nint)(object)right;
+            if (typeof(TKey) == typeof(float)) return (float)(object)left > (float)(object)right;
+            if (typeof(TKey) == typeof(double)) return (double)(object)left > (double)(object)right;
+            if (typeof(TKey) == typeof(Half)) return (Half)(object)left > (Half)(object)right;
             return left.CompareTo(right) > 0 ? true : false;
         }
     }

@@ -8,7 +8,7 @@ using Xunit;
 
 namespace System.Security.Cryptography.EcDiffieHellman.Tests
 {
-#if NETCOREAPP
+#if NET
     // These test cases are from http://csrc.nist.gov/groups/STM/cavp/component-testing.html#test-vectors
     // SP 800-56A ECCCDH Primitive test vectors
     // ecccdhtestvectors.zip
@@ -185,7 +185,7 @@ namespace System.Security.Cryptography.EcDiffieHellman.Tests
                             // represent the same curve.
                             //
                             // secp256r1 and secp521r1 both succeed this block, secp384r1 fails.
-                            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                            if (OperatingSystem.IsWindows())
                             {
                                 throw;
                             }
@@ -223,9 +223,19 @@ namespace System.Security.Cryptography.EcDiffieHellman.Tests
             HashAlgorithmName zHashAlgorithm,
             byte[] iutZ)
         {
-            byte[] result = iut.DeriveKeyFromHash(cavsPublic, zHashAlgorithm);
+            byte[] deriveHash = iut.DeriveKeyFromHash(cavsPublic, zHashAlgorithm);
             byte[] hashedZ = zHasher.ComputeHash(iutZ);
-            Assert.Equal(hashedZ.ByteArrayToHex(), result.ByteArrayToHex());
+            Assert.Equal(hashedZ.ByteArrayToHex(), deriveHash.ByteArrayToHex());
+
+            if (ECDiffieHellmanFactory.SupportsRawDerivation)
+            {
+                byte[] rawDerived = iut.DeriveRawSecretAgreement(cavsPublic);
+                Assert.Equal(iutZ.ByteArrayToHex(), rawDerived.ByteArrayToHex());
+            }
+            else
+            {
+                Assert.Throws<PlatformNotSupportedException>(() => iut.DeriveRawSecretAgreement(cavsPublic));
+            }
         }
     }
 #endif

@@ -1,30 +1,16 @@
-
 include_directories(../inc)
 include_directories(../../pal/inc)
 
-add_definitions(-DPAL_STDCPP_COMPAT)
-
-if(FEATURE_PERFTRACING_C_LIB)
-    set(SHARED_EVENTPIPE_DIR ${CLR_SRC_NATIVE_DIR}/eventpipe)
-    include_directories(${SHARED_EVENTPIPE_DIR})
-    add_definitions(-DFEATURE_CORECLR)
-    add_definitions(-DFEATURE_PERFTRACING)
-    add_definitions(-DFEATURE_PERFTRACING_C_LIB)
-    add_definitions(-DFEATURE_PERFTRACING_C_LIB_STANDALONE_PAL)
-endif(FEATURE_PERFTRACING_C_LIB)
+add_definitions(-DFEATURE_CORECLR)
+add_definitions(-DFEATURE_PERFTRACING)
+add_definitions(-DFEATURE_PERFTRACING_STANDALONE_PAL)
 
 if(CLR_CMAKE_HOST_WIN32)
     add_definitions(-DWIN32_LEAN_AND_MEAN)
     include_directories(../../inc) #needed for warning control
 
     if(CLR_CMAKE_TARGET_WIN32)
-        if(FEATURE_PERFTRACING_C_LIB)
-            set (EVENTPIPE_PAL_SOURCES "${SHARED_EVENTPIPE_DIR}/ds-ipc-win32.c")
-            set_source_files_properties(${EVENTPIPE_PAL_SOURCES} PROPERTIES LANGUAGE CXX)
-        else(FEATURE_PERFTRACING_C_LIB)
-            set (EVENTPIPE_PAL_SOURCES "win/diagnosticsipc.cpp")
-        endif(FEATURE_PERFTRACING_C_LIB)
-
+        set(DEBUG_PAL_REFEREENCE_DIAGNOSTICSERVER ON)
         set(TWO_WAY_PIPE_SOURCES
             ${EVENTPIPE_PAL_SOURCES}
             win/twowaypipe.cpp
@@ -38,17 +24,10 @@ if(CLR_CMAKE_HOST_WIN32)
 endif(CLR_CMAKE_HOST_WIN32)
 
 if(CLR_CMAKE_HOST_UNIX)
+    set(DEBUG_PAL_REFEREENCE_DIAGNOSTICSERVER ON)
 
     add_definitions(-DPAL_IMPLEMENTATION)
     add_definitions(-D_POSIX_C_SOURCE=200809L)
-
-    if(FEATURE_PERFTRACING_C_LIB)
-        set (EVENTPIPE_PAL_SOURCES "${SHARED_EVENTPIPE_DIR}/ds-ipc-posix.c")
-        set_source_files_properties(${EVENTPIPE_PAL_SOURCES} PROPERTIES LANGUAGE CXX)
-        set_source_files_properties(${EVENTPIPE_PAL_SOURCES} PROPERTIES COMPILE_OPTIONS -xc++)
-    else(FEATURE_PERFTRACING_C_LIB)
-        set (EVENTPIPE_PAL_SOURCES "unix/diagnosticsipc.cpp")
-    endif(FEATURE_PERFTRACING_C_LIB)
 
     set(TWO_WAY_PIPE_SOURCES
       ${EVENTPIPE_PAL_SOURCES}
@@ -58,6 +37,14 @@ if(CLR_CMAKE_HOST_UNIX)
 
 endif(CLR_CMAKE_HOST_UNIX)
 
-_add_library(debug-pal_obj OBJECT ${TWO_WAY_PIPE_SOURCES})
-add_library(debug-pal INTERFACE)
-target_sources(debug-pal INTERFACE $<TARGET_OBJECTS:debug-pal_obj>)
+add_library_clr(debug-pal OBJECT ${TWO_WAY_PIPE_SOURCES})
+
+if (DEBUG_PAL_REFEREENCE_DIAGNOSTICSERVER)
+    target_link_libraries(debug-pal PRIVATE dn-diagnosticserver-pal)
+
+    # The DiagnosticServer Runtime implementation in CoreCLR is C++,
+    # but the Diagnostic Server PAL is written in C.
+    # Override those files to build as C++.
+    get_property(ds_pal_sources TARGET dn-diagnosticserver-pal PROPERTY INTERFACE_SOURCES)
+    set_source_files_properties(${ds_pal_sources} PROPERTIES LANGUAGE CXX)
+endif()
